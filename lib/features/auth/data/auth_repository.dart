@@ -18,8 +18,11 @@ class AuthRepository {
       'onesignal_user_id': onesignalUserId,
     });
 
-    final access = resp.data['access_token'] as String;
-    final refresh = resp.data['refresh_token'] as String;
+    final access = resp.data['access_token'] as String?;
+    final refresh = resp.data['refresh_token'] as String?;
+    if (access == null || refresh == null) {
+      throw Exception('Invalid login response: missing tokens');
+    }
     await tokenStorage
         .saveTokens(access: access, refresh: refresh)
         .timeout(const Duration(seconds: 3));

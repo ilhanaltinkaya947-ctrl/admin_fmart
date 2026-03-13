@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import '../storage/token_storage.dart';
 
@@ -5,6 +7,9 @@ class ApiClient {
   final Dio dio;
   final TokenStorage tokenStorage;
   final void Function() onUnauthorized;
+
+  /// Lock to prevent concurrent token refresh attempts.
+  Completer<bool>? _refreshCompleter;
 
   ApiClient({
     required String baseUrl,
@@ -54,23 +59,40 @@ class ApiClient {
   }
 
   Future<bool> _refresh() async {
-    final refresh = await tokenStorage.getRefreshToken();
-    if (refresh == null || refresh.isEmpty) return false;
+    // If a refresh is already in progress, wait for its result.
+    if (_refreshCompleter != null) {
+      return _refreshCompleter!.future;
+    }
+
+    _refreshCompleter = Completer<bool>();
 
     try {
+      final refresh = await tokenStorage.getRefreshToken();
+      if (refresh == null || refresh.isEmpty) {
+        _refreshCompleter!.complete(false);
+        return false;
+      }
+
       final resp = await dio.post('/gw/auth/refresh', data: {
         'refresh_token': refresh,
       });
 
       final access = resp.data['access_token'] as String?;
       final newRefresh = resp.data['refresh_token'] as String?;
-      if (access == null || newRefresh == null) return false;
+      if (access == null || newRefresh == null) {
+        _refreshCompleter!.complete(false);
+        return false;
+      }
 
       await tokenStorage.saveTokens(access: access, refresh: newRefresh);
+      _refreshCompleter!.complete(true);
       return true;
     } catch (_) {
       await tokenStorage.clear();
+      _refreshCompleter!.complete(false);
       return false;
+    } finally {
+      _refreshCompleter = null;
     }
   }
 }

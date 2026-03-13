@@ -96,11 +96,11 @@ class TariffQuoteDto {
   });
 
   factory TariffQuoteDto.fromJson(Map<String, dynamic> j) => TariffQuoteDto(
-    tariffCode: j['tariff_code'] as String,
+    tariffCode: (j['tariff_code'] as String?) ?? '',
     title: (j['title'] as String?) ?? '',
     enabled: (j['enabled'] as bool?) ?? false,
     currency: (j['currency'] as String?) ?? 'KZT',
-    price: (j['price'] as num).toDouble(),
+    price: (j['price'] as num?)?.toDouble() ?? 0.0,
   );
 }
 
@@ -119,8 +119,8 @@ class CalculateDeliveryResponseDto {
 
   factory CalculateDeliveryResponseDto.fromJson(Map<String, dynamic> j) => CalculateDeliveryResponseDto(
     orderId: j['order_id'] as int?,
-    storeId: j['store_id'] as int,
-    totalAmount: (j['total_amount'] as num).toDouble(),
+    storeId: j['store_id'] as int? ?? 0,
+    totalAmount: (j['total_amount'] as num?)?.toDouble() ?? 0.0,
     quotes: ((j['quotes'] as List?) ?? [])
         .map((e) => TariffQuoteDto.fromJson((e as Map).cast<String, dynamic>()))
         .toList(),
@@ -188,13 +188,13 @@ class CreateClaimResponseDto {
   });
 
   factory CreateClaimResponseDto.fromJson(Map<String, dynamic> j) => CreateClaimResponseDto(
-    orderId: j['order_id'] as int,
-    claimId: j['claim_id'] as String,
+    orderId: j['order_id'] as int? ?? 0,
+    claimId: (j['claim_id'] as String?) ?? '',
     status: (j['status'] as String?) ?? '',
     version: (j['version'] as int?) ?? 0,
     provider: (j['provider'] as String?) ?? 'yandex',
     tariffCode: (j['tariff_code'] as String?) ?? '',
-    price: (j['price'] as num).toDouble(),
+    price: (j['price'] as num?)?.toDouble() ?? 0.0,
     currency: (j['currency'] as String?) ?? 'KZT',
   );
 }
@@ -206,8 +206,8 @@ class GetClaimsResponseDto {
   GetClaimsResponseDto({required this.orderId, required this.claimId});
 
   factory GetClaimsResponseDto.fromJson(Map<String, dynamic> j) => GetClaimsResponseDto(
-    orderId: j['order_id'] as int,
-    claimId: j['claim_id'] as String,
+    orderId: j['order_id'] as int? ?? 0,
+    claimId: (j['claim_id'] as String?) ?? '',
   );
 }
 
@@ -229,11 +229,11 @@ class ClaimInfoResponseDto {
   });
 
   factory ClaimInfoResponseDto.fromJson(Map<String, dynamic> j) => ClaimInfoResponseDto(
-    claimId: j['claim_id'] as String,
-    orderId: j['order_id'] as int,
+    claimId: (j['claim_id'] as String?) ?? '',
+    orderId: j['order_id'] as int? ?? 0,
     status: (j['status'] as String?) ?? '',
     version: (j['version'] as int?) ?? 0,
-    price: (j['price'] as num).toDouble(),
+    price: (j['price'] as num?)?.toDouble() ?? 0.0,
     currency: (j['currency'] as String?) ?? 'KZT',
   );
 }
@@ -245,7 +245,7 @@ class CancelInfoResponseDto {
   CancelInfoResponseDto({required this.claimId, required this.cancelState});
 
   factory CancelInfoResponseDto.fromJson(Map<String, dynamic> j) => CancelInfoResponseDto(
-    claimId: j['claim_id'] as String,
+    claimId: (j['claim_id'] as String?) ?? '',
     cancelState: (j['cancel_state'] as String?) ?? 'free',
   );
 }
@@ -257,7 +257,7 @@ class CourierUrlDto {
   CourierUrlDto({required this.claimId, required this.link});
 
   factory CourierUrlDto.fromJson(Map<String, dynamic> j) => CourierUrlDto(
-    claimId: j['claim_id'] as String,
+    claimId: (j['claim_id'] as String?) ?? '',
     link: j['link'] as String?,
   );
 }

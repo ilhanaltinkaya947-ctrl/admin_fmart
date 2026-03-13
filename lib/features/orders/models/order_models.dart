@@ -88,7 +88,7 @@ class Order {
   }
 
   factory Order.fromJson(Map<String, dynamic> j) => Order(
-    id: j['id'] as int,
+    id: j['id'] as int? ?? 0,
     customerId: j['customer_id'] as int? ?? 0,
     status: j['status'] as String? ?? '',
     totalAmount: j['total_amount']?.toString() ?? '0',
@@ -199,7 +199,7 @@ class NewOrderItem {
   });
 
   factory NewOrderItem.fromJson(Map<String, dynamic> j) => NewOrderItem(
-    id: j['id'] as int,
+    id: j['id'] as int? ?? 0,
     status: j['status'] as String? ?? '',
     createdGmt: j['created_gmt'] as String?,
     createdLocal: j['created_local'] as String?,
