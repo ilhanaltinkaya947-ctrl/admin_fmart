@@ -123,11 +123,14 @@ class _AppState extends State<App> {
     };
   }
 
-  void _startWatcherIfPossible() async {
+  Future<void> _startWatcherIfPossible() async {
     final storeId = await _prefsStorage.getSelectedStoreId();
     if (storeId == null) return;
 
-    _watcher ??= OrderWatcher(
+    // Stop the previous watcher before creating a new one to prevent timer leak.
+    await _watcher?.stop();
+
+    _watcher = OrderWatcher(
       prefsStorage: _prefsStorage,
       ordersRepository: _ordersRepo,
       sound: _sound,
@@ -144,7 +147,8 @@ class _AppState extends State<App> {
 
   @override
   void dispose() {
-    _stopWatcher();
+    _watcher?.stop();
+    _watcher = null;
     _sound.dispose();
     super.dispose();
   }

@@ -77,37 +77,39 @@ class OrderWatcher {
 
       _dialogOpen = true;
 
-      await showDialog(
-        context: ctx,
-        barrierDismissible: false,
-        builder: (c) => AlertDialog(
-          title: const Text('Новый заказ'),
-          content: Text('Заказ #${first.id} • ${first.status}'),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await sound.stop();
-                if (c.mounted) Navigator.of(c).pop();
-              },
-              child: const Text('Позже'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                await sound.stop();
-                if (c.mounted) Navigator.of(c).pop();
+      try {
+        await showDialog(
+          context: ctx,
+          barrierDismissible: false,
+          builder: (c) => AlertDialog(
+            title: const Text('Новый заказ'),
+            content: Text('Заказ #${first.id} • ${first.status}'),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await sound.stop();
+                  if (c.mounted) Navigator.of(c).pop();
+                },
+                child: const Text('Позже'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await sound.stop();
+                  if (c.mounted) Navigator.of(c).pop();
 
-                // Тут можно триггернуть refresh списка заказов:
-                ctx.read<OrdersCubit>().refresh(storeId: storeId);
-              },
-              child: const Text('Открыть'),
-            ),
-          ],
-        ),
-      );
-
-      _dialogOpen = false;
-    } catch (_) {
-      // не падаем, просто пропускаем тик
+                  // Тут можно триггернуть refresh списка заказов:
+                  ctx.read<OrdersCubit>().refresh(storeId: storeId);
+                },
+                child: const Text('Открыть'),
+              ),
+            ],
+          ),
+        );
+      } finally {
+        _dialogOpen = false;
+      }
+    } catch (e, st) {
+      debugPrint('[OrderWatcher] tick error: $e\n$st');
     }
   }
 }

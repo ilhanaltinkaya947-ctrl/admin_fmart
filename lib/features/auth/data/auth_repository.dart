@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
 import '../../../core/api/api_client.dart';
 import '../../../core/storage/token_storage.dart';
 
@@ -23,9 +27,14 @@ class AuthRepository {
     if (access == null || refresh == null) {
       throw Exception('Invalid login response: missing tokens');
     }
-    await tokenStorage
-        .saveTokens(access: access, refresh: refresh)
-        .timeout(const Duration(seconds: 3));
+    try {
+      await tokenStorage
+          .saveTokens(access: access, refresh: refresh)
+          .timeout(const Duration(seconds: 3));
+    } on TimeoutException {
+      debugPrint('[Auth] Token save timed out — retrying without timeout');
+      await tokenStorage.saveTokens(access: access, refresh: refresh);
+    }
 
   }
 }
