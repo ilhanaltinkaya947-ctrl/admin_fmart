@@ -1,4 +1,5 @@
 import '../../../core/api/api_client.dart';
+import '../../../core/api/safe_response.dart';
 import '../models/store_models.dart';
 
 class StoresRepository {
@@ -7,7 +8,6 @@ class StoresRepository {
 
   Future<List<StoreDto>> getStores() async {
     final resp = await api.dio.get('/gw/catalog/stores');
-    final list = (resp.data as List).cast<Map<String, dynamic>>();
-    return list.map(StoreDto.fromJson).toList();
+    return asJsonList(resp.data).map(StoreDto.fromJson).toList();
   }
 }

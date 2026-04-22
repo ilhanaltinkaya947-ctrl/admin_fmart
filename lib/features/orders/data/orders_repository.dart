@@ -1,4 +1,5 @@
 import '../../../core/api/api_client.dart';
+import '../../../core/api/safe_response.dart';
 import '../models/order_models.dart';
 
 class OrdersRepository {
@@ -19,7 +20,7 @@ class OrdersRepository {
       },
     );
 
-    return OrdersPage.fromJson((resp.data as Map).cast<String, dynamic>());
+    return OrdersPage.fromJson(asJsonMap(resp.data));
   }
 
   Future<void> changeStatus({
@@ -61,13 +62,13 @@ class OrdersRepository {
       queryParameters: qp,
     );
 
-    return NewOrdersResponse.fromJson((resp.data as Map).cast<String, dynamic>());
+    return NewOrdersResponse.fromJson(asJsonMap(resp.data));
   }
 
 
   Future<SimpleActionResponse> cancelOrder({required int orderId}) async {
     final resp = await api.dio.post('/gw/order/admin/$orderId/cancel');
-    return SimpleActionResponse.fromJson((resp.data as Map).cast<String, dynamic>());
+    return SimpleActionResponse.fromJson(asJsonMap(resp.data));
   }
 
   Future<SimpleActionResponse> refundOrder({
@@ -82,17 +83,17 @@ class OrdersRepository {
         'reason': reason,
       },
     );
-    return SimpleActionResponse.fromJson((resp.data as Map).cast<String, dynamic>());
+    return SimpleActionResponse.fromJson(asJsonMap(resp.data));
   }
 
 
   Future<OrderStatusesResponse> getOrderStatuses() async {
     final resp = await api.dio.get('/gw/order/admin/statuses');
-    return OrderStatusesResponse.fromJson((resp.data as Map).cast<String, dynamic>());
+    return OrderStatusesResponse.fromJson(asJsonMap(resp.data));
   }
 
   Future<CustomerInfo> getCustomerInfo({required int customerId}) async {
     final resp = await api.dio.get('/gw/auth/admin/$customerId');
-    return CustomerInfo.fromJson((resp.data as Map).cast<String, dynamic>());
+    return CustomerInfo.fromJson(asJsonMap(resp.data));
   }
 }
