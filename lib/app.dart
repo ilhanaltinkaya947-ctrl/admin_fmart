@@ -13,9 +13,11 @@ import 'features/auth/data/auth_repository.dart';
 import 'features/auth/presentation/login_page.dart';
 import 'features/auth/state/auth_cubit.dart';
 
+import 'features/customers/data/customers_repository.dart';
+import 'features/customers/state/customers_cubit.dart';
 import 'features/delivery/data/delivery_repository.dart';
 import 'features/delivery/state/delivery_cubit.dart';
-import 'features/orders/presentation/orders_list_page.dart';
+import 'features/home/presentation/home_shell.dart';
 import 'features/stores/data/stores_repository.dart';
 import 'features/stores/presentation/store_picker_page.dart';
 import 'features/stores/state/store_cubit.dart';
@@ -42,6 +44,7 @@ class _AppState extends State<App> {
   late final StoresRepository _storesRepo;
   late final OrdersRepository _ordersRepo;
   late final DeliveryRepository _deliveryRepo;
+  late final CustomersRepository _customersRepo;
 
 
   late final SoundService _sound;
@@ -64,6 +67,7 @@ class _AppState extends State<App> {
     _deliveryRepo = DeliveryRepository(api: _api);
     _storesRepo = StoresRepository(api: _api);
     _ordersRepo = OrdersRepository(api: _api);
+    _customersRepo = CustomersRepository(api: _api);
 
     _sound = SoundService();
 
@@ -160,6 +164,7 @@ class _AppState extends State<App> {
         RepositoryProvider.value(value: _authRepo),
         RepositoryProvider.value(value: _storesRepo),
         RepositoryProvider.value(value: _ordersRepo),
+        RepositoryProvider.value(value: _customersRepo),
         RepositoryProvider.value(value: _prefsStorage),
         RepositoryProvider.value(value: _deliveryRepo),
         RepositoryProvider.value(value: widget.oneSignalService),
@@ -182,6 +187,9 @@ class _AppState extends State<App> {
             create: (_) => OrdersCubit(
               ordersRepository: _ordersRepo,
             ),
+          ),
+          BlocProvider(
+            create: (_) => CustomersCubit(repository: _customersRepo),
           ),
           BlocProvider(create: (_) => DeliveryCubit(repo: _deliveryRepo))
         ],
@@ -225,10 +233,10 @@ class _RootRouter extends StatelessWidget {
       return const LoginPage();
     }
 
-    // Авторизован: если магазин выбран — заказы, иначе — экран выбора магазина
+    // Авторизован: если магазин выбран — главный экран, иначе — экран выбора магазина
     if (storeState is StoreSelected) {
       context.read<OrdersCubit>().ensureLoaded(storeId: storeState.storeId);
-      return OrdersListPage(
+      return HomeShell(
         storeId: storeState.storeId,
         storeName: storeState.storeName,
       );
