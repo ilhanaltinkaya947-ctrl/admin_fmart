@@ -12,7 +12,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
-    OneSignal.Debug.setLogLevel(OSLogLevel.verbose);
+    if (kDebugMode) OneSignal.Debug.setLogLevel(OSLogLevel.verbose);
     OneSignal.initialize(ApiConfig.oneSignalAppId);
     OneSignal.Notifications.requestPermission(false);
   } catch (e) {
