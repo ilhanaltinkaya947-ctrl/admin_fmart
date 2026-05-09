@@ -299,6 +299,56 @@ const Map<String, String> kOrderStatusRu = {
 String orderStatusRu(String code) => kOrderStatusRu[code] ?? code;
 
 
+class OrderEvent {
+  final int id;
+  final String? fromStatus;
+  final String toStatus;
+  final String? fromStatusDisplay;
+  final String toStatusDisplay;
+  final int changedBy;
+  final String? comment;
+  final DateTime createdAt;
+
+  OrderEvent({
+    required this.id,
+    required this.fromStatus,
+    required this.toStatus,
+    required this.fromStatusDisplay,
+    required this.toStatusDisplay,
+    required this.changedBy,
+    required this.comment,
+    required this.createdAt,
+  });
+
+  factory OrderEvent.fromJson(Map<String, dynamic> j) => OrderEvent(
+        id: j['id'] as int? ?? 0,
+        fromStatus: (j['from_status'] as String?)?.trim(),
+        toStatus: (j['to_status'] as String? ?? '').trim(),
+        fromStatusDisplay: (j['from_status_display'] as String?)?.trim(),
+        toStatusDisplay: (j['to_status_display'] as String? ?? '').trim(),
+        changedBy: j['changed_by'] as int? ?? 0,
+        comment: (j['comment'] as String?)?.trim(),
+        createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ??
+            DateTime.now(),
+      );
+}
+
+class OrderEventsResponse {
+  final int orderId;
+  final List<OrderEvent> events;
+
+  OrderEventsResponse({required this.orderId, required this.events});
+
+  factory OrderEventsResponse.fromJson(Map<String, dynamic> j) =>
+      OrderEventsResponse(
+        orderId: j['order_id'] as int? ?? 0,
+        events: ((j['events'] as List?) ?? [])
+            .cast<Map<String, dynamic>>()
+            .map(OrderEvent.fromJson)
+            .toList(),
+      );
+}
+
 class CustomerInfo {
   final int id;
   final String phone;

@@ -6,6 +6,7 @@ import '../data/orders_repository.dart';
 import '../models/order_models.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
+import 'widgets/order_timeline_section.dart';
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -31,6 +32,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
   CustomerInfo? _customer;
   bool _customerLoading = false;
+
+  final _timelineKey = GlobalKey<OrderTimelineSectionState>();
 
   @override
   void initState() {
@@ -116,6 +119,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       );
 
       setState(() => _order = _order.copyWith(status: status));
+      _timelineKey.currentState?.refresh();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Статус обновлён')));
@@ -398,6 +402,12 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
               trailing: it.product.inStock ? const Icon(Icons.check) : const Icon(Icons.close),
             );
           }),
+
+          const SizedBox(height: 16),
+          const Divider(),
+          const SizedBox(height: 12),
+
+          OrderTimelineSection(key: _timelineKey, orderId: _order.id),
 
           const SizedBox(height: 16),
           const Divider(),

@@ -114,4 +114,9 @@ class OrdersRepository {
     final resp = await api.dio.get('/gw/auth/admin/$customerId');
     return CustomerInfo.fromJson(asJsonMap(resp.data));
   }
+
+  Future<OrderEventsResponse> getOrderEvents({required int orderId}) async {
+    final resp = await api.dio.get('/gw/order/admin/orders/$orderId/events');
+    return OrderEventsResponse.fromJson(asJsonMap(resp.data));
+  }
 }
