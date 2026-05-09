@@ -34,7 +34,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   CustomerInfo? _customer;
   bool _customerLoading = false;
 
+  final Set<int> _itemBusy = <int>{};
+
   final _timelineKey = GlobalKey<OrderTimelineSectionState>();
+
+  bool get _itemsEditable {
+    final s = _order.status.toLowerCase();
+    return s == 'paid' || s == 'processing';
+  }
 
   @override
   void initState() {
@@ -261,6 +268,101 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     await _refundOrder(amount: result.amount, reason: result.reason);
   }
 
+  Future<void> _changeItemQty(OrderItem item, int newQty) async {
+    if (newQty < 1) return;
+    if (_itemBusy.contains(item.id)) return;
+    setState(() => _itemBusy.add(item.id));
+    try {
+      final repo = context.read<OrdersRepository>();
+      final res = await repo.updateItemQty(
+        orderId: _order.id,
+        itemId: item.id,
+        qty: newQty,
+      );
+      if (!mounted) return;
+      final updatedItems = _order.items
+          .map((it) => it.id == item.id
+              ? it.copyWith(
+                  qty: res.newQty ?? newQty,
+                  total: res.newTotal.toStringAsFixed(2),
+                )
+              : it)
+          .toList();
+      setState(() {
+        _order = _order.copyWith(
+          items: updatedItems,
+          totalAmount: (res.subtotal + res.deliverySum).toStringAsFixed(2),
+        );
+      });
+      _timelineKey.currentState?.refresh();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось изменить количество')),
+      );
+    } finally {
+      if (mounted) setState(() => _itemBusy.remove(item.id));
+    }
+  }
+
+  Future<void> _removeItem(OrderItem item) async {
+    if (_itemBusy.contains(item.id)) return;
+    if (_order.items.length <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Нельзя удалить последний товар. Отмените заказ.'),
+        ),
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Удалить товар?'),
+        content: Text(item.product.name ?? 'Товар ${item.productId}'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Нет'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    if (!mounted) return;
+
+    setState(() => _itemBusy.add(item.id));
+    try {
+      final repo = context.read<OrdersRepository>();
+      final res = await repo.removeItem(
+        orderId: _order.id,
+        itemId: item.id,
+      );
+      if (!mounted) return;
+      final updatedItems =
+          _order.items.where((it) => it.id != item.id).toList();
+      setState(() {
+        _order = _order.copyWith(
+          items: updatedItems,
+          totalAmount: (res.subtotal + res.deliverySum).toStringAsFixed(2),
+        );
+      });
+      _timelineKey.currentState?.refresh();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось удалить товар')),
+      );
+    } finally {
+      if (mounted) setState(() => _itemBusy.remove(item.id));
+    }
+  }
+
   Future<void> _refundOrder({required double amount, required String reason}) async {
     setState(() {
       _actionLoading = true;
@@ -409,8 +511,24 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
               ),
             ],
           ),
+          if (!_itemsEditable) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Редактирование доступно только в статусах "Оплачен" и "В обработке"',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
-          ...items.map((it) => OrderItemCard(item: it)),
+          ...items.map((it) => OrderItemCard(
+                item: it,
+                editable: _itemsEditable,
+                busy: _itemBusy.contains(it.id),
+                onQtyChange: (newQty) => _changeItemQty(it, newQty),
+                onRemove: () => _removeItem(it),
+              )),
 
           const SizedBox(height: 16),
           const Divider(),

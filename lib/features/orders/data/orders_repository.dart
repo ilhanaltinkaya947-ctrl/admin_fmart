@@ -119,4 +119,26 @@ class OrdersRepository {
     final resp = await api.dio.get('/gw/order/admin/orders/$orderId/events');
     return OrderEventsResponse.fromJson(asJsonMap(resp.data));
   }
+
+  Future<OrderItemEditResult> updateItemQty({
+    required int orderId,
+    required int itemId,
+    required int qty,
+  }) async {
+    final resp = await api.dio.patch(
+      '/gw/order/admin/orders/$orderId/items/$itemId',
+      data: {'qty': qty},
+    );
+    return OrderItemEditResult.fromJson(asJsonMap(resp.data));
+  }
+
+  Future<OrderItemEditResult> removeItem({
+    required int orderId,
+    required int itemId,
+  }) async {
+    final resp = await api.dio.delete(
+      '/gw/order/admin/orders/$orderId/items/$itemId',
+    );
+    return OrderItemEditResult.fromJson(asJsonMap(resp.data));
+  }
 }

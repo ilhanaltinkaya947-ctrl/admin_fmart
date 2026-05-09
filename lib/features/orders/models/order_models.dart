@@ -109,29 +109,35 @@ class Order {
         .toList(),
   );
 
-  Order copyWith({String? status}) => Order(
-    id: id,
-    customerId: customerId,
-    status: status ?? this.status,
-    totalAmount: totalAmount,
-    deliverySum: deliverySum,
-    shippingLat: shippingLat,
-    shippingLng: shippingLng,
-    storeId: storeId,
-    storeName: storeName,
-    deliveryAddress: deliveryAddress,
-    customerComment: customerComment,
-    paymentMethod: paymentMethod,
-    isPromo: isPromo,
-    createdAt: createdAt,
-    updatedAt: updatedAt,
-    items: items,
-  );
+  Order copyWith({
+    String? status,
+    String? totalAmount,
+    List<OrderItem>? items,
+  }) =>
+      Order(
+        id: id,
+        customerId: customerId,
+        status: status ?? this.status,
+        totalAmount: totalAmount ?? this.totalAmount,
+        deliverySum: deliverySum,
+        shippingLat: shippingLat,
+        shippingLng: shippingLng,
+        storeId: storeId,
+        storeName: storeName,
+        deliveryAddress: deliveryAddress,
+        customerComment: customerComment,
+        paymentMethod: paymentMethod,
+        isPromo: isPromo,
+        createdAt: createdAt,
+        updatedAt: updatedAt,
+        items: items ?? this.items,
+      );
 }
 
 
 
 class OrderItem {
+  final int id;
   final int productId;
   final int qty;
   final String price;
@@ -139,6 +145,7 @@ class OrderItem {
   final ProductInfo product;
 
   OrderItem({
+    required this.id,
     required this.productId,
     required this.qty,
     required this.price,
@@ -147,6 +154,7 @@ class OrderItem {
   });
 
   factory OrderItem.fromJson(Map<String, dynamic> j) => OrderItem(
+    id: j['id'] as int? ?? 0,
     productId: (j['product_id'] is int)
         ? (j['product_id'] as int)
         : int.tryParse(j['product_id']?.toString() ?? '0') ?? 0,
@@ -155,6 +163,15 @@ class OrderItem {
     total: j['total']?.toString() ?? '0',
     product: ProductInfo.fromJson((j['product'] as Map?)?.cast<String, dynamic>() ?? {}),
   );
+
+  OrderItem copyWith({int? qty, String? total}) => OrderItem(
+        id: id,
+        productId: productId,
+        qty: qty ?? this.qty,
+        price: price,
+        total: total ?? this.total,
+        product: product,
+      );
 }
 
 class ProductInfo {
@@ -330,6 +347,46 @@ class OrderEvent {
         comment: (j['comment'] as String?)?.trim(),
         createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ??
             DateTime.now(),
+      );
+}
+
+class OrderItemEditResult {
+  final bool ok;
+  final int orderId;
+  final int itemId;
+  final int? newQty;
+  final double newTotal;
+  final double subtotal;
+  final double deliverySum;
+  final bool removed;
+
+  OrderItemEditResult({
+    required this.ok,
+    required this.orderId,
+    required this.itemId,
+    required this.newQty,
+    required this.newTotal,
+    required this.subtotal,
+    required this.deliverySum,
+    required this.removed,
+  });
+
+  static double _toDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString()) ?? 0.0;
+  }
+
+  factory OrderItemEditResult.fromJson(Map<String, dynamic> j) =>
+      OrderItemEditResult(
+        ok: j['ok'] as bool? ?? false,
+        orderId: j['order_id'] as int? ?? 0,
+        itemId: j['item_id'] as int? ?? 0,
+        newQty: j['new_qty'] as int?,
+        newTotal: _toDouble(j['new_total']),
+        subtotal: _toDouble(j['subtotal']),
+        deliverySum: _toDouble(j['delivery_sum']),
+        removed: j['removed'] as bool? ?? false,
       );
 }
 
