@@ -174,6 +174,7 @@ class _AppState extends State<App> {
           BlocProvider(
             create: (_) => AuthCubit(
               tokenStorage: _tokenStorage,
+              authRepository: _authRepo,
             )..bootstrap(),
           ),
           BlocProvider(

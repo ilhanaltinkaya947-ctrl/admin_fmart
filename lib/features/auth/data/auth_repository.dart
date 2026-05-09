@@ -3,13 +3,20 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/api/api_client.dart';
+import '../../../core/api/safe_response.dart';
 import '../../../core/storage/token_storage.dart';
+import '../models/current_user.dart';
 
 class AuthRepository {
   final ApiClient api;
   final TokenStorage tokenStorage;
 
   AuthRepository({required this.api, required this.tokenStorage});
+
+  Future<CurrentUser> me() async {
+    final resp = await api.dio.get('/gw/auth/me');
+    return CurrentUser.fromJson(asJsonMap(resp.data));
+  }
 
   Future<void> login({
     required String phone,
