@@ -15,98 +15,216 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final _phone = TextEditingController();
   final _pass = TextEditingController();
+  final _passFocus = FocusNode();
   bool _loading = false;
+  bool _passVisible = false;
   String? _error;
 
   @override
   void dispose() {
     _phone.dispose();
     _pass.dispose();
+    _passFocus.dispose();
     super.dispose();
   }
 
   Future<void> _login() async {
+    if (_phone.text.trim().isEmpty || _pass.text.isEmpty) {
+      setState(() => _error = 'Введите телефон и пароль');
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
     });
 
     try {
-      debugPrint('[LOGIN] start');
-
       final repo = context.read<AuthRepository>();
       final oneSignal = context.read<OneSignalService>();
-
-      debugPrint('[LOGIN] before osId');
       final osId = await oneSignal.getUserIdSafe();
-      debugPrint('[LOGIN] osId=$osId');
-
-      debugPrint('[LOGIN] before repo.login');
       await repo.login(
         phone: _phone.text.trim(),
         password: _pass.text,
         onesignalUserId: osId,
       );
-      debugPrint('[LOGIN] repo.login done');
-
       if (!mounted) return;
-
-      debugPrint('[LOGIN] before setAuthenticated');
       await context.read<AuthCubit>().setAuthenticated();
-      debugPrint('[LOGIN] setAuthenticated done');
-    } catch (e, st) {
-      debugPrint('[LOGIN] error: $e\n$st');
-      setState(() => _error = 'Не удалось войти. Проверь телефон/пароль.');
+    } catch (e) {
+      debugPrint('[LOGIN] error: $e');
+      setState(() => _error = 'Не удалось войти. Проверь телефон и пароль.');
     } finally {
-      debugPrint('[LOGIN] finally - mounted=$mounted');
       if (mounted) setState(() => _loading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Вход')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          TextField(
-            controller: _phone,
-            keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(
-              labelText: 'Имя пользователя',
-              hintText: 'Имя пользователя',
-              border: OutlineInputBorder(),
+      backgroundColor: theme.colorScheme.surfaceContainerLowest,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Icon(
+                      Icons.storefront_outlined,
+                      size: 40,
+                      color: theme.colorScheme.onPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'F-Mart Admin',
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Войдите в свой аккаунт',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 36),
+                  Card(
+                    margin: EdgeInsets.zero,
+                    elevation: 0,
+                    color: theme.colorScheme.surface,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: BorderSide(
+                        color: theme.colorScheme.outlineVariant,
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        children: [
+                          TextField(
+                            controller: _phone,
+                            keyboardType: TextInputType.phone,
+                            textInputAction: TextInputAction.next,
+                            onSubmitted: (_) => _passFocus.requestFocus(),
+                            decoration: InputDecoration(
+                              labelText: 'Телефон',
+                              hintText: '+7 700 000 0000',
+                              prefixIcon: const Icon(Icons.phone_outlined),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          TextField(
+                            controller: _pass,
+                            focusNode: _passFocus,
+                            obscureText: !_passVisible,
+                            textInputAction: TextInputAction.done,
+                            onSubmitted: (_) => _login(),
+                            decoration: InputDecoration(
+                              labelText: 'Пароль',
+                              prefixIcon: const Icon(Icons.lock_outline),
+                              suffixIcon: IconButton(
+                                icon: Icon(
+                                  _passVisible
+                                      ? Icons.visibility_off_outlined
+                                      : Icons.visibility_outlined,
+                                ),
+                                onPressed: () => setState(
+                                    () => _passVisible = !_passVisible),
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                          if (_error != null) ...[
+                            const SizedBox(height: 12),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade50,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red.shade200),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.error_outline,
+                                      size: 18, color: Colors.red.shade700),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      _error!,
+                                      style: TextStyle(
+                                        color: Colors.red.shade800,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 20),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 52,
+                            child: ElevatedButton(
+                              onPressed: _loading ? null : _login,
+                              style: ElevatedButton.styleFrom(
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              child: _loading
+                                  ? const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Войти',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Доступ только для сотрудников F-Mart',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _pass,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Пароль',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (_error != null) ...[
-            Text(_error!, style: const TextStyle(color: Colors.red)),
-            const SizedBox(height: 12),
-          ],
-          SizedBox(
-            height: 48,
-            child: ElevatedButton(
-              onPressed: _loading ? null : _login,
-              child: _loading
-                  ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-                  : const Text('Войти'),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
