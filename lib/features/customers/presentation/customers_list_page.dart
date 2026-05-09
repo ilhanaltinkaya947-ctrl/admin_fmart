@@ -107,7 +107,9 @@ class _CustomersListPageState extends State<CustomersListPage> {
                     return const Center(child: Text('Клиенты не найдены'));
                   }
 
-                  return ListView.separated(
+                  return RefreshIndicator(
+                    onRefresh: () => ctx.read<CustomersCubit>().refresh(),
+                    child: ListView.separated(
                     controller: _scroll,
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                     itemCount:
@@ -123,6 +125,7 @@ class _CustomersListPageState extends State<CustomersListPage> {
                       final c = state.items[i];
                       return _CustomerTile(customer: c, df: df);
                     },
+                    ),
                   );
                 }
                 return const SizedBox.shrink();

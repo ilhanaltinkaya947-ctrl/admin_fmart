@@ -134,7 +134,10 @@ class _UsersListPageState extends State<UsersListPage> {
                             child: Text('Пользователи не найдены'),
                           );
                         }
-                        return ListView.separated(
+                        return RefreshIndicator(
+                          onRefresh: () =>
+                              ctx.read<UsersCubit>().refresh(),
+                          child: ListView.separated(
                           controller: _scroll,
                           padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                           itemCount: state.items.length +
@@ -156,6 +159,7 @@ class _UsersListPageState extends State<UsersListPage> {
                               onTap: () => _openEdit(u),
                             );
                           },
+                          ),
                         );
                       }
                       return const SizedBox.shrink();

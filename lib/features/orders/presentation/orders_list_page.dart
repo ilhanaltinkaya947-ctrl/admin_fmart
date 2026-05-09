@@ -101,7 +101,10 @@ class _OrdersListPageState extends State<OrdersListPage> {
                     );
                   }
 
-                  return ListView.separated(
+                  return RefreshIndicator(
+                    onRefresh: () =>
+                        ctx.read<OrdersCubit>().refresh(storeId: widget.storeId),
+                    child: ListView.separated(
                     controller: _scroll,
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
                     itemCount:
@@ -150,6 +153,7 @@ class _OrdersListPageState extends State<OrdersListPage> {
                         },
                       );
                     },
+                    ),
                   );
                 }
 
