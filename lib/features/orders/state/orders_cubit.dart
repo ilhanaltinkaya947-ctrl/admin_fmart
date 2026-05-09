@@ -8,6 +8,25 @@ import '../models/order_models.dart';
 
 part 'orders_state.dart';
 
+/// Status code groupings used by the home tabs.
+const _activeStatusCodes = {
+  'paid',
+  'processing',
+  'ready-for-delivery',
+  'delivering',
+};
+
+const _closedStatusCodes = {
+  'delivered',
+  'completed',
+  'canceled',
+  'refunded',
+  'partially-refunded',
+  'payment-failed',
+};
+
+enum OrdersTabPreset { active, closed, all }
+
 class OrdersCubit extends Cubit<OrdersState> {
   final OrdersRepository ordersRepository;
 
@@ -18,6 +37,9 @@ class OrdersCubit extends Cubit<OrdersState> {
   bool _loading = false;
   OrderFilters _filters = OrderFilters.empty;
   Timer? _searchDebounce;
+
+  Map<String, int>? _statusIdByCode;
+  Future<void>? _statusFetch;
 
   OrderFilters get filters => _filters;
 
@@ -51,6 +73,55 @@ class OrdersCubit extends Cubit<OrdersState> {
     if (_storeId != null) {
       await refresh(storeId: _storeId!);
     }
+  }
+
+  /// Switch the orders list to a tab preset. Fetches statuses lazily on
+  /// first call so we can map status codes to ids the backend expects.
+  Future<void> applyTabPreset(OrdersTabPreset preset) async {
+    await _ensureStatusesLoaded();
+    final ids = _idsForPreset(preset);
+    final next = _filters.copyWith(statusIds: ids);
+    if (next == _filters) return;
+    await applyFilters(next);
+  }
+
+  Future<void> _ensureStatusesLoaded() async {
+    if (_statusIdByCode != null) return;
+    if (_statusFetch != null) {
+      await _statusFetch;
+      return;
+    }
+    _statusFetch = _fetchStatuses();
+    try {
+      await _statusFetch;
+    } finally {
+      _statusFetch = null;
+    }
+  }
+
+  Future<void> _fetchStatuses() async {
+    try {
+      final res = await ordersRepository.getOrderStatuses();
+      _statusIdByCode = {for (final s in res.items) s.statusName: s.id};
+    } catch (_) {
+      _statusIdByCode = const {};
+    }
+  }
+
+  List<int> _idsForPreset(OrdersTabPreset preset) {
+    final map = _statusIdByCode ?? const <String, int>{};
+    Iterable<String> codes;
+    switch (preset) {
+      case OrdersTabPreset.active:
+        codes = _activeStatusCodes;
+        break;
+      case OrdersTabPreset.closed:
+        codes = _closedStatusCodes;
+        break;
+      case OrdersTabPreset.all:
+        return const [];
+    }
+    return codes.map((c) => map[c]).whereType<int>().toList();
   }
 
   void setSearchQuery(String q) {
