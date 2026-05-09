@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api/api_client.dart';
 import 'core/api/api_config.dart';
@@ -210,6 +211,17 @@ class _AppState extends State<App> {
             colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFEE6F00)),
             useMaterial3: true,
           ),
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: const [
+            Locale('ru'),
+            Locale('en'),
+            Locale('kk'),
+          ],
+          locale: const Locale('ru'),
           home: BlocListener<AuthCubit, AuthState>(
             listener: (ctx, state) async {
               if (state is Authenticated) {
