@@ -25,6 +25,9 @@ import 'features/stores/state/store_cubit.dart';
 import 'features/orders/data/orders_repository.dart';
 import 'features/orders/state/orders_cubit.dart';
 
+import 'features/users/data/users_repository.dart';
+import 'features/users/state/users_cubit.dart';
+
 class App extends StatefulWidget {
   final OneSignalService oneSignalService;
   const App({super.key, required this.oneSignalService});
@@ -45,6 +48,7 @@ class _AppState extends State<App> {
   late final OrdersRepository _ordersRepo;
   late final DeliveryRepository _deliveryRepo;
   late final CustomersRepository _customersRepo;
+  late final UsersRepository _usersRepo;
 
 
   late final SoundService _sound;
@@ -68,6 +72,7 @@ class _AppState extends State<App> {
     _storesRepo = StoresRepository(api: _api);
     _ordersRepo = OrdersRepository(api: _api);
     _customersRepo = CustomersRepository(api: _api);
+    _usersRepo = UsersRepository(api: _api);
 
     _sound = SoundService();
 
@@ -165,6 +170,7 @@ class _AppState extends State<App> {
         RepositoryProvider.value(value: _storesRepo),
         RepositoryProvider.value(value: _ordersRepo),
         RepositoryProvider.value(value: _customersRepo),
+        RepositoryProvider.value(value: _usersRepo),
         RepositoryProvider.value(value: _prefsStorage),
         RepositoryProvider.value(value: _deliveryRepo),
         RepositoryProvider.value(value: widget.oneSignalService),
@@ -191,6 +197,9 @@ class _AppState extends State<App> {
           ),
           BlocProvider(
             create: (_) => CustomersCubit(repository: _customersRepo),
+          ),
+          BlocProvider(
+            create: (_) => UsersCubit(repository: _usersRepo),
           ),
           BlocProvider(create: (_) => DeliveryCubit(repo: _deliveryRepo))
         ],

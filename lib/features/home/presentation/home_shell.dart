@@ -6,6 +6,7 @@ import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
 import '../../stores/state/store_cubit.dart';
+import '../../users/presentation/users_list_page.dart';
 
 /// Width above which we switch from bottom NavigationBar to side
 /// NavigationRail. iPad portrait is ~810pt; phones are well below 600.
@@ -68,7 +69,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.customers:
         return const CustomersListPage();
       case _Section.users:
-        return const _UsersPlaceholder();
+        return const UsersListPage();
     }
   }
 
@@ -284,38 +285,3 @@ class _RailItem extends StatelessWidget {
   }
 }
 
-class _UsersPlaceholder extends StatelessWidget {
-  const _UsersPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Пользователи')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.admin_panel_settings_outlined,
-                size: 64,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Управление пользователями',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Раздел в разработке. Доступен только администратору.',
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
