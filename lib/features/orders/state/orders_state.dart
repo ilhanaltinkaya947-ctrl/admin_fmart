@@ -20,9 +20,14 @@ final class OrdersFailure extends OrdersState {
 final class OrdersLoaded extends OrdersState {
   final List<Order> items;
   final Pagination pagination;
+  final OrderFilters filters;
 
-  OrdersLoaded({required this.items, required this.pagination});
+  OrdersLoaded({
+    required this.items,
+    required this.pagination,
+    this.filters = OrderFilters.empty,
+  });
 
   @override
-  List<Object?> get props => [items, pagination];
+  List<Object?> get props => [items, pagination, filters];
 }

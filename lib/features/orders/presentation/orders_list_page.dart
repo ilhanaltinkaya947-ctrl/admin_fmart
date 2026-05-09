@@ -7,6 +7,7 @@ import '../../stores/state/store_cubit.dart';
 import '../state/orders_cubit.dart';
 import '../models/order_models.dart';
 import 'order_details_page.dart';
+import 'widgets/order_filter_bar.dart';
 
 class OrdersListPage extends StatefulWidget {
   final int storeId;
@@ -65,62 +66,98 @@ class _OrdersListPageState extends State<OrdersListPage> {
           ),
         ],
       ),
-      body: BlocBuilder<OrdersCubit, OrdersState>(
-        builder: (ctx, state) {
-          if (state is OrdersLoading) {
-            return const Center(child: CircularProgressIndicator());
-          }
+      body: Column(
+        children: [
+          const OrderFilterBar(),
+          Expanded(
+            child: BlocBuilder<OrdersCubit, OrdersState>(
+              builder: (ctx, state) {
+                if (state is OrdersLoading) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-          if (state is OrdersFailure) {
-            return Center(child: Text(state.message));
-          }
+                if (state is OrdersFailure) {
+                  return Center(child: Text(state.message));
+                }
 
-          if (state is OrdersLoaded) {
-            if (state.items.isEmpty) {
-              return const Center(child: Text('Заказов нет'));
-            }
+                if (state is OrdersLoaded) {
+                  if (state.items.isEmpty) {
+                    return Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Заказов нет'),
+                          if (!state.filters.isEmpty) ...[
+                            const SizedBox(height: 12),
+                            OutlinedButton.icon(
+                              onPressed: () =>
+                                  ctx.read<OrdersCubit>().clearFilters(),
+                              icon: const Icon(Icons.clear),
+                              label: const Text('Сбросить фильтры'),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }
 
-            return ListView.separated(
-              controller: _scroll,
-              padding: const EdgeInsets.all(12),
-              itemCount: state.items.length + (state.pagination.hasNext ? 1 : 0),
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                if (i >= state.items.length) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Center(child: CircularProgressIndicator()),
+                  return ListView.separated(
+                    controller: _scroll,
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                    itemCount:
+                        state.items.length + (state.pagination.hasNext ? 1 : 0),
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (_, i) {
+                      if (i >= state.items.length) {
+                        return const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Center(child: CircularProgressIndicator()),
+                        );
+                      }
+
+                      final Order o = state.items[i];
+                      return ListTile(
+                        title: Text(
+                          'Заказ #${o.id} — ${orderStatusRu(o.status)}',
+                        ),
+                        subtitle: Text(
+                          '${o.deliveryAddress}\n${df.format(o.createdAt.toLocal())}',
+                        ),
+                        isThreeLine: true,
+                        trailing: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text('₸ ${o.totalAmount}'),
+                            Text(
+                              'дост: ₸ ${o.deliverySum}',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                        onTap: () async {
+                          final updated =
+                              await Navigator.of(context).push<Order?>(
+                            MaterialPageRoute(
+                              builder: (_) => OrderDetailsPage(order: o),
+                            ),
+                          );
+                          if (updated != null && context.mounted) {
+                            context
+                                .read<OrdersCubit>()
+                                .updateOrderInList(updated);
+                          }
+                        },
+                      );
+                    },
                   );
                 }
 
-                final Order o = state.items[i];
-                return ListTile(
-                  title: Text('Заказ #${o.id} — ${o.status}'),
-                  subtitle: Text('${o.deliveryAddress}\n${df.format(o.createdAt.toLocal())}'),
-                  isThreeLine: true,
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text('₸ ${o.totalAmount}'),
-                      Text('дост: ₸ ${o.deliverySum}', style: const TextStyle(fontSize: 12)),
-                    ],
-                  ),
-                  onTap: () async {
-                    final updated = await Navigator.of(context).push<Order?>(
-                      MaterialPageRoute(builder: (_) => OrderDetailsPage(order: o)),
-                    );
-                    if (updated != null && context.mounted) {
-                      context.read<OrdersCubit>().updateOrderInList(updated);
-                    }
-                  },
-                );
+                return const SizedBox.shrink();
               },
-            );
-          }
-
-          return const SizedBox.shrink();
-        },
+            ),
+          ),
+        ],
       ),
     );
   }

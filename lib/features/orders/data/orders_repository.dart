@@ -10,14 +10,32 @@ class OrdersRepository {
     required int storeId,
     required int page,
     required int perPage,
+    int? customerId,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+    List<int>? statusIds,
+    String? paymentMethod,
+    String? search,
   }) async {
+    final qp = <String, dynamic>{
+      'store_id': storeId,
+      'page': page,
+      'per_page': perPage,
+    };
+    if (customerId != null) qp['customer_id'] = customerId;
+    if (dateFrom != null) qp['date_from'] = dateFrom.toUtc().toIso8601String();
+    if (dateTo != null) qp['date_to'] = dateTo.toUtc().toIso8601String();
+    if (statusIds != null && statusIds.isNotEmpty) qp['status_ids'] = statusIds;
+    if (paymentMethod != null && paymentMethod.isNotEmpty) {
+      qp['payment_method'] = paymentMethod;
+    }
+    if (search != null && search.trim().isNotEmpty) {
+      qp['search'] = search.trim();
+    }
+
     final resp = await api.dio.get(
       '/gw/order/admin/orders',
-      queryParameters: {
-        'store_id': storeId,
-        'page': page,
-        'per_page': perPage,
-      },
+      queryParameters: qp,
     );
 
     return OrdersPage.fromJson(asJsonMap(resp.data));
