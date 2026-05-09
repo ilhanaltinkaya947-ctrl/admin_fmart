@@ -5,6 +5,7 @@ import '../../auth/state/auth_cubit.dart';
 import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
+import '../../settings/presentation/settings_page.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../users/presentation/users_list_page.dart';
 
@@ -12,7 +13,7 @@ import '../../users/presentation/users_list_page.dart';
 /// NavigationRail. iPad portrait is ~810pt; phones are well below 600.
 const double _kRailBreakpoint = 720;
 
-enum _Section { newOrders, orderHistory, customers, users }
+enum _Section { newOrders, orderHistory, customers, users, settings }
 
 class HomeShell extends StatefulWidget {
   final int storeId;
@@ -54,6 +55,7 @@ class _HomeShellState extends State<HomeShell> {
         break;
       case _Section.customers:
       case _Section.users:
+      case _Section.settings:
         break;
     }
   }
@@ -70,6 +72,8 @@ class _HomeShellState extends State<HomeShell> {
         return const CustomersListPage();
       case _Section.users:
         return const UsersListPage();
+      case _Section.settings:
+        return const SettingsPage();
     }
   }
 
@@ -121,6 +125,11 @@ class _HomeShellState extends State<HomeShell> {
                 icon: Icon(Icons.admin_panel_settings_outlined),
                 selectedIcon: Icon(Icons.admin_panel_settings),
                 label: 'Юзеры',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.settings_outlined),
+                selectedIcon: Icon(Icons.settings),
+                label: 'Настр.',
               ),
             ],
           ),
@@ -202,6 +211,13 @@ class _SideRail extends StatelessWidget {
                 label: 'Пользователи',
                 isSelected: selected == _Section.users,
                 onTap: () => onSelected(_Section.users),
+              ),
+              _RailItem(
+                icon: Icons.settings_outlined,
+                selectedIcon: Icons.settings,
+                label: 'Настройки',
+                isSelected: selected == _Section.settings,
+                onTap: () => onSelected(_Section.settings),
               ),
               const Spacer(),
               const Divider(height: 1),
