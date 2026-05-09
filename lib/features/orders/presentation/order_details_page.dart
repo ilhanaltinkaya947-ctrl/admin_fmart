@@ -6,6 +6,7 @@ import '../data/orders_repository.dart';
 import '../models/order_models.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
+import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
 
 class OrderDetailsPage extends StatefulWidget {
@@ -391,17 +392,25 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           const Divider(),
           const SizedBox(height: 12),
 
-          Text('Товары', style: Theme.of(context).textTheme.titleMedium),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Товары',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              Text(
+                '${items.length} ${_pluralItems(items.length)}',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
-          ...items.map((it) {
-            final name = it.product.name ?? 'Товар ${it.productId}';
-            return ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(name),
-              subtitle: Text('sku: ${it.product.sku} • qty: ${it.qty} • price: ${it.price} • total: ${it.total}'),
-              trailing: it.product.inStock ? const Icon(Icons.check) : const Icon(Icons.close),
-            );
-          }),
+          ...items.map((it) => OrderItemCard(item: it)),
 
           const SizedBox(height: 16),
           const Divider(),
@@ -476,4 +485,12 @@ class _RefundPayload {
   final double amount;
   final String reason;
   _RefundPayload({required this.amount, required this.reason});
+}
+
+String _pluralItems(int n) {
+  final mod10 = n % 10;
+  final mod100 = n % 100;
+  if (mod10 == 1 && mod100 != 11) return 'товар';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'товара';
+  return 'товаров';
 }
