@@ -28,6 +28,21 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
+  /// Strip everything but digits and produce a canonical KZ phone form
+  /// (`+7XXXXXXXXXX`). Backend matches on this exact shape, so we
+  /// normalise client-side instead of relying on whatever the user
+  /// types — handles `8 700 …`, `+7 (700) …`, `77001234567`, etc.
+  String _normalisePhone(String raw) {
+    var digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.startsWith('8') && digits.length == 11) {
+      digits = '7${digits.substring(1)}';
+    }
+    if (digits.length == 10) {
+      digits = '7$digits'; // user typed without country code
+    }
+    return '+$digits';
+  }
+
   Future<void> _login() async {
     if (_phone.text.trim().isEmpty || _pass.text.isEmpty) {
       setState(() => _error = 'Введите телефон и пароль');
@@ -43,7 +58,7 @@ class _LoginPageState extends State<LoginPage> {
       final oneSignal = context.read<OneSignalService>();
       final osId = await oneSignal.getUserIdSafe();
       await repo.login(
-        phone: _phone.text.trim(),
+        phone: _normalisePhone(_phone.text),
         password: _pass.text,
         onesignalUserId: osId,
       );

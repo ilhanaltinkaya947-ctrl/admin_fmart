@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class TokenStorage {
@@ -8,11 +7,8 @@ class TokenStorage {
   static const _kRefresh = 'refresh_token';
 
   Future<void> saveTokens({required String access, required String refresh}) async {
-    debugPrint('[TOKEN] saveTokens start');
     await _s.write(key: _kAccess, value: access);
     await _s.write(key: _kRefresh, value: refresh);
-    debugPrint('[TOKEN] saveTokens done');
-
   }
 
   Future<String?> getAccessToken() => _s.read(key: _kAccess);
