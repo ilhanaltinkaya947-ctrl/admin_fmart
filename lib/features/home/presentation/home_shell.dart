@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../auth/state/auth_cubit.dart';
+import '../../banners/presentation/banners_list_page.dart';
 import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
@@ -13,7 +14,7 @@ import '../../users/presentation/users_list_page.dart';
 /// NavigationRail. iPad portrait is ~810pt; phones are well below 600.
 const double _kRailBreakpoint = 720;
 
-enum _Section { newOrders, orderHistory, customers, users, settings }
+enum _Section { newOrders, orderHistory, customers, users, banners, settings }
 
 class HomeShell extends StatefulWidget {
   final int storeId;
@@ -55,6 +56,7 @@ class _HomeShellState extends State<HomeShell> {
         break;
       case _Section.customers:
       case _Section.users:
+      case _Section.banners:
       case _Section.settings:
         break;
     }
@@ -72,6 +74,8 @@ class _HomeShellState extends State<HomeShell> {
         return const CustomersListPage();
       case _Section.users:
         return const UsersListPage();
+      case _Section.banners:
+        return const BannersListPage();
       case _Section.settings:
         return const SettingsPage();
     }
@@ -212,6 +216,19 @@ class _SideRail extends StatelessWidget {
                 isSelected: selected == _Section.users,
                 onTap: () => onSelected(_Section.users),
               ),
+              // Banners — admin role only. Manager doesn't see this entry.
+              Builder(builder: (ctx) {
+                final auth = ctx.watch<AuthCubit>().state;
+                final isAdmin = auth is Authenticated && auth.user.isAdmin;
+                if (!isAdmin) return const SizedBox.shrink();
+                return _RailItem(
+                  icon: Icons.image_outlined,
+                  selectedIcon: Icons.image,
+                  label: 'Баннеры',
+                  isSelected: selected == _Section.banners,
+                  onTap: () => onSelected(_Section.banners),
+                );
+              }),
               _RailItem(
                 icon: Icons.settings_outlined,
                 selectedIcon: Icons.settings,

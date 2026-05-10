@@ -13,6 +13,8 @@ import 'core/storage/token_storage.dart';
 import 'features/auth/data/auth_repository.dart';
 import 'features/auth/presentation/login_page.dart';
 import 'features/auth/state/auth_cubit.dart';
+import 'features/banners/data/banners_repository.dart';
+import 'features/banners/state/banners_cubit.dart';
 
 import 'features/customers/data/customers_repository.dart';
 import 'features/customers/state/customers_cubit.dart';
@@ -50,6 +52,7 @@ class _AppState extends State<App> {
   late final DeliveryRepository _deliveryRepo;
   late final CustomersRepository _customersRepo;
   late final UsersRepository _usersRepo;
+  late final BannersRepository _bannersRepo;
 
 
   late final SoundService _sound;
@@ -74,6 +77,7 @@ class _AppState extends State<App> {
     _ordersRepo = OrdersRepository(api: _api);
     _customersRepo = CustomersRepository(api: _api);
     _usersRepo = UsersRepository(api: _api);
+    _bannersRepo = BannersRepository(api: _api);
 
     _sound = SoundService();
 
@@ -202,7 +206,8 @@ class _AppState extends State<App> {
           BlocProvider(
             create: (_) => UsersCubit(repository: _usersRepo),
           ),
-          BlocProvider(create: (_) => DeliveryCubit(repo: _deliveryRepo))
+          BlocProvider(create: (_) => DeliveryCubit(repo: _deliveryRepo)),
+          BlocProvider(create: (_) => BannersCubit(repo: _bannersRepo)),
         ],
         child: MaterialApp(
           navigatorKey: _navKey,
