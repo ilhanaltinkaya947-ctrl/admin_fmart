@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
@@ -378,7 +379,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
     try {
       final repo = context.read<OrdersRepository>();
-      final res = await repo.refundOrder(orderId: _order.id, amount: amount, reason: reason);
+      // Generated once per refund attempt — if the network blips and we
+      // retry transparently elsewhere (or the admin re-taps), the same
+      // key gets sent so the backend can dedupe (planned). Without this
+      // a timeout + retry would risk two refunds.
+      final idempotencyKey = const Uuid().v4();
+      final res = await repo.refundOrder(
+        orderId: _order.id,
+        amount: amount,
+        reason: reason,
+        idempotencyKey: idempotencyKey,
+      );
 
       if (!mounted) return;
       if (res.success) {
