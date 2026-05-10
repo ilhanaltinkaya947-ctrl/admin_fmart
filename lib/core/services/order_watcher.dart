@@ -3,9 +3,11 @@ import 'dart:math';
 
 import 'package:admin_fmart/core/services/sound_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../features/orders/data/orders_repository.dart';
 import '../../features/orders/presentation/order_details_page.dart';
+import '../../features/orders/state/orders_cubit.dart';
 import '../storage/prefs_storage.dart';
 import 'new_order_dialog_guard.dart';
 
@@ -125,20 +127,28 @@ class OrderWatcher {
                   // getNewOrders returns NewOrderItem (lightweight summary),
                   // not the full Order that OrderDetailsPage needs. Fetch
                   // the full record by id and push detail. Falls back
-                  // silently if the lookup fails (e.g. the order moved
-                  // out of the visible window).
+                  // to a list refresh if the lookup fails (network
+                  // blip, order moved out of the visible window) — same
+                  // behavior as before this change, so admin always
+                  // sees something when they tap "Открыть".
                   try {
                     final full = await ordersRepository.getOrderById(
                       storeId: storeId,
                       orderId: first.id,
                     );
-                    if (full == null) return;
-                    navigatorKey.currentState?.push(
-                      MaterialPageRoute(
-                        builder: (_) => OrderDetailsPage(order: full),
-                      ),
-                    );
-                  } catch (_) {/* swallow — admin can still find via list */}
+                    if (full != null) {
+                      navigatorKey.currentState?.push(
+                        MaterialPageRoute(
+                          builder: (_) => OrderDetailsPage(order: full),
+                        ),
+                      );
+                      return;
+                    }
+                  } catch (_) {/* fall through to list refresh */}
+                  final fallbackCtx = navigatorKey.currentContext;
+                  if (fallbackCtx != null) {
+                    fallbackCtx.read<OrdersCubit>().refresh(storeId: storeId);
+                  }
                 },
                 child: const Text('Открыть'),
               ),
