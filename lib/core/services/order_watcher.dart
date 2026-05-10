@@ -3,10 +3,9 @@ import 'dart:math';
 
 import 'package:admin_fmart/core/services/sound_service.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../features/orders/data/orders_repository.dart';
-import '../../features/orders/state/orders_cubit.dart';
+import '../../features/orders/presentation/order_details_page.dart';
 import '../storage/prefs_storage.dart';
 import 'new_order_dialog_guard.dart';
 
@@ -20,7 +19,11 @@ class OrderWatcher {
   bool _dialogOpen = false;
 
   DateTime? _sinceUtc;
-  final Set<int> _alreadyNotified = {};
+  // Capped FIFO of recently-shown order ids so we don't double-dialog
+  // on the same order. Bounded so a long shift can't grow the set
+  // unbounded.
+  static const int _alreadyNotifiedCap = 200;
+  final List<int> _alreadyNotified = <int>[];
 
   int _consecutiveFailures = 0;
   DateTime _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -77,6 +80,14 @@ class OrderWatcher {
 
       if (_alreadyNotified.contains(first.id)) return;
       _alreadyNotified.add(first.id);
+      // Trim the oldest entries when we exceed the cap so the list
+      // never grows past _alreadyNotifiedCap during a long shift.
+      if (_alreadyNotified.length > _alreadyNotifiedCap) {
+        _alreadyNotified.removeRange(
+          0,
+          _alreadyNotified.length - _alreadyNotifiedCap,
+        );
+      }
 
       // Coordinate with the OneSignal foreground handler so push + poll
       // don't stack two dialogs on top of each other.
@@ -111,7 +122,23 @@ class OrderWatcher {
                 onPressed: () async {
                   await sound.stop();
                   if (c.mounted) Navigator.of(c).pop();
-                  ctx.read<OrdersCubit>().refresh(storeId: storeId);
+                  // getNewOrders returns NewOrderItem (lightweight summary),
+                  // not the full Order that OrderDetailsPage needs. Fetch
+                  // the full record by id and push detail. Falls back
+                  // silently if the lookup fails (e.g. the order moved
+                  // out of the visible window).
+                  try {
+                    final full = await ordersRepository.getOrderById(
+                      storeId: storeId,
+                      orderId: first.id,
+                    );
+                    if (full == null) return;
+                    navigatorKey.currentState?.push(
+                      MaterialPageRoute(
+                        builder: (_) => OrderDetailsPage(order: full),
+                      ),
+                    );
+                  } catch (_) {/* swallow — admin can still find via list */}
                 },
                 child: const Text('Открыть'),
               ),

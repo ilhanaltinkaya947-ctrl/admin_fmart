@@ -1,3 +1,5 @@
+import 'package:dio/dio.dart';
+
 import '../../../core/api/api_client.dart';
 import '../../../core/api/safe_response.dart';
 import '../models/order_models.dart';
@@ -52,6 +54,24 @@ class OrdersRepository {
     });
   }
 
+  /// Fetch a single order by id via the admin list endpoint's `search`
+  /// param (which matches numeric input against the order id). Used by
+  /// the push-tap path so we can hand a fresh OrderModel to
+  /// OrderDetailsPage instead of just refreshing the list.
+  Future<Order?> getOrderById({
+    required int storeId,
+    required int orderId,
+  }) async {
+    final page = await getOrders(
+      storeId: storeId,
+      page: 1,
+      perPage: 1,
+      search: orderId.toString(),
+    );
+    if (page.items.isEmpty) return null;
+    return page.items.first;
+  }
+
   Future<NewOrdersResponse> getNewOrders({
     required int storeId,
     DateTime? since,
@@ -89,10 +109,16 @@ class OrdersRepository {
     return SimpleActionResponse.fromJson(asJsonMap(resp.data));
   }
 
+  /// Refund an order. [idempotencyKey] should be generated once per
+  /// admin-initiated refund attempt and reused if the call is retried —
+  /// backend does not currently dedupe by this header (planned), but
+  /// sending it now makes server-side dedupe a one-line change later
+  /// and at minimum gives us a per-attempt id in logs / Sentry.
   Future<SimpleActionResponse> refundOrder({
     required int orderId,
     required double amount,
     required String reason,
+    required String idempotencyKey,
   }) async {
     final resp = await api.dio.post(
       '/gw/order/admin/$orderId/refund',
@@ -100,6 +126,7 @@ class OrdersRepository {
         'amount': amount,
         'reason': reason,
       },
+      options: Options(headers: {'Idempotency-Key': idempotencyKey}),
     );
     return SimpleActionResponse.fromJson(asJsonMap(resp.data));
   }
