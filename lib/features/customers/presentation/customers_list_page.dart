@@ -27,6 +27,10 @@ class _CustomersListPageState extends State<CustomersListPage> {
         context.read<CustomersCubit>().loadMore();
       }
     });
+    // Rebuild on every keystroke so the clear-X icon shows/hides reactively.
+    _searchCtrl.addListener(() {
+      if (mounted) setState(() {});
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<CustomersCubit>().ensureLoaded();
     });
@@ -195,6 +199,7 @@ class _CustomerTile extends StatelessWidget {
     final init = (a + b).toUpperCase();
     if (init.isNotEmpty) return init;
     final phone = c.phone.replaceAll(RegExp(r'\D'), '');
-    return phone.isNotEmpty ? phone.substring(phone.length - 2) : '?';
+    if (phone.isEmpty) return '?';
+    return phone.length >= 2 ? phone.substring(phone.length - 2) : phone;
   }
 }

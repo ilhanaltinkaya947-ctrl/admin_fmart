@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:intl/intl.dart';
 
 import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
@@ -8,6 +9,8 @@ import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
 import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
+
+final NumberFormat _money = NumberFormat.decimalPattern('ru');
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -20,11 +23,10 @@ class OrderDetailsPage extends StatefulWidget {
 class _OrderDetailsPageState extends State<OrderDetailsPage> {
   late Order _order;
 
-  // final _statusCtrl = TextEditingController();
   final _reasonCtrl = TextEditingController();
 
-  bool _saving = false;      // для changeStatus
-  bool _actionLoading = false; // для cancel/refund
+  bool _saving = false;
+  bool _actionLoading = false;
   String? _error;
 
   List<OrderStatusDto> _statuses = [];
@@ -33,6 +35,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
   CustomerInfo? _customer;
   bool _customerLoading = false;
+  bool _customerLoadFailed = false;
 
   final Set<int> _itemBusy = <int>{};
 
@@ -64,7 +67,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     final cid = _order.customerId;
     if (cid <= 0) return;
 
-    setState(() => _customerLoading = true);
+    setState(() {
+      _customerLoading = true;
+      _customerLoadFailed = false;
+    });
     try {
       final repo = context.read<OrdersRepository>();
       final info = await repo.getCustomerInfo(customerId: cid);
@@ -72,6 +78,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       if (!mounted) return;
       setState(() => _customer = info);
     } catch (_) {
+      if (mounted) setState(() => _customerLoadFailed = true);
     } finally {
       if (mounted) setState(() => _customerLoading = false);
     }
@@ -97,9 +104,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           _selectedStatus = items.first.statusName;
         }
       });
-    } catch (e, st) {
+    } catch (_) {
       setState(() => _error = 'Не удалось загрузить список статусов');
-      print("$e  ${st.toString()}");
     } finally {
       if (mounted) setState(() => _statusesLoading = false);
     }
@@ -163,12 +169,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       final res = await repo.cancelOrder(orderId: _order.id);
 
       if (!mounted) return;
+      if (res.success) {
+        setState(() => _order = _order.copyWith(status: 'canceled'));
+        _timelineKey.currentState?.refresh();
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Заказ отменён' : 'Не удалось отменить'))),
       );
-
-      // опционально: если хочешь сразу в UI отразить — но лучше, чтобы бэк вернул новый статус.
-      // if (res.success) setState(() => _order = _order.copyWith(status: 'cancelled'));
     } catch (_) {
       setState(() => _error = 'Не удалось отменить заказ');
     } finally {
@@ -374,12 +381,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       final res = await repo.refundOrder(orderId: _order.id, amount: amount, reason: reason);
 
       if (!mounted) return;
+      if (res.success) {
+        final orderTotal = _parseMoney(_order.totalAmount);
+        // If the refunded amount covers the whole order it's a full refund;
+        // otherwise the backend keeps it in partially-refunded.
+        final newStatus = (amount + 0.0001 >= orderTotal) ? 'refunded' : 'partially-refunded';
+        setState(() => _order = _order.copyWith(status: newStatus));
+        _timelineKey.currentState?.refresh();
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Возврат оформлен' : 'Не удалось оформить возврат'))),
       );
-
-      // опционально: если хочешь — меняй статус локально. Но лучше бэк.
-      // if (res.success) setState(() => _order = _order.copyWith(status: 'refunded'));
     } catch (_) {
       setState(() => _error = 'Не удалось оформить возврат');
     } finally {
@@ -418,13 +430,28 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           const SizedBox(height: 12),
           Text('Покупатель', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
-          Text('customer_id: ${_order.customerId}'),
 
           if (_customerLoading) ...[
-            const SizedBox(height: 6),
             const LinearProgressIndicator(minHeight: 2),
+          ] else if (_customerLoadFailed) ...[
+            Row(
+              children: [
+                const Icon(Icons.error_outline, size: 16, color: Colors.orange),
+                const SizedBox(width: 4),
+                const Expanded(
+                  child: Text(
+                    'Не удалось загрузить данные покупателя',
+                    style: TextStyle(color: Colors.orange),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 18),
+                  tooltip: 'Повторить',
+                  onPressed: _loadCustomer,
+                ),
+              ],
+            ),
           ] else ...[
-            const SizedBox(height: 6),
             Text('Имя: ${_customer?.fullName ?? '—'}'),
             Text('Телефон: ${(_customer?.phone.isNotEmpty == true) ? _customer!.phone : '—'}'),
             if ((_customer?.email ?? '').trim().isNotEmpty)
@@ -433,15 +460,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
           const SizedBox(height: 8),
           Text('Адрес: ${_order.deliveryAddress}'),
-          const SizedBox(height: 8),
-          Text('Координаты: lat=${_order.shippingLat}, lng=${_order.shippingLng}'),
           if (_order.customerComment.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text('Комментарий: ${_order.customerComment}'),
           ],
           const SizedBox(height: 12),
-          Text('Сумма: ₸ ${_order.totalAmount}'),
-          Text('Доставка: ₸ ${_order.deliverySum}'),
+          Text('Сумма: ₸ ${_money.format(totalAmount)}'),
+          Text('Доставка: ₸ ${_money.format(_parseMoney(_order.deliverySum))}'),
           const SizedBox(height: 16),
 
           if (selectedStore == null) ...[
@@ -577,7 +602,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           const SizedBox(height: 8),
           TextField(
             controller: _reasonCtrl,
-            decoration: const InputDecoration(labelText: 'reason (опционально)', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: 'Причина (необязательно)', border: OutlineInputBorder()),
           ),
           const SizedBox(height: 12),
           if (_error != null) ...[

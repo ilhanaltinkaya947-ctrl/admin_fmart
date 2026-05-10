@@ -29,7 +29,25 @@ class _StorePickerPageState extends State<StorePickerPage> {
           }
 
           if (state is StoreFailure) {
-            return Center(child: Text(state.message));
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error_outline, size: 48, color: Colors.orange),
+                    const SizedBox(height: 12),
+                    Text(state.message, textAlign: TextAlign.center),
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: () => ctx.read<StoreCubit>().loadStores(),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Повторить'),
+                    ),
+                  ],
+                ),
+              ),
+            );
           }
 
           if (state is StoreListLoaded) {

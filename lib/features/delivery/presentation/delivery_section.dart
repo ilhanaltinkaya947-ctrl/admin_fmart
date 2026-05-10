@@ -1,8 +1,37 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../state/delivery_cubit.dart';
 import '../models/delivery_models.dart';
+
+const Map<String, String> _kYandexStatusRu = {
+  'new': 'Создана',
+  'estimating': 'Расчёт стоимости',
+  'estimating_failed': 'Ошибка расчёта',
+  'ready_for_approval': 'Ожидает подтверждения',
+  'accepted': 'Принята',
+  'performer_lookup': 'Поиск курьера',
+  'performer_draft': 'Курьер назначается',
+  'performer_found': 'Курьер найден',
+  'performer_not_found': 'Курьер не найден',
+  'pickup_arrived': 'Курьер прибыл в магазин',
+  'pickuped': 'Заказ забран',
+  'delivery_arrived': 'Курьер у клиента',
+  'pay_waiting': 'Ожидает оплаты',
+  'delivered': 'Доставлен',
+  'delivered_finish': 'Доставка завершена',
+  'returning': 'Возврат в магазин',
+  'returned': 'Возвращён',
+  'returned_finish': 'Возврат завершён',
+  'failed': 'Не удалась',
+  'cancelled': 'Отменена',
+  'cancelled_with_payment': 'Отменена (оплачено)',
+  'cancelled_by_taxi': 'Отменена курьером',
+};
+
+String _yandexStatusRu(String code) =>
+    _kYandexStatusRu[code.toLowerCase()] ?? code;
 
 class YandexDeliverySection extends StatefulWidget {
   final int orderId;
@@ -73,7 +102,9 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
       ),
       RoutePointDto(
         type: 'destination',
-        coordinates: [widget.shippingLat, widget.shippingLng], // [lon,lat]
+        // Yandex/backend expects [lon, lat] — keep this order in sync with
+        // delivery-service/app/application/api/schemas/delivery.py.
+        coordinates: [widget.shippingLng, widget.shippingLat],
         fullAddress: widget.shippingAddress,
       ),
     ];
@@ -110,10 +141,7 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
       contactName: _name.text.trim().isEmpty ? null : _name.text.trim(),
     );
 
-    print(dto.routePoints.first.coordinates);
-
     await cubit.create(dto);
-    // после create кубит должен перейти в DeliveryReady
   }
 
   @override
@@ -141,11 +169,26 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
                 children: [
                   header,
                   const SizedBox(height: 8),
-                  Text('claim_id: ${st.claimId}'),
-                  Text('status: ${st.status}'),
-                  Text('version: ${st.version}'),
-                  Text('price: ${st.price} ${st.currency}'),
-                  const SizedBox(height: 12),
+                  Text(
+                    'Статус: ${_yandexStatusRu(st.status)}',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  Text('Стоимость: ${st.price} ${st.currency}'),
+                  ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: const EdgeInsets.only(bottom: 4),
+                    title: const Text('Технические детали', style: TextStyle(fontSize: 12)),
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: SelectableText(
+                          'claim_id: ${st.claimId}\nversion: ${st.version}',
+                          style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -178,7 +221,37 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
                   ),
                   if (st.courierLink != null) ...[
                     const SizedBox(height: 8),
-                    SelectableText(st.courierLink!),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: SelectableText(
+                              st.courierLink!,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Скопировать',
+                            icon: const Icon(Icons.copy, size: 18),
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(text: st.courierLink!));
+                              if (!ctx.mounted) return;
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Ссылка скопирована'),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                   ],
                 ],
               );

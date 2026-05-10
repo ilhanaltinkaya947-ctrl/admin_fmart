@@ -1,16 +1,40 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../../core/api/api_config.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../../stores/state/store_cubit.dart';
 
-// Until we wire package_info_plus, hardcode version from pubspec.yaml.
-const _appVersion = '1.0.0';
-const _buildNumber = '1';
-
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  String _appVersion = '—';
+  String _buildNumber = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() {
+        _appVersion = info.version;
+        _buildNumber = info.buildNumber;
+      });
+    } catch (_) {
+      // Leave defaults; not worth surfacing.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -130,7 +154,7 @@ class SettingsPage extends StatelessWidget {
           _SectionHeader('Приложение'),
           _InfoCard(
             children: [
-              _Row('Версия', '$_appVersion ($_buildNumber)'),
+              _Row('Версия', _buildNumber.isEmpty ? _appVersion : '$_appVersion ($_buildNumber)'),
               _Row('Сервер', _displayHost(ApiConfig.baseUrl)),
             ],
           ),

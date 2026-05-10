@@ -246,7 +246,8 @@ class _ProfileCard extends StatelessWidget {
     final init = (a + b).toUpperCase();
     if (init.isNotEmpty) return init;
     final phone = c.phone.replaceAll(RegExp(r'\D'), '');
-    return phone.isNotEmpty ? phone.substring(phone.length - 2) : '?';
+    if (phone.isEmpty) return '?';
+    return phone.length >= 2 ? phone.substring(phone.length - 2) : phone;
   }
 }
 

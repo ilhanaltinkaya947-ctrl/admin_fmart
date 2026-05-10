@@ -24,7 +24,6 @@ class StoreCubit extends Cubit<StoreState> {
     emit(StoreLoading());
 
     final saved = await prefsStorage.getSelectedStoreDto();
-    debugPrint('[STORE] bootstrap saved=$saved');
 
     if (saved != null && saved.storeId != 0 && saved.coordinates.length >= 2) {
       await oneSignalService.setStoreTag(saved.storeId);

@@ -123,7 +123,10 @@ class DeliveryCubit extends Cubit<DeliveryState> {
       final url = await repo.courierUrl(orderId);
       emit(st.copyWith(courierLink: url.link));
     } catch (_) {
-      // не критично
+      // Surface as transient error then go back to the previous Ready state
+      // so the operator sees feedback without losing the claim view.
+      emit(const DeliveryError('Не удалось получить ссылку курьера'));
+      emit(st);
     }
   }
 }
