@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../auth/state/auth_cubit.dart';
 import '../../stores/data/stores_repository.dart';
 import '../../stores/models/store_models.dart';
 import '../data/users_repository.dart';
@@ -176,11 +177,23 @@ class _UserEditPageState extends State<UserEditPage> {
   Widget build(BuildContext context) {
     final title = _isCreate ? 'Новый пользователь' : 'Редактировать пользователя';
 
+    // Self-delete guard: an admin opening their own profile must not
+    // see the trash button. Backend may permit it, after which the app
+    // 401-loops on every subsequent request. Hide the icon entirely
+    // for the current user.
+    final auth = context.watch<AuthCubit>().state;
+    final currentUserId =
+        auth is Authenticated ? auth.user.id : null;
+    final isSelf = !_isCreate &&
+        widget.existing != null &&
+        currentUserId != null &&
+        widget.existing!.id == currentUserId;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
         actions: [
-          if (!_isCreate)
+          if (!_isCreate && !isSelf)
             IconButton(
               tooltip: 'Удалить',
               onPressed: (_saving || _deleting) ? null : _delete,

@@ -62,6 +62,47 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
+  NavigationDestination _phoneDestination(_Section s) {
+    switch (s) {
+      case _Section.newOrders:
+        return const NavigationDestination(
+          icon: Icon(Icons.fiber_new_outlined),
+          selectedIcon: Icon(Icons.fiber_new),
+          label: 'Новые',
+        );
+      case _Section.orderHistory:
+        return const NavigationDestination(
+          icon: Icon(Icons.history_outlined),
+          selectedIcon: Icon(Icons.history),
+          label: 'История',
+        );
+      case _Section.customers:
+        return const NavigationDestination(
+          icon: Icon(Icons.people_outline),
+          selectedIcon: Icon(Icons.people),
+          label: 'Клиенты',
+        );
+      case _Section.users:
+        return const NavigationDestination(
+          icon: Icon(Icons.admin_panel_settings_outlined),
+          selectedIcon: Icon(Icons.admin_panel_settings),
+          label: 'Юзеры',
+        );
+      case _Section.banners:
+        return const NavigationDestination(
+          icon: Icon(Icons.image_outlined),
+          selectedIcon: Icon(Icons.image),
+          label: 'Баннеры',
+        );
+      case _Section.settings:
+        return const NavigationDestination(
+          icon: Icon(Icons.settings_outlined),
+          selectedIcon: Icon(Icons.settings),
+          label: 'Настр.',
+        );
+    }
+  }
+
   Widget _bodyFor(_Section s) {
     switch (s) {
       case _Section.newOrders:
@@ -104,37 +145,35 @@ class _HomeShellState extends State<HomeShell> {
           );
         }
 
+        // Phone bottom nav. The `_Section` enum may have more values than
+        // we want to show on phone (e.g. Banners, admin-only). We compute
+        // the visible-section list per role and map index↔section through
+        // it so NavigationBar's selectedIndex never falls outside its
+        // destinations and we don't show non-applicable items to managers.
+        final auth = context.watch<AuthCubit>().state;
+        final isAdmin = auth is Authenticated && auth.user.isAdmin;
+
+        final visibleSections = <_Section>[
+          _Section.newOrders,
+          _Section.orderHistory,
+          _Section.customers,
+          _Section.users,
+          if (isAdmin) _Section.banners,
+          _Section.settings,
+        ];
+
+        final selectedIndex = visibleSections.indexOf(_section);
+        // If somehow the current section isn't visible (e.g. role flipped
+        // mid-session), fall back to the first one to avoid an assertion.
+        final safeIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
         return Scaffold(
           body: body,
           bottomNavigationBar: NavigationBar(
-            selectedIndex: _section.index,
-            onDestinationSelected: (i) => _select(_Section.values[i]),
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.fiber_new_outlined),
-                selectedIcon: Icon(Icons.fiber_new),
-                label: 'Новые',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.history_outlined),
-                selectedIcon: Icon(Icons.history),
-                label: 'История',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.people_outline),
-                selectedIcon: Icon(Icons.people),
-                label: 'Клиенты',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.admin_panel_settings_outlined),
-                selectedIcon: Icon(Icons.admin_panel_settings),
-                label: 'Юзеры',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.settings_outlined),
-                selectedIcon: Icon(Icons.settings),
-                label: 'Настр.',
-              ),
+            selectedIndex: safeIndex,
+            onDestinationSelected: (i) => _select(visibleSections[i]),
+            destinations: [
+              for (final s in visibleSections) _phoneDestination(s),
             ],
           ),
         );

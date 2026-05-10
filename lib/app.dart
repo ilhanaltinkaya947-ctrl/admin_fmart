@@ -4,6 +4,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api/api_client.dart';
 import 'core/api/api_config.dart';
+import 'core/services/new_order_dialog_guard.dart';
 import 'core/services/onesignal_service.dart';
 import 'core/services/order_watcher.dart';
 import 'core/services/sound_service.dart';
@@ -95,6 +96,10 @@ class _AppState extends State<App> {
 
   void _setupOneSignalForegroundHandler() {
     widget.oneSignalService.onForegroundNotification = (data) async {
+      // Coordinate with OrderWatcher so push + poll don't stack
+      // two new-order dialogs on top of each other.
+      if (!newOrderDialogGuard.tryAcquire()) return;
+
       // В foreground можно сразу играть звук и обновляться.
       await _sound.ring();
 
@@ -102,9 +107,12 @@ class _AppState extends State<App> {
       final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
 
       final ctx = _navKey.currentContext;
-      if (ctx == null) return;
+      if (ctx == null) {
+        newOrderDialogGuard.release();
+        return;
+      }
 
-      // покажем диалог
+      try {
       await showDialog(
         context: ctx,
         barrierDismissible: false,
@@ -134,6 +142,10 @@ class _AppState extends State<App> {
           ],
         ),
       );
+      } finally {
+        await _sound.stop(); // safety: catches OS-level dismissal
+        newOrderDialogGuard.release();
+      }
     };
   }
 

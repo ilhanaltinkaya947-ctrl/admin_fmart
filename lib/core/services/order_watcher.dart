@@ -8,6 +8,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../features/orders/data/orders_repository.dart';
 import '../../features/orders/state/orders_cubit.dart';
 import '../storage/prefs_storage.dart';
+import 'new_order_dialog_guard.dart';
 
 class OrderWatcher {
   final PrefsStorage prefsStorage;
@@ -77,10 +78,17 @@ class OrderWatcher {
       if (_alreadyNotified.contains(first.id)) return;
       _alreadyNotified.add(first.id);
 
+      // Coordinate with the OneSignal foreground handler so push + poll
+      // don't stack two dialogs on top of each other.
+      if (!newOrderDialogGuard.tryAcquire()) return;
+
       await sound.ring();
 
       final ctx = navigatorKey.currentContext;
-      if (ctx == null) return;
+      if (ctx == null) {
+        newOrderDialogGuard.release();
+        return;
+      }
 
       _dialogOpen = true;
 
@@ -112,6 +120,8 @@ class OrderWatcher {
         );
       } finally {
         _dialogOpen = false;
+        await sound.stop(); // catches OS-level dismissal too
+        newOrderDialogGuard.release();
       }
     } catch (e, st) {
       _consecutiveFailures++;
