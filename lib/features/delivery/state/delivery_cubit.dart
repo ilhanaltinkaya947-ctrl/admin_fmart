@@ -16,6 +16,12 @@ class DeliveryCubit extends Cubit<DeliveryState> {
 
   DeliveryCubit({required this.repo}) : super(const DeliveryIdle());
 
+  /// Wipe in-memory state on logout so the next admin doesn't see the
+  /// previous user's pending delivery claim view.
+  void reset() {
+    emit(const DeliveryIdle());
+  }
+
   // String newRequestId() => _uuid.v4();
 
   final _rng = Random.secure();

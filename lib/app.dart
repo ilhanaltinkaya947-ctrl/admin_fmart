@@ -27,6 +27,7 @@ import 'features/stores/presentation/store_picker_page.dart';
 import 'features/stores/state/store_cubit.dart';
 
 import 'features/orders/data/orders_repository.dart';
+import 'features/orders/presentation/order_details_page.dart';
 import 'features/orders/state/orders_cubit.dart';
 
 import 'features/users/data/users_repository.dart';
@@ -132,9 +133,30 @@ class _AppState extends State<App> {
                 await _sound.stop();
                 if (c.mounted) Navigator.of(c).pop();
 
-                // просто инициируем перезагрузку списка
                 final storeId = await _prefsStorage.getSelectedStoreId();
                 if (storeId == null) return;
+
+                // If the push payload included an order_id, jump straight
+                // to that order's detail. Falls back to refreshing the
+                // list when the id is missing or the lookup fails — same
+                // behavior as before.
+                if (orderId != null) {
+                  try {
+                    final order = await _ordersRepo.getOrderById(
+                      storeId: storeId,
+                      orderId: orderId,
+                    );
+                    if (order != null) {
+                      _navKey.currentState?.push(
+                        MaterialPageRoute(
+                          builder: (_) => OrderDetailsPage(order: order),
+                        ),
+                      );
+                      return;
+                    }
+                  } catch (_) {/* fall through to list refresh */}
+                }
+
                 if (ctx.mounted) ctx.read<OrdersCubit>().refresh(storeId: storeId);
               },
               child: const Text('Открыть'),
@@ -246,6 +268,18 @@ class _AppState extends State<App> {
               }
               if (state is Unauthenticated) {
                 await _stopWatcher();
+                // Wipe user-scoped state so the next admin signing in
+                // on the same device doesn't briefly see the previous
+                // user's orders / customer list / selected store, etc.
+                // Tokens are already cleared by AuthCubit.logout(); this
+                // clears the in-memory cubits + the persisted store
+                // selection.
+                await ctx.read<StoreCubit>().clearStore();
+                ctx.read<OrdersCubit>().reset();
+                ctx.read<CustomersCubit>().reset();
+                ctx.read<UsersCubit>().reset();
+                ctx.read<BannersCubit>().reset();
+                ctx.read<DeliveryCubit>().reset();
               }
             },
             child: const _RootRouter(),

@@ -43,6 +43,19 @@ class OrdersCubit extends Cubit<OrdersState> {
 
   OrderFilters get filters => _filters;
 
+  /// Wipe in-memory state — used by AuthCubit logout listener so the
+  /// next admin signing in on this device doesn't briefly see the
+  /// previous user's orders.
+  void reset() {
+    _searchDebounce?.cancel();
+    _storeId = null;
+    _filters = OrderFilters.empty;
+    _loading = false;
+    _statusIdByCode = null;
+    _statusFetch = null;
+    emit(OrdersInitial());
+  }
+
   Future<void> ensureLoaded({required int storeId}) async {
     if (_storeId == storeId && state is OrdersLoaded) return;
     await refresh(storeId: storeId);

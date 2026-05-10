@@ -18,6 +18,15 @@ class UsersCubit extends Cubit<UsersState> {
   bool _loading = false;
   Timer? _debounce;
 
+  /// Wipe in-memory state on logout so the next admin doesn't see the
+  /// previous user's staff list.
+  void reset() {
+    _debounce?.cancel();
+    _query = '';
+    _loading = false;
+    emit(UsersInitial());
+  }
+
   Future<void> ensureLoaded() async {
     if (state is UsersLoaded) return;
     await refresh();

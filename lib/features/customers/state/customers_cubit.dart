@@ -19,6 +19,15 @@ class CustomersCubit extends Cubit<CustomersState> {
   bool _loading = false;
   Timer? _debounce;
 
+  /// Wipe in-memory state on logout so the next admin doesn't see the
+  /// previous user's customer list.
+  void reset() {
+    _debounce?.cancel();
+    _query = '';
+    _loading = false;
+    emit(CustomersInitial());
+  }
+
   Future<void> ensureLoaded() async {
     if (state is CustomersLoaded) return;
     await refresh();

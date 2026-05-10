@@ -31,6 +31,13 @@ class BannersCubit extends Cubit<BannersState> {
   final BannersRepository repo;
   BannersCubit({required this.repo}) : super(const BannersInitial());
 
+  /// Wipe in-memory state on logout — banners are admin-only, so the
+  /// next manager (or anyone signing in non-admin) shouldn't briefly
+  /// see the previous admin's loaded list.
+  void reset() {
+    emit(const BannersInitial());
+  }
+
   Future<void> load() async {
     emit(const BannersLoading());
     try {
