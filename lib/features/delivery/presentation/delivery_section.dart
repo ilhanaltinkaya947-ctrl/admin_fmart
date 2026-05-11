@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../state/delivery_cubit.dart';
 import '../models/delivery_models.dart';
+import 'courier_map_page.dart';
 
 const Map<String, String> _kYandexStatusRu = {
   'new': 'Создана',
@@ -220,6 +221,28 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
                     ],
                   ),
                   if (st.courierLink != null) ...[
+                    const SizedBox(height: 8),
+                    // Primary action: open the courier's live position on a
+                    // Yandex map inside the app. Matches the customer-app
+                    // pattern (CourierTrackingPage) so admin sees the same
+                    // view the customer does.
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.map_outlined),
+                        label: const Text('Открыть карту курьера'),
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => CourierMapPage(
+                                url: st.courierLink!,
+                                orderId: widget.orderId,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     Container(
                       padding: const EdgeInsets.all(8),

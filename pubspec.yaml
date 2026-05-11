@@ -30,6 +30,9 @@ dependencies:
 
   sentry_flutter: ^9.0.0
   package_info_plus: ^8.0.0
+  # In-app WebView for the Yandex courier sharing URL on order detail —
+  # so admin can watch the courier on the map without leaving the app.
+  webview_flutter: ^4.7.0
 
 
 dev_dependencies:
