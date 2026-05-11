@@ -4,6 +4,8 @@ import 'package:intl/intl.dart';
 
 import '../../../core/format/money.dart';
 import '../../orders/models/order_models.dart';
+import '../data/customers_repository.dart';
+import '../models/customer_note.dart';
 import '../../orders/presentation/order_details_page.dart';
 import '../data/customers_repository.dart';
 import '../state/customer_detail_cubit.dart';
@@ -117,6 +119,8 @@ class _Body extends StatelessWidget {
           totalSpend: stats.totalSpend,
           lastOrderAt: stats.lastOrderAt,
         ),
+        const SizedBox(height: 16),
+        _NotesSection(customerId: customer.id),
         const SizedBox(height: 16),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -339,4 +343,223 @@ _AggregateStats _aggregateStats(List<Order> orders) {
     }
   }
   return _AggregateStats(totalSpend: total, lastOrderAt: last);
+}
+
+/// Staff-internal notes section on the customer detail page. Loads its
+/// own data so the surrounding screen doesn't have to pass anything in,
+/// and so it can refresh independently after a save/delete.
+class _NotesSection extends StatefulWidget {
+  final int customerId;
+  const _NotesSection({required this.customerId});
+
+  @override
+  State<_NotesSection> createState() => _NotesSectionState();
+}
+
+class _NotesSectionState extends State<_NotesSection> {
+  List<CustomerNote> _notes = const [];
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final repo = context.read<CustomersRepository>();
+      final list = await repo.listNotes(widget.customerId);
+      if (!mounted) return;
+      setState(() => _notes = list);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Не удалось загрузить заметки');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _addNote() async {
+    final controller = TextEditingController();
+    final body = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Новая заметка'),
+        content: TextField(
+          controller: controller,
+          maxLines: 4,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Внутренний комментарий…',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(c).pop(controller.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (body == null || body.isEmpty) return;
+
+    try {
+      final repo = context.read<CustomersRepository>();
+      final created = await repo.createNote(widget.customerId, body);
+      if (!mounted) return;
+      setState(() => _notes = [created, ..._notes]);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось сохранить заметку')),
+      );
+    }
+  }
+
+  Future<void> _delete(CustomerNote note) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Удалить заметку?'),
+        content: const Text('Действие необратимо.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Нет'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red.shade600,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      final repo = context.read<CustomersRepository>();
+      await repo.deleteNote(widget.customerId, note.id);
+      if (!mounted) return;
+      setState(() => _notes = _notes.where((n) => n.id != note.id).toList());
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось удалить')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final df = DateFormat('dd.MM.yyyy HH:mm');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Row(
+            children: [
+              Text(
+                'Заметки',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              if (_notes.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Text(
+                  '(${_notes.length})',
+                  style: TextStyle(color: Colors.grey.shade600),
+                ),
+              ],
+              const Spacer(),
+              IconButton(
+                tooltip: 'Добавить',
+                icon: const Icon(Icons.add),
+                onPressed: _addNote,
+              ),
+            ],
+          ),
+        ),
+        if (_loading) const LinearProgressIndicator(minHeight: 2),
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Row(
+              children: [
+                Icon(Icons.error_outline, color: Colors.red.shade400, size: 18),
+                const SizedBox(width: 6),
+                Expanded(child: Text(_error!)),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 18),
+                  onPressed: _load,
+                ),
+              ],
+            ),
+          ),
+        if (!_loading && _error == null && _notes.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Text(
+              'Заметок пока нет.',
+              style: TextStyle(color: Colors.grey.shade600),
+            ),
+          ),
+        for (final n in _notes)
+          Card(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+              side: BorderSide(color: Colors.grey.shade300),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(n.body),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Text(
+                        '${df.format(n.createdAt.toLocal())} · #${n.createdBy}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: 'Удалить',
+                        iconSize: 18,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () => _delete(n),
+                        icon: Icon(Icons.delete_outline,
+                            color: Colors.grey.shade600),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }

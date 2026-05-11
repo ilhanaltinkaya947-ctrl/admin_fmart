@@ -2,6 +2,7 @@ import '../../../core/api/api_client.dart';
 import '../../../core/api/safe_response.dart';
 import '../../orders/models/order_models.dart' show CustomerInfo, OrdersPage;
 import '../models/customer_models.dart';
+import '../models/customer_note.dart';
 
 class CustomersRepository {
   final ApiClient api;
@@ -50,5 +51,31 @@ class CustomersRepository {
       },
     );
     return OrdersPage.fromJson(asJsonMap(resp.data));
+  }
+
+  // ---------- Internal customer notes (staff-only) ----------
+
+  Future<List<CustomerNote>> listNotes(int customerId) async {
+    final resp = await api.dio.get('/gw/auth/admin/customers/$customerId/notes');
+    final raw = asJsonMap(resp.data);
+    final items = (raw['items'] as List?) ?? const [];
+    return items
+        .whereType<Map<String, dynamic>>()
+        .map(CustomerNote.fromJson)
+        .toList();
+  }
+
+  Future<CustomerNote> createNote(int customerId, String body) async {
+    final resp = await api.dio.post(
+      '/gw/auth/admin/customers/$customerId/notes',
+      data: {'body': body},
+    );
+    return CustomerNote.fromJson(asJsonMap(resp.data));
+  }
+
+  Future<void> deleteNote(int customerId, int noteId) async {
+    await api.dio.delete(
+      '/gw/auth/admin/customers/$customerId/notes/$noteId',
+    );
   }
 }
