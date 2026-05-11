@@ -147,6 +147,39 @@ class OrdersRepository {
     return OrderEventsResponse.fromJson(asJsonMap(resp.data));
   }
 
+  /// CSV export of orders matching the current filters. Backend caps at
+  /// 10 000 rows. Returns the raw CSV text; caller decides what to do
+  /// with it (clipboard, share sheet, etc).
+  Future<String> exportOrdersCsv({
+    required int storeId,
+    int? customerId,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+    List<int>? statusIds,
+    String? paymentMethod,
+    String? search,
+  }) async {
+    final qp = <String, dynamic>{'store_id': storeId};
+    if (customerId != null) qp['customer_id'] = customerId;
+    if (dateFrom != null) qp['date_from'] = dateFrom.toUtc().toIso8601String();
+    if (dateTo != null) qp['date_to'] = dateTo.toUtc().toIso8601String();
+    if (statusIds != null && statusIds.isNotEmpty) qp['status_ids'] = statusIds;
+    if (paymentMethod != null && paymentMethod.isNotEmpty) {
+      qp['payment_method'] = paymentMethod;
+    }
+    if (search != null && search.trim().isNotEmpty) {
+      qp['search'] = search.trim();
+    }
+
+    final resp = await api.dio.get(
+      '/gw/order/admin/orders/export',
+      queryParameters: qp,
+      // Tell dio not to JSON-parse the CSV body.
+      options: Options(responseType: ResponseType.plain),
+    );
+    return resp.data as String;
+  }
+
   /// All refunds applied to [orderId], newest first. Used by the admin
   /// order-detail page to show partial-refund history when more than
   /// one refund has been applied.

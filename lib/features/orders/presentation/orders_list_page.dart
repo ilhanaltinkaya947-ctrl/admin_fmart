@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/format/money.dart';
 import '../../auth/state/auth_cubit.dart';
+import '../data/orders_repository.dart';
 import '../../stores/state/store_cubit.dart';
 import '../state/orders_cubit.dart';
 import '../models/order_models.dart';
@@ -39,6 +41,50 @@ class _OrdersListPageState extends State<OrdersListPage> {
     super.dispose();
   }
 
+  /// Pull a CSV of orders matching the current cubit filters, copy it
+  /// to the clipboard, and toast the row count. Pragmatic for v1 —
+  /// admin pastes into Excel/Google Sheets. share_plus / file save can
+  /// come post-launch if the row count outgrows clipboard.
+  Future<void> _exportCsv(BuildContext ctx) async {
+    final cubit = ctx.read<OrdersCubit>();
+    final repo = ctx.read<OrdersRepository>();
+    final messenger = ScaffoldMessenger.of(ctx);
+
+    messenger.showSnackBar(const SnackBar(
+      content: Row(children: [
+        SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2)),
+        SizedBox(width: 12),
+        Text('Формирование экспорта…'),
+      ]),
+      duration: Duration(seconds: 10),
+    ));
+
+    try {
+      final f = cubit.filters;
+      final csv = await repo.exportOrdersCsv(
+        storeId: widget.storeId,
+        dateFrom: f.dateFrom,
+        dateTo: f.dateTo,
+        statusIds: f.statusIds,
+        search: f.search,
+      );
+      final rowCount = csv.split('\n').length - 1; // minus header
+      await Clipboard.setData(ClipboardData(text: csv));
+      messenger.clearSnackBars();
+      messenger.showSnackBar(SnackBar(
+        content: Text('CSV скопирован ($rowCount строк). Вставьте в Excel.'),
+      ));
+    } catch (_) {
+      messenger.clearSnackBars();
+      messenger.showSnackBar(const SnackBar(
+        content: Text('Не удалось выгрузить экспорт'),
+      ));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final df = DateFormat('dd.MM.yyyy HH:mm');
@@ -50,6 +96,12 @@ class _OrdersListPageState extends State<OrdersListPage> {
           IconButton(
             onPressed: () => context.read<OrdersCubit>().refresh(storeId: widget.storeId),
             icon: const Icon(Icons.refresh),
+            tooltip: 'Обновить',
+          ),
+          IconButton(
+            onPressed: () => _exportCsv(context),
+            icon: const Icon(Icons.file_download_outlined),
+            tooltip: 'Экспорт CSV',
           ),
           PopupMenuButton<String>(
             onSelected: (v) async {
