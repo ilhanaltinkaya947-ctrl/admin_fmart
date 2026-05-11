@@ -33,6 +33,9 @@ dependencies:
   # In-app WebView for the Yandex courier sharing URL on order detail —
   # so admin can watch the courier on the map without leaving the app.
   webview_flutter: ^4.7.0
+  # Skeleton placeholders for list loading states — gives a perceived
+  # speed boost over a bare spinner. Matches the customer app's pattern.
+  shimmer: ^3.0.0
 
 
 dev_dependencies:

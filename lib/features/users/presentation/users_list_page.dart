@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/skeleton_list.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../models/user_models.dart';
 import '../state/users_cubit.dart';
@@ -110,7 +112,7 @@ class _UsersListPageState extends State<UsersListPage> {
                   child: BlocBuilder<UsersCubit, UsersState>(
                     builder: (ctx, state) {
                       if (state is UsersLoading) {
-                        return const Center(child: CircularProgressIndicator());
+                        return const SkeletonList();
                       }
                       if (state is UsersFailure) {
                         return Center(
@@ -130,8 +132,12 @@ class _UsersListPageState extends State<UsersListPage> {
                       }
                       if (state is UsersLoaded) {
                         if (state.items.isEmpty) {
-                          return const Center(
-                            child: Text('Пользователи не найдены'),
+                          return EmptyState(
+                            icon: Icons.admin_panel_settings_outlined,
+                            title: 'Пользователи не найдены',
+                            subtitle: _searchCtrl.text.isEmpty
+                                ? 'Создайте первого менеджера или администратора'
+                                : 'Попробуйте другой запрос',
                           );
                         }
                         return RefreshIndicator(

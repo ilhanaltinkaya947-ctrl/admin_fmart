@@ -4,6 +4,8 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/format/money.dart';
+import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/skeleton_list.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../data/orders_repository.dart';
 import '../../stores/state/store_cubit.dart';
@@ -126,7 +128,7 @@ class _OrdersListPageState extends State<OrdersListPage> {
             child: BlocBuilder<OrdersCubit, OrdersState>(
               builder: (ctx, state) {
                 if (state is OrdersLoading) {
-                  return const Center(child: CircularProgressIndicator());
+                  return const SkeletonList();
                 }
 
                 if (state is OrdersFailure) {
@@ -153,22 +155,20 @@ class _OrdersListPageState extends State<OrdersListPage> {
 
                 if (state is OrdersLoaded) {
                   if (state.items.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text('Заказов нет'),
-                          if (!state.filters.isEmpty) ...[
-                            const SizedBox(height: 12),
-                            OutlinedButton.icon(
+                    return EmptyState(
+                      icon: Icons.receipt_long_outlined,
+                      title: 'Заказов нет',
+                      subtitle: state.filters.isEmpty
+                          ? 'Здесь появятся заказы покупателей'
+                          : 'Под текущие фильтры ничего не нашлось',
+                      action: state.filters.isEmpty
+                          ? null
+                          : OutlinedButton.icon(
                               onPressed: () =>
                                   ctx.read<OrdersCubit>().clearFilters(),
                               icon: const Icon(Icons.clear),
                               label: const Text('Сбросить фильтры'),
                             ),
-                          ],
-                        ],
-                      ),
                     );
                   }
 

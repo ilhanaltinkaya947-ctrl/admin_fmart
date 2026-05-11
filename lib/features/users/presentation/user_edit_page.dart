@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../auth/state/auth_cubit.dart';
@@ -151,6 +152,7 @@ class _UserEditPageState extends State<UserEditPage> {
     );
     if (confirm != true || !mounted) return;
 
+    HapticFeedback.mediumImpact();
     setState(() => _deleting = true);
     try {
       await context.read<UsersRepository>().delete(ex.id);

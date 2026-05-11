@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
@@ -186,6 +187,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
     if (confirm != true) return;
 
+    HapticFeedback.mediumImpact();
     setState(() {
       _actionLoading = true;
       _error = null;
@@ -398,6 +400,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   }
 
   Future<void> _refundOrder({required double amount, required String reason}) async {
+    HapticFeedback.mediumImpact();
     setState(() {
       _actionLoading = true;
       _error = null;

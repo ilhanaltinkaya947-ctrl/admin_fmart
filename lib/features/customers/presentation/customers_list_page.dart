@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/skeleton_list.dart';
 import '../../stores/state/store_cubit.dart';
 import '../models/customer_models.dart';
 import '../state/customers_cubit.dart';
@@ -88,7 +90,7 @@ class _CustomersListPageState extends State<CustomersListPage> {
             child: BlocBuilder<CustomersCubit, CustomersState>(
               builder: (ctx, state) {
                 if (state is CustomersLoading) {
-                  return const Center(child: CircularProgressIndicator());
+                  return const SkeletonList();
                 }
                 if (state is CustomersFailure) {
                   return Center(
@@ -108,7 +110,13 @@ class _CustomersListPageState extends State<CustomersListPage> {
                 }
                 if (state is CustomersLoaded) {
                   if (state.items.isEmpty) {
-                    return const Center(child: Text('Клиенты не найдены'));
+                    return EmptyState(
+                      icon: Icons.people_outline,
+                      title: 'Клиенты не найдены',
+                      subtitle: _searchCtrl.text.isEmpty
+                          ? 'Пока никто не зарегистрировался'
+                          : 'Попробуйте другой запрос',
+                    );
                   }
 
                   return RefreshIndicator(
