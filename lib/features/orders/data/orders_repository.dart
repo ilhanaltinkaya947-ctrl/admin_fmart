@@ -183,6 +183,16 @@ class OrdersRepository {
   /// All refunds applied to [orderId], newest first. Used by the admin
   /// order-detail page to show partial-refund history when more than
   /// one refund has been applied.
+  /// Today's KPIs for the admin dashboard. Returns
+  /// {total, revenue, by_status, tz, as_of}.
+  Future<Map<String, dynamic>> getDashboardToday({required int storeId}) async {
+    final resp = await api.dio.get(
+      '/gw/order/admin/dashboard/today',
+      queryParameters: {'store_id': storeId},
+    );
+    return asJsonMap(resp.data);
+  }
+
   Future<List<RefundHistoryEntry>> getRefundHistory({required int orderId}) async {
     final resp = await api.dio.get('/gw/order/admin/orders/$orderId/refunds');
     final raw = asJsonMap(resp.data);

@@ -9,12 +9,13 @@ import '../../orders/state/orders_cubit.dart';
 import '../../settings/presentation/settings_page.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../users/presentation/users_list_page.dart';
+import 'dashboard_page.dart';
 
 /// Width above which we switch from bottom NavigationBar to side
 /// NavigationRail. iPad portrait is ~810pt; phones are well below 600.
 const double _kRailBreakpoint = 720;
 
-enum _Section { newOrders, orderHistory, customers, users, banners, settings }
+enum _Section { dashboard, newOrders, orderHistory, customers, users, banners, settings }
 
 class HomeShell extends StatefulWidget {
   final int storeId;
@@ -31,7 +32,7 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  _Section _section = _Section.newOrders;
+  _Section _section = _Section.dashboard;
 
   @override
   void initState() {
@@ -54,6 +55,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.orderHistory:
         cubit.applyTabPreset(OrdersTabPreset.closed);
         break;
+      case _Section.dashboard:
       case _Section.customers:
       case _Section.users:
       case _Section.banners:
@@ -64,6 +66,12 @@ class _HomeShellState extends State<HomeShell> {
 
   NavigationDestination _phoneDestination(_Section s) {
     switch (s) {
+      case _Section.dashboard:
+        return const NavigationDestination(
+          icon: Icon(Icons.dashboard_outlined),
+          selectedIcon: Icon(Icons.dashboard),
+          label: 'Сегодня',
+        );
       case _Section.newOrders:
         return const NavigationDestination(
           icon: Icon(Icons.fiber_new_outlined),
@@ -105,6 +113,11 @@ class _HomeShellState extends State<HomeShell> {
 
   Widget _bodyFor(_Section s) {
     switch (s) {
+      case _Section.dashboard:
+        return DashboardPage(
+          storeId: widget.storeId,
+          storeName: widget.storeName,
+        );
       case _Section.newOrders:
       case _Section.orderHistory:
         return OrdersListPage(
@@ -154,6 +167,7 @@ class _HomeShellState extends State<HomeShell> {
         final isAdmin = auth is Authenticated && auth.user.isAdmin;
 
         final visibleSections = <_Section>[
+          _Section.dashboard,
           _Section.newOrders,
           _Section.orderHistory,
           _Section.customers,
@@ -227,6 +241,13 @@ class _SideRail extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 8),
+              _RailItem(
+                icon: Icons.dashboard_outlined,
+                selectedIcon: Icons.dashboard,
+                label: 'Сегодня',
+                isSelected: selected == _Section.dashboard,
+                onTap: () => onSelected(_Section.dashboard),
+              ),
               _RailItem(
                 icon: Icons.fiber_new_outlined,
                 selectedIcon: Icons.fiber_new,
