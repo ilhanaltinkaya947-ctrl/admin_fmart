@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/format/money.dart';
@@ -40,6 +41,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
   final _timelineKey = GlobalKey<OrderTimelineSectionState>();
 
+  // Refund history — populated only when the order has ever been refunded.
+  // Refetched after every refund the admin applies via _openRefundSheet.
+  List<RefundHistoryEntry> _refunds = const [];
+  bool _refundsLoading = false;
+
+  bool get _orderEverRefunded {
+    final s = _order.status.toLowerCase();
+    return s == 'refunded' || s == 'partially-refunded';
+  }
+
   bool get _itemsEditable {
     final s = _order.status.toLowerCase();
     return s == 'paid' || s == 'processing';
@@ -52,6 +63,23 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     _selectedStatus = _order.status; // код
     _loadStatuses();
     _loadCustomer();
+    if (_orderEverRefunded) _loadRefunds();
+  }
+
+  Future<void> _loadRefunds() async {
+    if (_refundsLoading) return;
+    setState(() => _refundsLoading = true);
+    try {
+      final repo = context.read<OrdersRepository>();
+      final list = await repo.getRefundHistory(orderId: _order.id);
+      if (!mounted) return;
+      setState(() => _refunds = list);
+    } catch (_) {
+      // Non-blocking — admin can still issue another refund; we just
+      // skip showing history if the GET fails.
+    } finally {
+      if (mounted) setState(() => _refundsLoading = false);
+    }
   }
 
   @override
@@ -397,6 +425,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
         final newStatus = (amount + 0.0001 >= orderTotal) ? 'refunded' : 'partially-refunded';
         setState(() => _order = _order.copyWith(status: newStatus));
         _timelineKey.currentState?.refresh();
+        // Refetch the history so the just-applied refund row appears
+        // in the RefundHistorySection.
+        _loadRefunds();
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Возврат оформлен' : 'Не удалось оформить возврат'))),
@@ -541,6 +572,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             ],
           ),
 
+          // Append-only refund history — only shows up when the order has
+          // been refunded at least once. Each row shows the amount,
+          // reason, who did it, and when. Useful for audit when multiple
+          // partial refunds happen.
+          if (_orderEverRefunded) ...[
+            const SizedBox(height: 16),
+            _RefundHistorySection(
+              items: _refunds,
+              loading: _refundsLoading,
+            ),
+          ],
+
           const SizedBox(height: 16),
           const Divider(),
           const SizedBox(height: 12),
@@ -662,6 +705,114 @@ String _pluralItems(int n) {
   if (mod10 == 1 && mod100 != 11) return 'товар';
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'товара';
   return 'товаров';
+}
+
+/// Append-only refund history. Reads /admin/orders/{id}/refunds and
+/// renders newest-first. Loading state is a thin progress strip — the
+/// section is non-critical so we never block the page on it.
+class _RefundHistorySection extends StatelessWidget {
+  final List<RefundHistoryEntry> items;
+  final bool loading;
+  const _RefundHistorySection({required this.items, required this.loading});
+
+  @override
+  Widget build(BuildContext context) {
+    final df = DateFormat('dd.MM.yyyy HH:mm');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              'История возвратов',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            if (items.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade100,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '${items.length}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.orange.shade900,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        if (loading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: LinearProgressIndicator(minHeight: 2),
+          ),
+        if (!loading && items.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              'Возвраты пока не зафиксированы.',
+              style: TextStyle(color: Colors.grey.shade600),
+            ),
+          ),
+        for (final r in items)
+          Card(
+            margin: const EdgeInsets.only(top: 8),
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+              side: BorderSide(color: Colors.grey.shade300),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          formatTenge(r.amount),
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.orange.shade900,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        df.format(r.createdAt.toLocal()),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(r.reason),
+                  if (r.createdBy != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Оформил: #${r.createdBy}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 /// Prominent colored status badge at the top of order detail — replaces

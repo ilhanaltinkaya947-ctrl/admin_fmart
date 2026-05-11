@@ -147,6 +147,19 @@ class OrdersRepository {
     return OrderEventsResponse.fromJson(asJsonMap(resp.data));
   }
 
+  /// All refunds applied to [orderId], newest first. Used by the admin
+  /// order-detail page to show partial-refund history when more than
+  /// one refund has been applied.
+  Future<List<RefundHistoryEntry>> getRefundHistory({required int orderId}) async {
+    final resp = await api.dio.get('/gw/order/admin/orders/$orderId/refunds');
+    final raw = asJsonMap(resp.data);
+    final items = (raw['items'] as List?) ?? const [];
+    return items
+        .whereType<Map<String, dynamic>>()
+        .map(RefundHistoryEntry.fromJson)
+        .toList();
+  }
+
   Future<OrderItemEditResult> updateItemQty({
     required int orderId,
     required int itemId,

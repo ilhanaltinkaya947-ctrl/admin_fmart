@@ -443,3 +443,30 @@ class CustomerInfo {
   );
 }
 
+/// One refund row from /admin/orders/{id}/refunds — append-only history
+/// of every refund applied to an order.
+class RefundHistoryEntry {
+  final int id;
+  final double amount;
+  final String reason;
+  final int? createdBy; // admin/manager user id, nullable for legacy rows
+  final DateTime createdAt;
+
+  const RefundHistoryEntry({
+    required this.id,
+    required this.amount,
+    required this.reason,
+    required this.createdBy,
+    required this.createdAt,
+  });
+
+  factory RefundHistoryEntry.fromJson(Map<String, dynamic> j) =>
+      RefundHistoryEntry(
+        id: j['id'] as int,
+        amount: (j['amount'] as num).toDouble(),
+        reason: (j['reason'] as String? ?? '').trim(),
+        createdBy: j['created_by'] as int?,
+        createdAt: DateTime.parse(j['created_at'] as String),
+      );
+}
+
