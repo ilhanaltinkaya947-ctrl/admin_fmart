@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../../core/format/money.dart';
 import '../../models/order_models.dart';
 
 /// Card row for one order item.
@@ -80,11 +81,11 @@ class OrderItemCard extends StatelessWidget {
                         const SizedBox(width: 8),
                         _MetaPill(
                           icon: Icons.attach_money,
-                          label: '₸ ${item.price}',
+                          label: formatTenge(item.price),
                         ),
                         const Spacer(),
                         Text(
-                          '₸ ${item.total}',
+                          formatTenge(item.total),
                           style: TextStyle(
                             fontWeight: FontWeight.w700,
                             fontSize: 15,
@@ -131,10 +132,10 @@ class _EditableQtyRow extends StatelessWidget {
           onChange: onQtyChange,
         ),
         const SizedBox(width: 8),
-        _MetaPill(icon: Icons.attach_money, label: '₸ $price'),
+        _MetaPill(icon: Icons.attach_money, label: formatTenge(price)),
         const Spacer(),
         Text(
-          '₸ $total',
+          formatTenge(total),
           style: TextStyle(
             fontWeight: FontWeight.w700,
             fontSize: 15,

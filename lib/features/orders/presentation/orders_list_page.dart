@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/format/money.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../../stores/state/store_cubit.dart';
 import '../state/orders_cubit.dart';
@@ -149,9 +150,13 @@ class _OrdersListPageState extends State<OrdersListPage> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
-                            Text('₸ ${o.totalAmount}'),
                             Text(
-                              'дост: ₸ ${o.deliverySum}',
+                              formatTenge(o.totalAmount),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600),
+                            ),
+                            Text(
+                              'дост: ${formatTenge(o.deliverySum)}',
                               style: const TextStyle(fontSize: 12),
                             ),
                           ],

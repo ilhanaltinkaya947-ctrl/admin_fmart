@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/format/money.dart';
 import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
 import '../models/order_models.dart';
@@ -10,8 +10,6 @@ import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
 import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
-
-final NumberFormat _money = NumberFormat.decimalPattern('ru');
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -434,11 +432,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text(
-            'Статус: ${orderStatusRu(_order.status)}',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 12),
+          _StatusBadge(status: _order.status),
+          const SizedBox(height: 16),
           Text('Покупатель', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
 
@@ -476,8 +471,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             Text('Комментарий: ${_order.customerComment}'),
           ],
           const SizedBox(height: 12),
-          Text('Сумма: ₸ ${_money.format(totalAmount)}'),
-          Text('Доставка: ₸ ${_money.format(_parseMoney(_order.deliverySum))}'),
+          Text('Сумма: ${formatTenge(totalAmount)}',
+              style: const TextStyle(
+                  fontSize: 17, fontWeight: FontWeight.w700)),
+          Text('Доставка: ${formatTenge(_parseMoney(_order.deliverySum))}'),
           const SizedBox(height: 16),
 
           if (selectedStore == null) ...[
@@ -507,20 +504,38 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           Row(
             children: [
               Expanded(
-                child: OutlinedButton(
+                child: OutlinedButton.icon(
                   onPressed: _actionLoading ? null : _cancelOrder,
-                  child: _actionLoading
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  icon: const Icon(Icons.close, size: 18),
+                  label: _actionLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
                       : const Text('Отменить'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red.shade700,
+                    side: BorderSide(color: Colors.red.shade300),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: ElevatedButton(
+                child: ElevatedButton.icon(
                   onPressed: _actionLoading ? null : _openRefundSheet,
-                  child: _actionLoading
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  icon: const Icon(Icons.replay, size: 18),
+                  label: _actionLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
                       : const Text('Возврат'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange.shade700,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
                 ),
               ),
             ],
@@ -647,4 +662,57 @@ String _pluralItems(int n) {
   if (mod10 == 1 && mod100 != 11) return 'товар';
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'товара';
   return 'товаров';
+}
+
+/// Prominent colored status badge at the top of order detail — replaces
+/// the old "Статус: X" plain text so admin can read order state from
+/// across the room (iPad in the warehouse).
+class _StatusBadge extends StatelessWidget {
+  final String status;
+  const _StatusBadge({required this.status});
+
+  // Maps the backend status code to a (background, foreground, icon) tuple.
+  static const _colors = <String, ({Color bg, Color fg, IconData icon})>{
+    'pending-payment': (bg: Color(0xFFFFF4E5), fg: Color(0xFFAD6800), icon: Icons.hourglass_empty),
+    'paid':            (bg: Color(0xFFE3F2FD), fg: Color(0xFF1565C0), icon: Icons.payments_outlined),
+    'processing':      (bg: Color(0xFFE8EAF6), fg: Color(0xFF283593), icon: Icons.inventory_2_outlined),
+    'ready-for-delivery': (bg: Color(0xFFE0F7FA), fg: Color(0xFF006064), icon: Icons.local_shipping_outlined),
+    'delivering':      (bg: Color(0xFFFFF8E1), fg: Color(0xFFE65100), icon: Icons.directions_bike),
+    'delivered':       (bg: Color(0xFFE8F5E9), fg: Color(0xFF2E7D32), icon: Icons.check_circle_outline),
+    'completed':       (bg: Color(0xFFE8F5E9), fg: Color(0xFF2E7D32), icon: Icons.check_circle),
+    'canceled':        (bg: Color(0xFFFFEBEE), fg: Color(0xFFC62828), icon: Icons.cancel_outlined),
+    'refunded':        (bg: Color(0xFFFCE4EC), fg: Color(0xFFAD1457), icon: Icons.replay),
+    'partially-refunded': (bg: Color(0xFFFCE4EC), fg: Color(0xFFAD1457), icon: Icons.replay_circle_filled_outlined),
+    'payment-failed':  (bg: Color(0xFFFFEBEE), fg: Color(0xFFC62828), icon: Icons.error_outline),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _colors[status] ??
+        (bg: Colors.grey.shade200, fg: Colors.grey.shade700, icon: Icons.help_outline);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: c.bg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(c.icon, color: c.fg, size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              orderStatusRu(status),
+              style: TextStyle(
+                color: c.fg,
+                fontWeight: FontWeight.w700,
+                fontSize: 17,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

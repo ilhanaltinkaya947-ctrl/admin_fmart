@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/format/money.dart';
 import '../../orders/models/order_models.dart';
 import '../../orders/presentation/order_details_page.dart';
 import '../data/customers_repository.dart';
@@ -151,7 +152,7 @@ class _Body extends StatelessWidget {
                   ),
                   isThreeLine: true,
                   trailing: Text(
-                    '₸ ${o.totalAmount}',
+                    formatTenge(o.totalAmount),
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                   onTap: () => Navigator.of(context).push(
@@ -265,7 +266,6 @@ class _StatsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final df = DateFormat('dd.MM.yyyy');
-    final fmt = NumberFormat.decimalPattern('ru');
     return Row(
       children: [
         Expanded(child: _StatCard(label: 'Заказов', value: '$totalOrders')),
@@ -273,7 +273,7 @@ class _StatsRow extends StatelessWidget {
         Expanded(
           child: _StatCard(
             label: 'Сумма',
-            value: '₸ ${fmt.format(totalSpend.round())}',
+            value: formatTenge(totalSpend.round()),
           ),
         ),
         const SizedBox(width: 8),
