@@ -43,7 +43,11 @@ class _UserEditPageState extends State<UserEditPage> {
       _emailCtrl.text = ex.email ?? '';
       _firstNameCtrl.text = ex.firstName ?? '';
       _lastNameCtrl.text = ex.lastName ?? '';
-      _role = ex.isAdmin ? 'admin' : 'manager';
+      // Preserve the user's ACTUAL role — don't collapse it to
+      // 'manager'. The old code did `ex.isAdmin ? 'admin' : 'manager'`,
+      // so opening any user whose role wasn't 'admin' and saving
+      // silently rewrote them to 'manager'.
+      _role = ex.role.toLowerCase().trim();
       _assignedStoreIds = ex.assignedStoreIds.toSet();
     } else {
       _assignedStoreIds = <int>{};
@@ -272,22 +276,43 @@ class _UserEditPageState extends State<UserEditPage> {
             style: Theme.of(context).textTheme.titleSmall,
           ),
           const SizedBox(height: 4),
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(
-                value: 'manager',
-                label: Text('Менеджер'),
-                icon: Icon(Icons.support_agent),
+          // The SegmentedButton only knows manager/admin. If the user
+          // has any other role, show it read-only instead of forcing a
+          // segment selection (which would both throw an assertion and
+          // silently rewrite the role on save).
+          if (_role == 'manager' || _role == 'admin')
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                  value: 'manager',
+                  label: Text('Менеджер'),
+                  icon: Icon(Icons.support_agent),
+                ),
+                ButtonSegment(
+                  value: 'admin',
+                  label: Text('Админ'),
+                  icon: Icon(Icons.admin_panel_settings),
+                ),
+              ],
+              selected: {_role},
+              onSelectionChanged: (s) => setState(() => _role = s.first),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
               ),
-              ButtonSegment(
-                value: 'admin',
-                label: Text('Админ'),
-                icon: Icon(Icons.admin_panel_settings),
+              child: Text(
+                'Роль «$_role» не редактируется в этом приложении и '
+                'будет сохранена без изменений.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
-            ],
-            selected: {_role},
-            onSelectionChanged: (s) => setState(() => _role = s.first),
-          ),
+            ),
           const SizedBox(height: 20),
           if (_role == 'manager') ...[
             Text(

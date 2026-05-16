@@ -154,6 +154,7 @@ class _BannersListPageState extends State<BannersListPage> {
                 final b = state.items[i];
                 return _BannerTile(
                   key: ValueKey(b.id),
+                  index: i,
                   banner: b,
                   onEdit: () => _openEdit(banner: b),
                   onDelete: () => _confirmDelete(b),
@@ -169,12 +170,14 @@ class _BannersListPageState extends State<BannersListPage> {
 }
 
 class _BannerTile extends StatelessWidget {
+  final int index;
   final BannerItem banner;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
   const _BannerTile({
     super.key,
+    required this.index,
     required this.banner,
     required this.onEdit,
     required this.onDelete,
@@ -244,9 +247,19 @@ class _BannerTile extends StatelessWidget {
                   color: Colors.red.shade700,
                   onPressed: onDelete,
                 ),
+                // Real drag handle: a visible grab icon bound to this
+                // tile's actual index. Was an invisible zero-size widget
+                // with index:-1, so reorder had no affordance and the
+                // index was invalid.
                 ReorderableDragStartListener(
-                  index: -1,
-                  child: const SizedBox.shrink(),
+                  index: index,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Icon(
+                      Icons.drag_handle,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
                 ),
               ],
             ),

@@ -42,6 +42,18 @@ class AuthCubit extends Cubit<AuthState> {
   }
 
   Future<void> logout() async {
+    // Revoke the refresh token server-side first (best-effort) — without
+    // this the refresh token stayed valid until natural expiry, a real
+    // security gap on shared/lost staff iPads. Local clear + state change
+    // happen regardless of whether the network call succeeds.
+    try {
+      final refresh = await tokenStorage.getRefreshToken();
+      if (refresh != null && refresh.isNotEmpty) {
+        await authRepository.logout(refresh);
+      }
+    } catch (_) {
+      // best-effort — proceed with local logout regardless
+    }
     await tokenStorage.clear();
     emit(Unauthenticated());
   }

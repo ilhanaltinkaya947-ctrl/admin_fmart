@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
 import '../../../core/api/api_client.dart';
+import '../../../core/api/safe_response.dart';
 import 'banner_models.dart';
 
 /// Wraps catalog-service /admin/banners endpoints.
@@ -21,20 +22,15 @@ class BannersRepository {
 
   Future<List<BannerItem>> listAll() async {
     final resp = await api.dio.get(_adminPath);
-    final data = resp.data as List;
-    return data
-        .whereType<Map<String, dynamic>>()
-        .map(BannerItem.fromJson)
-        .toList();
+    // asJsonList tolerates an error envelope / null body; a raw
+    // `resp.data as List` threw a CastError that bypassed the
+    // DioException handling and broke the whole banners screen.
+    return asJsonList(resp.data).map(BannerItem.fromJson).toList();
   }
 
   Future<List<BannerItem>> listPublic() async {
     final resp = await api.dio.get(_publicPath);
-    final data = resp.data as List;
-    return data
-        .whereType<Map<String, dynamic>>()
-        .map(BannerItem.fromJson)
-        .toList();
+    return asJsonList(resp.data).map(BannerItem.fromJson).toList();
   }
 
   Future<BannerItem> create({

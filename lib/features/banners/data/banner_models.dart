@@ -21,14 +21,21 @@ class BannerItem {
 
   factory BannerItem.fromJson(Map<String, dynamic> json) {
     return BannerItem(
-      id: (json['id'] as num).toInt(),
+      // Guarded parse: one banner row with a null/missing id or timestamp
+      // used to throw inside listAll().map() and break the entire banners
+      // screen (same crash class as the customer-app OrderModel fix).
+      id: (json['id'] as num?)?.toInt() ?? 0,
       imageUrl: (json['image_url'] as String?) ?? '',
       linkUrl: json['link_url'] as String?,
       title: json['title'] as String?,
       sortOrder: (json['sort_order'] as num?)?.toInt() ?? 0,
       active: json['active'] as bool? ?? true,
-      createdAt: DateTime.parse(json['created_at'] as String),
-      updatedAt: DateTime.parse(json['updated_at'] as String),
+      createdAt:
+          DateTime.tryParse(json['created_at'] as String? ?? '') ??
+              DateTime.now(),
+      updatedAt:
+          DateTime.tryParse(json['updated_at'] as String? ?? '') ??
+              DateTime.now(),
     );
   }
 }

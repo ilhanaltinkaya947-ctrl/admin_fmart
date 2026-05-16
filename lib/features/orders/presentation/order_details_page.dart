@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -47,6 +49,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   List<RefundHistoryEntry> _refunds = const [];
   bool _refundsLoading = false;
 
+  // Live polling of the order while the detail page is open. Picks up
+  // server-side status changes (courier flips to "delivering", payment
+  // webhook resolves, etc.) so the admin doesn't see stale state and
+  // call support thinking the order is stuck. Cancelled in dispose().
+  Timer? _pollTimer;
+  static const _pollInterval = Duration(seconds: 8);
+
   bool get _orderEverRefunded {
     final s = _order.status.toLowerCase();
     return s == 'refunded' || s == 'partially-refunded';
@@ -61,10 +70,55 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   void initState() {
     super.initState();
     _order = widget.order;
-    _selectedStatus = _order.status; // код
+    // Start with nothing selected — the order's CURRENT status is never a
+    // valid transition target (the backend rejects self-loops), so the
+    // admin must explicitly pick a real next status.
+    _selectedStatus = null;
     _loadStatuses();
     _loadCustomer();
     if (_orderEverRefunded) _loadRefunds();
+    _startPolling();
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(_pollInterval, (_) => _pollOrder());
+  }
+
+  /// Re-fetch the order from the server and merge any server-truth
+  /// fields. Best-effort: any failure is swallowed so a flaky network
+  /// never breaks the UI. Skipped while the operator is mid-mutation
+  /// (status save, cancel, refund, item edit) so we don't fight their
+  /// in-flight change.
+  Future<void> _pollOrder() async {
+    if (!mounted) return;
+    if (_saving || _actionLoading || _itemBusy.isNotEmpty) return;
+
+    final storeState = context.read<StoreCubit>().state;
+    if (storeState is! StoreSelected) return;
+
+    try {
+      final repo = context.read<OrdersRepository>();
+      final fresh = await repo.getOrderById(
+        storeId: storeState.storeId,
+        orderId: _order.id,
+      );
+      if (fresh == null || !mounted) return;
+
+      final statusChanged = fresh.status != _order.status;
+      setState(() => _order = fresh);
+      if (statusChanged) {
+        // Refresh the timeline so the new transition appears below.
+        // Note: we intentionally do NOT touch _selectedStatus — that's
+        // the dropdown's value, which represents the operator's pending
+        // selection, not server truth. The status badge at the top
+        // already reflects server truth via _order.status.
+        _timelineKey.currentState?.refresh();
+      }
+    } catch (_) {
+      // Polling is best-effort. Operator can still pull-to-refresh
+      // (badge) or back-out / re-enter to force a reload.
+    }
   }
 
   Future<void> _loadRefunds() async {
@@ -85,6 +139,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
   @override
   void dispose() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
     _reasonCtrl.dispose();
     super.dispose();
   }
@@ -126,10 +182,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
       setState(() {
         _statuses = items;
-
-        final exists = items.any((s) => s.statusName == _selectedStatus);
-        if (!exists && items.isNotEmpty) {
-          _selectedStatus = items.first.statusName;
+        // Don't force-select anything — the dropdown filters to valid
+        // transitions from the current order status, and the admin
+        // picks one explicitly. If the previously-picked target is no
+        // longer valid (status changed under us), clear it.
+        final allowed =
+            kAdminAllowedTransitions[_order.status] ?? const <String>{};
+        if (_selectedStatus != null &&
+            !allowed.contains(_selectedStatus)) {
+          _selectedStatus = null;
         }
       });
     } catch (_) {
@@ -160,16 +221,48 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
         reason: _reasonCtrl.text.trim(),
       );
 
-      setState(() => _order = _order.copyWith(status: status));
-      _timelineKey.currentState?.refresh();
-
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Статус обновлён')));
+      // API-first / pessimistic update: only mutate local state AFTER
+      // the network call succeeded. If it failed we'd be in the catch
+      // block below with the old _order.status still intact, so admin
+      // sees the actual server state instead of a phantom new one.
+      setState(() {
+        _order = _order.copyWith(status: status);
+        // The status we just applied is now the CURRENT status, so it's
+        // no longer a valid transition target — clear the selection.
+        _selectedStatus = null;
+      });
+      _timelineKey.currentState?.refresh();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Статус обновлён')),
+      );
+    } on OrdersApiException catch (e) {
+      // Server-side reason surfaced via the typed exception — e.g.
+      // "Address outside delivery zone" from the Yandex delivery proxy.
+      // Show the actual message instead of swallowing it.
+      if (!mounted) return;
+      _showErrorWithRetry(e.message, _changeStatus);
     } catch (_) {
-      setState(() => _error = 'Не удалось обновить статус');
+      if (!mounted) return;
+      _showErrorWithRetry('Не удалось обновить статус', _changeStatus);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  void _showErrorWithRetry(String message, Future<void> Function() onRetry) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red.shade700,
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: 'Повторить',
+          textColor: Colors.white,
+          onPressed: onRetry,
+        ),
+      ),
+    );
   }
 
   Future<void> _cancelOrder() async {
@@ -205,8 +298,12 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Заказ отменён' : 'Не удалось отменить'))),
       );
+    } on OrdersApiException catch (e) {
+      if (!mounted) return;
+      _showErrorWithRetry(e.message, _cancelOrder);
     } catch (_) {
-      setState(() => _error = 'Не удалось отменить заказ');
+      if (!mounted) return;
+      _showErrorWithRetry('Не удалось отменить заказ', _cancelOrder);
     } finally {
       if (mounted) setState(() => _actionLoading = false);
     }
@@ -327,7 +424,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       setState(() {
         _order = _order.copyWith(
           items: updatedItems,
-          totalAmount: (res.subtotal + res.deliverySum).toStringAsFixed(2),
+          // Use the backend's authoritative discounted total — NOT
+          // subtotal + delivery, which dropped any promo discount.
+          totalAmount: res.totalAmount.toStringAsFixed(2),
         );
       });
       _timelineKey.currentState?.refresh();
@@ -385,7 +484,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       setState(() {
         _order = _order.copyWith(
           items: updatedItems,
-          totalAmount: (res.subtotal + res.deliverySum).toStringAsFixed(2),
+          // Use the backend's authoritative discounted total — NOT
+          // subtotal + delivery, which dropped any promo discount.
+          totalAmount: res.totalAmount.toStringAsFixed(2),
         );
       });
       _timelineKey.currentState?.refresh();
@@ -435,8 +536,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Возврат оформлен' : 'Не удалось оформить возврат'))),
       );
+    } on OrdersApiException catch (e) {
+      if (!mounted) return;
+      _showErrorWithRetry(
+        e.message,
+        () => _refundOrder(amount: amount, reason: reason),
+      );
     } catch (_) {
-      setState(() => _error = 'Не удалось оформить возврат');
+      if (!mounted) return;
+      _showErrorWithRetry(
+        'Не удалось оформить возврат',
+        () => _refundOrder(amount: amount, reason: reason),
+      );
     } finally {
       if (mounted) setState(() => _actionLoading = false);
     }
@@ -639,37 +750,63 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
           Text('Изменить статус', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  value: _selectedStatus,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Статус',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: _statuses
-                      .map((s) => DropdownMenuItem<String>(
-                    value: s.statusName,
-                    child: Text(orderStatusRu(s.statusName)),
-                  ))
-                      .toList(),
-                  onChanged: (_saving || _statusesLoading)
-                      ? null
-                      : (v) => setState(() => _selectedStatus = v),
+          Builder(builder: (context) {
+            // Only offer transitions the backend will actually accept
+            // from the current status. Previously the dropdown listed
+            // EVERY status, so an admin could pick completed ->
+            // pending-payment and get a silent rejection.
+            final allowed =
+                kAdminAllowedTransitions[_order.status] ?? const <String>{};
+            final validStatuses = _statuses
+                .where((s) => allowed.contains(s.statusName))
+                .toList();
+
+            if (allowed.isEmpty) {
+              return Text(
+                'Этот статус заказа финальный — изменение недоступно.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: 'Обновить список статусов',
-                onPressed: _statusesLoading ? null : _loadStatuses,
-                icon: _statusesLoading
-                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.refresh),
-              ),
-            ],
-          ),
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _selectedStatus,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Новый статус',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: validStatuses
+                        .map((s) => DropdownMenuItem<String>(
+                              value: s.statusName,
+                              child: Text(orderStatusRu(s.statusName)),
+                            ))
+                        .toList(),
+                    onChanged: (_saving || _statusesLoading)
+                        ? null
+                        : (v) => setState(() => _selectedStatus = v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: 'Обновить список статусов',
+                  onPressed: _statusesLoading ? null : _loadStatuses,
+                  icon: _statusesLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child:
+                              CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.refresh),
+                ),
+              ],
+            );
+          }),
 
           const SizedBox(height: 8),
           TextField(

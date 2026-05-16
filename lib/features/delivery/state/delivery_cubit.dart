@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:bloc/bloc.dart';
+import 'package:dio/dio.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:uuid/uuid.dart';
@@ -48,8 +49,21 @@ class DeliveryCubit extends Cubit<DeliveryState> {
         currency: info.currency,
         courierLink: null,
       ));
+    } on DioException catch (e) {
+      // ONLY a genuine 404 means "no claim exists yet" → show the create
+      // form. A timeout / 5xx / connection error must NOT fall through
+      // to DeliveryNoClaim — that showed the create-claim form for an
+      // order that may ALREADY have a Yandex claim, inviting the admin
+      // to create a duplicate.
+      if (e.response?.statusCode == 404) {
+        emit(DeliveryNoClaim(orderId: orderId));
+      } else {
+        emit(const DeliveryError(
+            'Не удалось загрузить заявку на доставку. Проверьте соединение.'));
+      }
     } catch (_) {
-      emit(DeliveryNoClaim(orderId: orderId));
+      emit(const DeliveryError(
+          'Не удалось загрузить заявку на доставку. Проверьте соединение.'));
     }
   }
 

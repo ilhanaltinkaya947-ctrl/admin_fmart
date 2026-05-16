@@ -6,7 +6,11 @@ class OrdersPage {
 
   factory OrdersPage.fromJson(Map<String, dynamic> j) {
     return OrdersPage(
-      pagination: Pagination.fromJson((j['pagination'] as Map).cast<String, dynamic>()),
+      // Guarded: a 200 response missing/odd `pagination` (error envelope,
+      // partial body) used to throw `null as Map` and crash the orders
+      // list. Pagination.fromJson null-defaults every field.
+      pagination: Pagination.fromJson(
+          (j['pagination'] as Map?)?.cast<String, dynamic>() ?? const {}),
       items: ((j['items'] as List?) ?? [])
           .cast<Map<String, dynamic>>()
           .map(Order.fromJson)
@@ -305,7 +309,9 @@ const Map<String, String> kOrderStatusRu = {
   'processing': 'В обработке',
   'ready-for-delivery': 'Готов к доставке',
   'delivering': 'В пути',
-  'delivered': 'Доставлен',
+  // NOTE: no 'delivered' — the backend OrderStatus enum has no such
+  // status (the flow goes delivering -> completed). It was a phantom
+  // key the two apps disagreed on.
   'completed': 'Завершён',
   'canceled': 'Отменён',
   'refunded': 'Полный возврат',
@@ -314,6 +320,24 @@ const Map<String, String> kOrderStatusRu = {
 };
 
 String orderStatusRu(String code) => kOrderStatusRu[code] ?? code;
+
+/// Valid admin status transitions, mirrored from the backend
+/// `StatusMachine.ADMIN_ALLOWED` (order-service status_machine.py).
+/// The status dropdown filters to these so an admin can't pick an
+/// invalid transition (e.g. completed -> pending-payment) and get a
+/// silent backend rejection. A status with an empty set is terminal.
+const Map<String, Set<String>> kAdminAllowedTransitions = {
+  'pending-payment': {'paid', 'payment-failed', 'canceled'},
+  'paid': {'processing', 'canceled', 'refunded', 'partially-refunded'},
+  'processing': {'ready-for-delivery', 'canceled', 'refunded', 'partially-refunded'},
+  'ready-for-delivery': {'delivering', 'partially-refunded', 'refunded'},
+  'delivering': {'completed', 'partially-refunded', 'refunded'},
+  'completed': {'partially-refunded', 'refunded'},
+  'payment-failed': {'canceled'},
+  'canceled': {},
+  'partially-refunded': {},
+  'refunded': {},
+};
 
 
 class OrderEvent {
@@ -358,6 +382,10 @@ class OrderItemEditResult {
   final double newTotal;
   final double subtotal;
   final double deliverySum;
+  // Authoritative discounted order total from the backend. Use this, not
+  // subtotal + deliverySum — that re-derivation dropped the promo
+  // discount and inflated the displayed order total after an edit.
+  final double totalAmount;
   final bool removed;
 
   OrderItemEditResult({
@@ -368,6 +396,7 @@ class OrderItemEditResult {
     required this.newTotal,
     required this.subtotal,
     required this.deliverySum,
+    required this.totalAmount,
     required this.removed,
   });
 
@@ -386,6 +415,7 @@ class OrderItemEditResult {
         newTotal: _toDouble(j['new_total']),
         subtotal: _toDouble(j['subtotal']),
         deliverySum: _toDouble(j['delivery_sum']),
+        totalAmount: _toDouble(j['total_amount']),
         removed: j['removed'] as bool? ?? false,
       );
 }
@@ -462,11 +492,18 @@ class RefundHistoryEntry {
 
   factory RefundHistoryEntry.fromJson(Map<String, dynamic> j) =>
       RefundHistoryEntry(
-        id: j['id'] as int,
-        amount: (j['amount'] as num).toDouble(),
+        // Guarded parse — every other model in this file defends these;
+        // this one didn't. A legacy refund row with a null amount or odd
+        // created_at threw inside getRefundHistory(), and because the
+        // throw was swallowed the refund history silently never appeared
+        // even when refunds existed (a money-audit surface).
+        id: (j['id'] as num?)?.toInt() ?? 0,
+        amount: (j['amount'] as num?)?.toDouble() ?? 0.0,
         reason: (j['reason'] as String? ?? '').trim(),
-        createdBy: j['created_by'] as int?,
-        createdAt: DateTime.parse(j['created_at'] as String),
+        createdBy: (j['created_by'] as num?)?.toInt(),
+        createdAt:
+            DateTime.tryParse(j['created_at'] as String? ?? '') ??
+                DateTime.now(),
       );
 }
 

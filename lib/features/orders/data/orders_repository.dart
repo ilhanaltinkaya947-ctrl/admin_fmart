@@ -4,6 +4,60 @@ import '../../../core/api/api_client.dart';
 import '../../../core/api/safe_response.dart';
 import '../models/order_models.dart';
 
+/// Typed exception surfaced to the UI layer when an admin-facing call
+/// fails. Holds the most specific human-readable message we can extract
+/// from the backend payload (e.g. "Address outside delivery zone" from
+/// the Yandex proxy) so the SnackBar can show the real reason instead
+/// of a generic fallback.
+class OrdersApiException implements Exception {
+  final String message;
+  final int? statusCode;
+  OrdersApiException(this.message, {this.statusCode});
+
+  @override
+  String toString() => message;
+}
+
+/// Walks the response payload of a failed admin call and returns the
+/// most specific human-readable message we can find. Backend services
+/// surface errors in a few different shapes — FastAPI defaults to
+/// `{"detail": "..."}`, the Yandex proxy can nest the upstream reason
+/// inside `{"error": {"message": "..."}}`, and some endpoints return
+/// plain strings. We try each shape in turn and fall back to null so
+/// the caller can use a generic message.
+String? _extractApiErrorMessage(DioException e) {
+  final data = e.response?.data;
+  if (data == null) return null;
+  if (data is String) {
+    final s = data.trim();
+    return s.isEmpty ? null : s;
+  }
+  if (data is Map) {
+    final detail = data['detail'];
+    if (detail is String && detail.trim().isNotEmpty) return detail.trim();
+    if (detail is List && detail.isNotEmpty) {
+      final first = detail.first;
+      if (first is Map && first['msg'] is String) {
+        final s = (first['msg'] as String).trim();
+        if (s.isNotEmpty) return s;
+      }
+    }
+    for (final key in const ['message', 'error_message', 'reason']) {
+      final v = data[key];
+      if (v is String && v.trim().isNotEmpty) return v.trim();
+    }
+    final err = data['error'];
+    if (err is Map) {
+      final msg = err['message'];
+      if (msg is String && msg.trim().isNotEmpty) return msg.trim();
+      final reason = err['reason'];
+      if (reason is String && reason.trim().isNotEmpty) return reason.trim();
+    }
+    if (err is String && err.trim().isNotEmpty) return err.trim();
+  }
+  return null;
+}
+
 class OrdersRepository {
   final ApiClient api;
   OrdersRepository({required this.api});
@@ -48,10 +102,17 @@ class OrdersRepository {
     required String status,
     String reason = '',
   }) async {
-    await api.dio.post('/gw/order/admin/$orderId/change-status', data: {
-      'status': status,
-      'reason': reason,
-    });
+    try {
+      await api.dio.post('/gw/order/admin/$orderId/change-status', data: {
+        'status': status,
+        'reason': reason,
+      });
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось обновить статус',
+        statusCode: e.response?.statusCode,
+      );
+    }
   }
 
   /// Fetch a single order by id via the admin list endpoint's `search`
@@ -105,8 +166,15 @@ class OrdersRepository {
 
 
   Future<SimpleActionResponse> cancelOrder({required int orderId}) async {
-    final resp = await api.dio.post('/gw/order/admin/$orderId/cancel');
-    return SimpleActionResponse.fromJson(asJsonMap(resp.data));
+    try {
+      final resp = await api.dio.post('/gw/order/admin/$orderId/cancel');
+      return SimpleActionResponse.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось отменить заказ',
+        statusCode: e.response?.statusCode,
+      );
+    }
   }
 
   /// Refund an order. [idempotencyKey] should be generated once per
@@ -120,15 +188,22 @@ class OrdersRepository {
     required String reason,
     required String idempotencyKey,
   }) async {
-    final resp = await api.dio.post(
-      '/gw/order/admin/$orderId/refund',
-      data: {
-        'amount': amount,
-        'reason': reason,
-      },
-      options: Options(headers: {'Idempotency-Key': idempotencyKey}),
-    );
-    return SimpleActionResponse.fromJson(asJsonMap(resp.data));
+    try {
+      final resp = await api.dio.post(
+        '/gw/order/admin/$orderId/refund',
+        data: {
+          'amount': amount,
+          'reason': reason,
+        },
+        options: Options(headers: {'Idempotency-Key': idempotencyKey}),
+      );
+      return SimpleActionResponse.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось оформить возврат',
+        statusCode: e.response?.statusCode,
+      );
+    }
   }
 
 

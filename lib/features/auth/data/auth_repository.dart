@@ -18,6 +18,15 @@ class AuthRepository {
     return CurrentUser.fromJson(asJsonMap(resp.data));
   }
 
+  /// Revoke the refresh token server-side. Best-effort — the caller
+  /// clears local tokens regardless, but this stops the refresh token
+  /// from staying valid after logout (a real gap on shared staff iPads).
+  Future<void> logout(String refreshToken) async {
+    await api.dio.post('/gw/auth/logout', data: {
+      'refresh_token': refreshToken,
+    });
+  }
+
   Future<void> login({
     required String phone,
     required String password,

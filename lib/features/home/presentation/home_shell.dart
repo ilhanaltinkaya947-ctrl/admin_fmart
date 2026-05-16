@@ -171,7 +171,11 @@ class _HomeShellState extends State<HomeShell> {
           _Section.newOrders,
           _Section.orderHistory,
           _Section.customers,
-          _Section.users,
+          // Users (staff management) and Banners are admin-only. The
+          // pages self-gate their bodies, but the nav entries must be
+          // gated too — otherwise a manager sees the tab, taps it, and
+          // lands on an "admin only" banner.
+          if (isAdmin) _Section.users,
           if (isAdmin) _Section.banners,
           _Section.settings,
         ];
@@ -269,13 +273,21 @@ class _SideRail extends StatelessWidget {
                 isSelected: selected == _Section.customers,
                 onTap: () => onSelected(_Section.customers),
               ),
-              _RailItem(
-                icon: Icons.admin_panel_settings_outlined,
-                selectedIcon: Icons.admin_panel_settings,
-                label: 'Пользователи',
-                isSelected: selected == _Section.users,
-                onTap: () => onSelected(_Section.users),
-              ),
+              // Users (staff management) — admin role only. Manager
+              // doesn't see this entry (the page self-gates too, but the
+              // nav entry must match).
+              Builder(builder: (ctx) {
+                final auth = ctx.watch<AuthCubit>().state;
+                final isAdmin = auth is Authenticated && auth.user.isAdmin;
+                if (!isAdmin) return const SizedBox.shrink();
+                return _RailItem(
+                  icon: Icons.admin_panel_settings_outlined,
+                  selectedIcon: Icons.admin_panel_settings,
+                  label: 'Пользователи',
+                  isSelected: selected == _Section.users,
+                  onTap: () => onSelected(_Section.users),
+                );
+              }),
               // Banners — admin role only. Manager doesn't see this entry.
               Builder(builder: (ctx) {
                 final auth = ctx.watch<AuthCubit>().state;

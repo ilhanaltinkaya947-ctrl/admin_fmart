@@ -114,56 +114,68 @@ class _AppState extends State<App> {
       }
 
       try {
-      await showDialog(
-        context: ctx,
-        barrierDismissible: false,
-        builder: (c) => AlertDialog(
-          title: const Text('Новый заказ'),
-          content: Text(orderId != null ? 'Заказ #$orderId' : 'Поступил новый заказ'),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await _sound.stop();
-                if (c.mounted) Navigator.of(c).pop();
-              },
-              child: const Text('Позже'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                await _sound.stop();
-                if (c.mounted) Navigator.of(c).pop();
+        await showDialog(
+          context: ctx,
+          barrierDismissible: false,
+          builder: (c) => AlertDialog(
+            title: const Text('Новый заказ'),
+            content: Text(orderId != null ? 'Заказ #$orderId' : 'Поступил новый заказ'),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await _sound.stop();
+                  if (c.mounted) Navigator.of(c).pop();
+                },
+                child: const Text('Позже'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await _sound.stop();
+                  if (c.mounted) Navigator.of(c).pop();
 
-                final storeId = await _prefsStorage.getSelectedStoreId();
-                if (storeId == null) return;
+                  final storeId = await _prefsStorage.getSelectedStoreId();
+                  if (storeId == null) return;
 
-                // If the push payload included an order_id, jump straight
-                // to that order's detail. Falls back to refreshing the
-                // list when the id is missing or the lookup fails — same
-                // behavior as before.
-                if (orderId != null) {
-                  try {
-                    final order = await _ordersRepo.getOrderById(
-                      storeId: storeId,
-                      orderId: orderId,
-                    );
-                    if (order != null) {
-                      _navKey.currentState?.push(
-                        MaterialPageRoute(
-                          builder: (_) => OrderDetailsPage(order: order),
-                        ),
+                  // If the push payload included an order_id, jump straight
+                  // to that order's detail. Falls back to refreshing the
+                  // list when the id is missing or the lookup fails. Even
+                  // on the navigate-to-detail path, the outer refresh
+                  // below still fires — keeps the list fresh for when
+                  // the operator backs out of detail.
+                  if (orderId != null) {
+                    try {
+                      final order = await _ordersRepo.getOrderById(
+                        storeId: storeId,
+                        orderId: orderId,
                       );
-                      return;
-                    }
-                  } catch (_) {/* fall through to list refresh */}
-                }
+                      if (order != null) {
+                        _navKey.currentState?.push(
+                          MaterialPageRoute(
+                            builder: (_) => OrderDetailsPage(order: order),
+                          ),
+                        );
+                      }
+                    } catch (_) {/* fall through — outer refresh will still update the list */}
+                  }
+                },
+                child: const Text('Открыть'),
+              ),
+            ],
+          ),
+        );
 
-                if (ctx.mounted) ctx.read<OrdersCubit>().refresh(storeId: storeId);
-              },
-              child: const Text('Открыть'),
-            ),
-          ],
-        ),
-      );
+        // After the dialog closes — regardless of whether the operator
+        // tapped "Позже" or "Открыть" — always refresh the orders list.
+        // Without this, "Позже" left the list stale until the next 30s
+        // background poll landed, which violates the "operator sees new
+        // orders within seconds" SLA on busy days. Idempotent: if
+        // "Открыть" already triggered a refresh in its branch (via
+        // navigating to detail), running it again here is harmless and
+        // covers the case where navigation failed.
+        final storeId = await _prefsStorage.getSelectedStoreId();
+        if (storeId != null && ctx.mounted) {
+          ctx.read<OrdersCubit>().refresh(storeId: storeId);
+        }
       } finally {
         await _sound.stop(); // safety: catches OS-level dismissal
         newOrderDialogGuard.release();
@@ -304,6 +316,29 @@ class _RootRouter extends StatelessWidget {
 
     if (auth is Unauthenticated) {
       return const LoginPage();
+    }
+
+    // Reject non-staff identities. An authenticated token with an
+    // unknown/empty/`customer` role must NOT reach the admin shell —
+    // previously the router only checked Authenticated, so any valid
+    // token got in. Force a logout (post-frame, so we don't mutate the
+    // cubit during build) and show a clear message; the next build
+    // resolves to LoginPage.
+    if (auth is Authenticated && !auth.user.isStaff) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        context.read<AuthCubit>().logout();
+      });
+      return const Scaffold(
+        body: Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'Этот аккаунт не имеет доступа к админ-приложению.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      );
     }
 
     // Авторизован: если магазин выбран — главный экран, иначе — экран выбора магазина

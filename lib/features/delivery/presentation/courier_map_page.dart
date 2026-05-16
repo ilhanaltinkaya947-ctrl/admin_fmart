@@ -53,6 +53,19 @@ class _CourierMapPageState extends State<CourierMapPage> {
   }
 
   @override
+  void dispose() {
+    // Yandex's tracking page runs JS timers that poll the courier
+    // location. Without tearing the WebView down, those timers (and the
+    // native WKWebView on iOS) stay alive after the page is popped —
+    // a real leak when staff open/close this across many orders in a
+    // shift. Clear the delegate and navigate to a blank page to stop
+    // the live page's network/JS activity.
+    _controller.setNavigationDelegate(NavigationDelegate());
+    _controller.loadRequest(Uri.parse('about:blank'));
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(

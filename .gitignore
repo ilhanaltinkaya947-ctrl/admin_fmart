@@ -51,3 +51,4 @@ ios/.symlinks/
 # macOS junk
 __MACOSX/
 .DS_Store
+ios/build/
