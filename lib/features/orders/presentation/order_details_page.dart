@@ -315,10 +315,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     final amountCtrl = TextEditingController(text: total.toStringAsFixed(2));
     final reasonCtrl = TextEditingController();
 
+    // ONE idempotency key for the entire modal session. Used by every
+    // submit attempt from this sheet — including any retries the
+    // operator triggers if they re-tap "Оформить" before the spinner
+    // shows. The backend dedupes refunds by (order_id, idempotency_key),
+    // so the second tap returns the first refund's result instead of
+    // applying a duplicate. Closing + re-opening the sheet generates a
+    // new key (that's a deliberate second refund intent).
+    final sessionIdempotencyKey = const Uuid().v4();
+
     final result = await showModalBottomSheet<_RefundPayload>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      isDismissible: false,  // operator must explicitly close or confirm
       builder: (c) {
         return Padding(
           padding: EdgeInsets.only(
@@ -332,6 +342,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('Возврат по заказу #${_order.id}', style: Theme.of(c).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              Text(
+                'Сумма заказа: ${total.toStringAsFixed(2)} ₸',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(c).colorScheme.onSurfaceVariant,
+                ),
+              ),
               const SizedBox(height: 12),
               TextField(
                 controller: amountCtrl,
@@ -362,7 +380,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: () {
+                      onPressed: () async {
                         final amount = double.tryParse(amountCtrl.text.trim().replaceAll(',', '.')) ?? 0.0;
                         final reason = reasonCtrl.text.trim();
 
@@ -380,7 +398,55 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                           return;
                         }
 
-                        Navigator.of(c).pop(_RefundPayload(amount: amount, reason: reason));
+                        // Two-step confirm — refunds are irreversible
+                        // money movement, no taking it back if the
+                        // operator fat-fingered the amount. Without
+                        // this any accidental tap of "Оформить" with
+                        // pre-filled-to-full-amount sent a real refund.
+                        final isFullRefund = (amount + 0.0001 >= total);
+                        final confirmed = await showDialog<bool>(
+                          context: c,
+                          barrierDismissible: false,
+                          builder: (dctx) => AlertDialog(
+                            title: const Text('Подтвердите возврат'),
+                            content: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Сумма: ${amount.toStringAsFixed(2)} ₸'
+                                  '${isFullRefund ? " (полный возврат)" : ""}',
+                                  style: const TextStyle(fontWeight: FontWeight.w600),
+                                ),
+                                const SizedBox(height: 8),
+                                Text('Причина: $reason'),
+                                const SizedBox(height: 12),
+                                const Text(
+                                  'Это действие нельзя отменить.',
+                                  style: TextStyle(color: Colors.red),
+                                ),
+                              ],
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.of(dctx).pop(false),
+                                child: const Text('Назад'),
+                              ),
+                              ElevatedButton(
+                                onPressed: () => Navigator.of(dctx).pop(true),
+                                child: const Text('Подтвердить'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed != true) return;
+
+                        if (!c.mounted) return;
+                        Navigator.of(c).pop(_RefundPayload(
+                          amount: amount,
+                          reason: reason,
+                          idempotencyKey: sessionIdempotencyKey,
+                        ));
                       },
                       child: const Text('Оформить'),
                     ),
@@ -398,7 +464,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
     if (result == null) return;
 
-    await _refundOrder(amount: result.amount, reason: result.reason);
+    await _refundOrder(
+      amount: result.amount,
+      reason: result.reason,
+      idempotencyKey: result.idempotencyKey,
+    );
   }
 
   Future<void> _changeItemQty(OrderItem item, int newQty) async {
@@ -500,7 +570,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     }
   }
 
-  Future<void> _refundOrder({required double amount, required String reason}) async {
+  Future<void> _refundOrder({
+    required double amount,
+    required String reason,
+    required String idempotencyKey,
+  }) async {
     HapticFeedback.mediumImpact();
     setState(() {
       _actionLoading = true;
@@ -509,11 +583,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
     try {
       final repo = context.read<OrdersRepository>();
-      // Generated once per refund attempt — if the network blips and we
-      // retry transparently elsewhere (or the admin re-taps), the same
-      // key gets sent so the backend can dedupe (planned). Without this
-      // a timeout + retry would risk two refunds.
-      final idempotencyKey = const Uuid().v4();
+      // idempotencyKey is generated by the caller (the refund sheet) and
+      // stays stable for the entire modal session — so any retry from
+      // this _refundOrder (via _showErrorWithRetry below) reuses the
+      // same key and the backend dedupes. Generating fresh here was
+      // the bug that let triple-taps through as multiple refunds.
       final res = await repo.refundOrder(
         orderId: _order.id,
         amount: amount,
@@ -540,13 +614,21 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       if (!mounted) return;
       _showErrorWithRetry(
         e.message,
-        () => _refundOrder(amount: amount, reason: reason),
+        () => _refundOrder(
+          amount: amount,
+          reason: reason,
+          idempotencyKey: idempotencyKey,
+        ),
       );
     } catch (_) {
       if (!mounted) return;
       _showErrorWithRetry(
         'Не удалось оформить возврат',
-        () => _refundOrder(amount: amount, reason: reason),
+        () => _refundOrder(
+          amount: amount,
+          reason: reason,
+          idempotencyKey: idempotencyKey,
+        ),
       );
     } finally {
       if (mounted) setState(() => _actionLoading = false);
@@ -866,7 +948,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 class _RefundPayload {
   final double amount;
   final String reason;
-  _RefundPayload({required this.amount, required this.reason});
+  /// Idempotency key generated once when the refund sheet opens, used
+  /// for the entire modal session. If the operator triple-taps "Оформить"
+  /// (or re-opens the sheet by accident), the backend dedupes on this
+  /// key and only the first POST applies. Without this we generated a
+  /// fresh UUID per call and got duplicate refunds.
+  final String idempotencyKey;
+  _RefundPayload({
+    required this.amount,
+    required this.reason,
+    required this.idempotencyKey,
+  });
 }
 
 String _pluralItems(int n) {
