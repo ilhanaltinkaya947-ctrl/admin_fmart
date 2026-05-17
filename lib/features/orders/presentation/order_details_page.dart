@@ -65,6 +65,29 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     return s == 'refunded' || s == 'partially-refunded';
   }
 
+  // Cancel makes sense pre-fulfillment only. Hide on terminal states +
+  // post-pickup states (delivering, completed, refunded, canceled,
+  // payment-failed). 'pending-payment' allows cancel (admin cancels
+  // unpaid hold); 'paid'/'processing'/'ready-for-delivery' allow cancel.
+  bool get _canCancel {
+    return const {'pending-payment', 'paid', 'processing', 'ready-for-delivery'}
+        .contains(_order.status.toLowerCase());
+  }
+
+  // Refund needs money to refund: only after payment landed and before
+  // fully refunded. partially-refunded still allows further refund up
+  // to the remaining amount (backend will reject over-refund).
+  bool get _canRefund {
+    return const {
+      'paid',
+      'processing',
+      'ready-for-delivery',
+      'delivering',
+      'completed',
+      'partially-refunded',
+    }.contains(_order.status.toLowerCase());
+  }
+
   bool get _itemsEditable {
     final s = _order.status.toLowerCase();
     return s == 'paid' || s == 'processing';
@@ -764,51 +787,59 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             ),
           ],
 
-          const SizedBox(height: 16),
-          const Divider(),
-          const SizedBox(height: 12),
-
-          Text('Действия', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _actionLoading ? null : _cancelOrder,
-                  icon: const Icon(Icons.close, size: 18),
-                  label: _actionLoading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Отменить'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red.shade700,
-                    side: BorderSide(color: Colors.red.shade300),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+          // Hide the whole Действия block when neither action makes sense
+          // for the current status (e.g. canceled / refunded / payment-failed).
+          // Previously the buttons showed on every order — tapping Отменить
+          // on a refunded order returned a backend error.
+          if (_canCancel || _canRefund) ...[
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 12),
+            Text('Действия', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (_canCancel) ...[
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _actionLoading ? null : _cancelOrder,
+                      icon: const Icon(Icons.close, size: 18),
+                      label: _actionLoading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Отменить'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red.shade700,
+                        side: BorderSide(color: Colors.red.shade300),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _actionLoading ? null : _openRefundSheet,
-                  icon: const Icon(Icons.replay, size: 18),
-                  label: _actionLoading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Возврат'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange.shade700,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  if (_canRefund) const SizedBox(width: 12),
+                ],
+                if (_canRefund)
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _actionLoading ? null : _openRefundSheet,
+                      icon: const Icon(Icons.replay, size: 18),
+                      label: _actionLoading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Возврат'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ],
-          ),
+              ],
+            ),
+          ],
 
           // Append-only refund history — only shows up when the order has
           // been refunded at least once. Each row shows the amount,
@@ -1148,29 +1179,43 @@ class _StatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = _colors[status] ??
         (bg: Colors.grey.shade200, fg: Colors.grey.shade700, icon: Icons.help_outline);
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: c.bg,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(c.icon, color: c.fg, size: 22),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              orderStatusRu(status),
-              style: TextStyle(
-                color: c.fg,
-                fontWeight: FontWeight.w700,
-                fontSize: 17,
-              ),
-            ),
+    final theme = Theme.of(context);
+    // Render as a row "Статус заказа: <chip>" instead of a full-width
+    // rounded pill. The old design looked like a button — managers kept
+    // tapping the pink "Полный возврат" expecting it to issue a refund.
+    return Row(
+      children: [
+        Text(
+          'Статус заказа: ',
+          style: TextStyle(
+            fontSize: 14,
+            color: theme.colorScheme.onSurfaceVariant,
           ),
-        ],
-      ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: c.bg,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: c.fg.withValues(alpha: 0.25)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(c.icon, color: c.fg, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                orderStatusRu(status),
+                style: TextStyle(
+                  color: c.fg,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
