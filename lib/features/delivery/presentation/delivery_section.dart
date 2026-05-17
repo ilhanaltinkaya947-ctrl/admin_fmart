@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/format/money.dart';
 import '../state/delivery_cubit.dart';
 import '../models/delivery_models.dart';
 import 'courier_map_page.dart';
@@ -280,13 +281,26 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
               );
             }
 
-            // 2) Если нет заявки — форма Create
+            // 2) Если нет заявки — форма Create.
+            // Summary card up top so the admin sees what addresses and
+            // contents will be sent to Yandex before tapping Create.
+            // Previously the form only showed phone + name fields and
+            // admins thought no address was being passed — it was, just
+            // hidden in widget.shippingAddress / widget.storeAddress.
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 header,
                 const SizedBox(height: 8),
                 const Text('Заявка не создана.'),
+                const SizedBox(height: 12),
+
+                _SummaryCard(
+                  storeAddress: widget.storeAddress,
+                  deliveryAddress: widget.shippingAddress,
+                  itemsCount: widget.items.length,
+                  totalAmount: widget.totalAmount,
+                ),
                 const SizedBox(height: 12),
 
                 TextField(
@@ -300,7 +314,7 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
                 TextField(
                   controller: _name,
                   decoration: const InputDecoration(
-                    labelText: 'Имя (опционально)',
+                    labelText: 'Имя получателя (опционально)',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -324,6 +338,74 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
           },
         ),
       ),
+    );
+  }
+}
+
+/// What gets sent to Yandex on "Создать заявку" — addresses come from
+/// the order/store, not from any form field the admin has to fill in.
+/// Rendering them here keeps the admin from thinking "I haven't filled
+/// in the address" and adds trust to the auto-fill.
+class _SummaryCard extends StatelessWidget {
+  final String storeAddress;
+  final String deliveryAddress;
+  final int itemsCount;
+  final double totalAmount;
+
+  const _SummaryCard({
+    required this.storeAddress,
+    required this.deliveryAddress,
+    required this.itemsCount,
+    required this.totalAmount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _row(theme, Icons.store_outlined, 'Откуда', storeAddress),
+          const SizedBox(height: 8),
+          _row(theme, Icons.location_on_outlined, 'Куда', deliveryAddress),
+          const SizedBox(height: 8),
+          _row(theme, Icons.shopping_basket_outlined, 'Товары',
+              '$itemsCount шт · ${formatTenge(totalAmount)}'),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(ThemeData theme, IconData icon, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: theme.colorScheme.onSurfaceVariant),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 60,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value.isEmpty ? '—' : value,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+          ),
+        ),
+      ],
     );
   }
 }
