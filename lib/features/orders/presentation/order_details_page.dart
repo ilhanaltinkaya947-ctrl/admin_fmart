@@ -42,6 +42,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
   final Set<int> _itemBusy = <int>{};
 
+  // Tracks which items have an in-flight mark-picked toggle so the
+  // checkbox spins instead of double-firing on a second tap.
+  final Set<int> _pickBusy = <int>{};
+
   final _timelineKey = GlobalKey<OrderTimelineSectionState>();
 
   // Refund history — populated only when the order has ever been refunded.
@@ -570,6 +574,36 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     }
   }
 
+  Future<void> _setItemPicked(OrderItem item, bool picked) async {
+    if (_pickBusy.contains(item.id)) return;
+    setState(() => _pickBusy.add(item.id));
+    try {
+      final repo = context.read<OrdersRepository>();
+      final res = await repo.setItemPicked(
+        orderId: _order.id,
+        itemId: item.id,
+        picked: picked,
+      );
+      if (!mounted) return;
+      final updatedItems = _order.items
+          .map((it) => it.id == item.id
+              ? it.copyWith(
+                  pickedAt: res.pickedAt,
+                  clearPickedAt: res.pickedAt == null,
+                )
+              : it)
+          .toList();
+      setState(() => _order = _order.copyWith(items: updatedItems));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось отметить товар')),
+      );
+    } finally {
+      if (mounted) setState(() => _pickBusy.remove(item.id));
+    }
+  }
+
   Future<void> _refundOrder({
     required double amount,
     required String reason,
@@ -819,6 +853,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
               ),
             ),
           ],
+          if (_itemsEditable) ...[
+            const SizedBox(height: 8),
+            _PickProgressBar(
+              picked: items.where((it) => it.isPicked).length,
+              total: items.length,
+            ),
+          ],
           const SizedBox(height: 8),
           ...items.map((it) => OrderItemCard(
                 item: it,
@@ -826,6 +867,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                 busy: _itemBusy.contains(it.id),
                 onQtyChange: (newQty) => _changeItemQty(it, newQty),
                 onRemove: () => _removeItem(it),
+                onPickedToggle: _itemsEditable
+                    ? (v) => _setItemPicked(it, v)
+                    : null,
+                pickedBusy: _pickBusy.contains(it.id),
               )),
 
           const SizedBox(height: 16),
@@ -1122,6 +1167,60 @@ class _StatusBadge extends StatelessWidget {
                 fontWeight: FontWeight.w700,
                 fontSize: 17,
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PickProgressBar extends StatelessWidget {
+  final int picked;
+  final int total;
+
+  const _PickProgressBar({required this.picked, required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fraction = total == 0 ? 0.0 : picked / total;
+    final allDone = total > 0 && picked == total;
+    final color = allDone ? Colors.green.shade600 : scheme.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                allDone ? Icons.check_circle : Icons.inventory_2_outlined,
+                size: 18,
+                color: color,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                allDone ? 'Все товары собраны' : '$picked из $total собрано',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: fraction,
+              minHeight: 6,
+              backgroundColor: scheme.surface,
+              valueColor: AlwaysStoppedAnimation(color),
             ),
           ),
         ],

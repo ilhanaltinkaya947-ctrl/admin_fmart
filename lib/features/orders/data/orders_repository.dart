@@ -299,4 +299,16 @@ class OrdersRepository {
     );
     return OrderItemEditResult.fromJson(asJsonMap(resp.data));
   }
+
+  Future<OrderItemPickedResult> setItemPicked({
+    required int orderId,
+    required int itemId,
+    required bool picked,
+  }) async {
+    final path = '/gw/order/admin/orders/$orderId/items/$itemId/picked';
+    final resp = picked
+        ? await api.dio.post(path)
+        : await api.dio.delete(path);
+    return OrderItemPickedResult.fromJson(asJsonMap(resp.data));
+  }
 }

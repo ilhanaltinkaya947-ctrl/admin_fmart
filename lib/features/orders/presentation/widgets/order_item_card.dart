@@ -14,6 +14,10 @@ class OrderItemCard extends StatelessWidget {
   final bool busy;
   final ValueChanged<int>? onQtyChange;
   final VoidCallback? onRemove;
+  // When non-null, shows a leading "picked" checkbox. Tapping it
+  // toggles the pick state via this callback (true = mark picked).
+  final ValueChanged<bool>? onPickedToggle;
+  final bool pickedBusy;
 
   const OrderItemCard({
     super.key,
@@ -22,20 +26,34 @@ class OrderItemCard extends StatelessWidget {
     this.busy = false,
     this.onQtyChange,
     this.onRemove,
+    this.onPickedToggle,
+    this.pickedBusy = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final name = item.product.name ?? 'Товар ${item.productId}';
+    final showPicker = onPickedToggle != null;
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
+      color: item.isPicked
+          ? theme.colorScheme.secondaryContainer.withValues(alpha: 0.35)
+          : null,
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (showPicker) ...[
+              _PickedToggle(
+                checked: item.isPicked,
+                busy: pickedBusy,
+                onToggle: (v) => onPickedToggle!(v),
+              ),
+              const SizedBox(width: 4),
+            ],
             _Thumbnail(imageUrl: item.product.imageUrl),
             const SizedBox(width: 12),
             Expanded(
@@ -347,6 +365,59 @@ class _MetaPill extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PickedToggle extends StatelessWidget {
+  final bool checked;
+  final bool busy;
+  final ValueChanged<bool> onToggle;
+
+  const _PickedToggle({
+    required this.checked,
+    required this.busy,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return SizedBox(
+      width: 40,
+      height: 56,
+      child: Center(
+        child: busy
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2.4),
+              )
+            : InkResponse(
+                onTap: () {
+                  HapticFeedback.lightImpact();
+                  onToggle(!checked);
+                },
+                radius: 24,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: checked ? scheme.primary : Colors.transparent,
+                    border: Border.all(
+                      color: checked ? scheme.primary : scheme.outline,
+                      width: 2,
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: checked
+                      ? Icon(Icons.check, size: 20, color: scheme.onPrimary)
+                      : null,
+                ),
+              ),
       ),
     );
   }

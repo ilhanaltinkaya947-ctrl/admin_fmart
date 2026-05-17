@@ -147,6 +147,7 @@ class OrderItem {
   final String price;
   final String total;
   final ProductInfo product;
+  final DateTime? pickedAt;
 
   OrderItem({
     required this.id,
@@ -155,7 +156,10 @@ class OrderItem {
     required this.price,
     required this.total,
     required this.product,
+    this.pickedAt,
   });
+
+  bool get isPicked => pickedAt != null;
 
   factory OrderItem.fromJson(Map<String, dynamic> j) => OrderItem(
     id: j['id'] as int? ?? 0,
@@ -166,15 +170,25 @@ class OrderItem {
     price: j['price']?.toString() ?? '0',
     total: j['total']?.toString() ?? '0',
     product: ProductInfo.fromJson((j['product'] as Map?)?.cast<String, dynamic>() ?? {}),
+    pickedAt: j['picked_at'] == null
+        ? null
+        : DateTime.tryParse(j['picked_at'].toString()),
   );
 
-  OrderItem copyWith({int? qty, String? total}) => OrderItem(
+  OrderItem copyWith({
+    int? qty,
+    String? total,
+    DateTime? pickedAt,
+    bool clearPickedAt = false,
+  }) =>
+      OrderItem(
         id: id,
         productId: productId,
         qty: qty ?? this.qty,
         price: price,
         total: total ?? this.total,
         product: product,
+        pickedAt: clearPickedAt ? null : (pickedAt ?? this.pickedAt),
       );
 }
 
@@ -417,6 +431,33 @@ class OrderItemEditResult {
         deliverySum: _toDouble(j['delivery_sum']),
         totalAmount: _toDouble(j['total_amount']),
         removed: j['removed'] as bool? ?? false,
+      );
+}
+
+class OrderItemPickedResult {
+  final int orderId;
+  final int itemId;
+  final DateTime? pickedAt;
+  final int pickedCount;
+  final int totalCount;
+
+  OrderItemPickedResult({
+    required this.orderId,
+    required this.itemId,
+    required this.pickedAt,
+    required this.pickedCount,
+    required this.totalCount,
+  });
+
+  factory OrderItemPickedResult.fromJson(Map<String, dynamic> j) =>
+      OrderItemPickedResult(
+        orderId: j['order_id'] as int? ?? 0,
+        itemId: j['item_id'] as int? ?? 0,
+        pickedAt: j['picked_at'] == null
+            ? null
+            : DateTime.tryParse(j['picked_at'].toString()),
+        pickedCount: j['picked_count'] as int? ?? 0,
+        totalCount: j['total_count'] as int? ?? 0,
       );
 }
 
