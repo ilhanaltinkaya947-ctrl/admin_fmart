@@ -520,6 +520,91 @@ class TopProductsResponse {
       );
 }
 
+class ReviewItem {
+  final int id;
+  final int orderId;
+  final int customerId;
+  final int storeId;
+  final int rating;
+  final String? comment;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  ReviewItem({
+    required this.id,
+    required this.orderId,
+    required this.customerId,
+    required this.storeId,
+    required this.rating,
+    this.comment,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory ReviewItem.fromJson(Map<String, dynamic> j) => ReviewItem(
+        id: j['id'] as int? ?? 0,
+        orderId: j['order_id'] as int? ?? 0,
+        customerId: j['customer_id'] as int? ?? 0,
+        storeId: j['store_id'] as int? ?? 0,
+        rating: j['rating'] as int? ?? 0,
+        comment: j['comment'] as String?,
+        createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ??
+            DateTime.now(),
+        updatedAt: DateTime.tryParse(j['updated_at']?.toString() ?? '') ??
+            DateTime.now(),
+      );
+}
+
+class ReviewsListResponse {
+  final List<ReviewItem> items;
+  final bool hasMore;
+
+  ReviewsListResponse({required this.items, required this.hasMore});
+
+  factory ReviewsListResponse.fromJson(Map<String, dynamic> j) =>
+      ReviewsListResponse(
+        items: ((j['items'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => ReviewItem.fromJson(m.cast<String, dynamic>()))
+            .toList(),
+        hasMore: j['has_more'] as bool? ?? false,
+      );
+}
+
+class ReviewStats {
+  final int storeId;
+  final int count;
+  final double average;
+  // {1: n, 2: n, ...5: n}
+  final Map<int, int> distribution;
+
+  ReviewStats({
+    required this.storeId,
+    required this.count,
+    required this.average,
+    required this.distribution,
+  });
+
+  factory ReviewStats.fromJson(Map<String, dynamic> j) {
+    final raw = (j['distribution'] as Map?) ?? const {};
+    final dist = <int, int>{1: 0, 2: 0, 3: 0, 4: 0, 5: 0};
+    raw.forEach((k, v) {
+      final star = int.tryParse(k.toString());
+      if (star != null && star >= 1 && star <= 5) {
+        dist[star] = (v is num) ? v.toInt() : int.tryParse(v.toString()) ?? 0;
+      }
+    });
+    return ReviewStats(
+      storeId: j['store_id'] as int? ?? 0,
+      count: j['count'] as int? ?? 0,
+      average: (j['average'] is num)
+          ? (j['average'] as num).toDouble()
+          : double.tryParse(j['average']?.toString() ?? '') ?? 0.0,
+      distribution: dist,
+    );
+  }
+}
+
 class OrderItemPickedResult {
   final int orderId;
   final int itemId;

@@ -8,6 +8,7 @@ import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
 import '../../broadcast/presentation/broadcast_page.dart';
 import '../../reports/presentation/reports_page.dart';
+import '../../reviews/presentation/reviews_page.dart';
 import '../../settings/presentation/settings_page.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../users/presentation/users_list_page.dart';
@@ -23,6 +24,7 @@ enum _Section {
   orderHistory,
   customers,
   reports,
+  reviews,
   users,
   banners,
   broadcast,
@@ -70,6 +72,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.dashboard:
       case _Section.customers:
       case _Section.reports:
+      case _Section.reviews:
       case _Section.users:
       case _Section.banners:
       case _Section.broadcast:
@@ -109,6 +112,12 @@ class _HomeShellState extends State<HomeShell> {
           icon: Icon(Icons.bar_chart_outlined),
           selectedIcon: Icon(Icons.bar_chart),
           label: 'Отчёты',
+        );
+      case _Section.reviews:
+        return const NavigationDestination(
+          icon: Icon(Icons.star_outline),
+          selectedIcon: Icon(Icons.star),
+          label: 'Отзывы',
         );
       case _Section.users:
         return const NavigationDestination(
@@ -154,6 +163,11 @@ class _HomeShellState extends State<HomeShell> {
         return const CustomersListPage();
       case _Section.reports:
         return ReportsPage(
+          storeId: widget.storeId,
+          storeName: widget.storeName,
+        );
+      case _Section.reviews:
+        return ReviewsPage(
           storeId: widget.storeId,
           storeName: widget.storeName,
         );
@@ -205,6 +219,7 @@ class _HomeShellState extends State<HomeShell> {
           _Section.orderHistory,
           _Section.customers,
           _Section.reports,
+          _Section.reviews,
           // Users (staff management) and Banners are admin-only. The
           // pages self-gate their bodies, but the nav entries must be
           // gated too — otherwise a manager sees the tab, taps it, and
@@ -314,6 +329,13 @@ class _SideRail extends StatelessWidget {
                 label: 'Отчёты',
                 isSelected: selected == _Section.reports,
                 onTap: () => onSelected(_Section.reports),
+              ),
+              _RailItem(
+                icon: Icons.star_outline,
+                selectedIcon: Icons.star,
+                label: 'Отзывы',
+                isSelected: selected == _Section.reviews,
+                onTap: () => onSelected(_Section.reviews),
               ),
               // Users (staff management) — admin role only. Manager
               // doesn't see this entry (the page self-gates too, but the

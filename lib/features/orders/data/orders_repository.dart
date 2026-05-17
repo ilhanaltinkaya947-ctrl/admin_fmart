@@ -338,6 +338,49 @@ class OrdersRepository {
     return TopProductsResponse.fromJson(asJsonMap(resp.data));
   }
 
+  /// Admin Отзывы tab — paginated reviews for one store, optional
+  /// rating + date filters. Backend returns has_more so we can render
+  /// "Load more" without a separate count query.
+  Future<ReviewsListResponse> getReviews({
+    required int storeId,
+    int limit = 50,
+    int offset = 0,
+    int? minRating,
+    int? maxRating,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+  }) async {
+    final resp = await api.dio.get(
+      '/gw/order/admin/reviews',
+      queryParameters: {
+        'store_id': storeId,
+        'limit': limit,
+        'offset': offset,
+        if (minRating != null) 'min_rating': minRating,
+        if (maxRating != null) 'max_rating': maxRating,
+        if (dateFrom != null) 'date_from': dateFrom.toUtc().toIso8601String(),
+        if (dateTo != null) 'date_to': dateTo.toUtc().toIso8601String(),
+      },
+    );
+    return ReviewsListResponse.fromJson(asJsonMap(resp.data));
+  }
+
+  Future<ReviewStats> getReviewStats({
+    required int storeId,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+  }) async {
+    final resp = await api.dio.get(
+      '/gw/order/admin/reviews/stats',
+      queryParameters: {
+        'store_id': storeId,
+        if (dateFrom != null) 'date_from': dateFrom.toUtc().toIso8601String(),
+        if (dateTo != null) 'date_to': dateTo.toUtc().toIso8601String(),
+      },
+    );
+    return ReviewStats.fromJson(asJsonMap(resp.data));
+  }
+
   Future<OrderItemPickedResult> setItemPicked({
     required int orderId,
     required int itemId,
