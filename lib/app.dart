@@ -17,6 +17,7 @@ import 'features/auth/presentation/login_page.dart';
 import 'features/auth/state/auth_cubit.dart';
 import 'features/banners/data/banners_repository.dart';
 import 'features/banners/state/banners_cubit.dart';
+import 'features/broadcast/data/broadcast_repository.dart';
 
 import 'features/customers/data/customers_repository.dart';
 import 'features/customers/state/customers_cubit.dart';
@@ -56,6 +57,7 @@ class _AppState extends State<App> {
   late final CustomersRepository _customersRepo;
   late final UsersRepository _usersRepo;
   late final BannersRepository _bannersRepo;
+  late final BroadcastRepository _broadcastRepo;
 
 
   late final SoundService _sound;
@@ -81,6 +83,7 @@ class _AppState extends State<App> {
     _customersRepo = CustomersRepository(api: _api);
     _usersRepo = UsersRepository(api: _api);
     _bannersRepo = BannersRepository(api: _api);
+    _broadcastRepo = BroadcastRepository(api: _api);
 
     _sound = SoundService();
 
@@ -230,6 +233,7 @@ class _AppState extends State<App> {
         RepositoryProvider.value(value: _usersRepo),
         RepositoryProvider.value(value: _prefsStorage),
         RepositoryProvider.value(value: _deliveryRepo),
+        RepositoryProvider.value(value: _broadcastRepo),
         RepositoryProvider.value(value: widget.oneSignalService),
       ],
       child: MultiBlocProvider(

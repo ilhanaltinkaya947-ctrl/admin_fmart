@@ -6,6 +6,7 @@ import '../../banners/presentation/banners_list_page.dart';
 import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
+import '../../broadcast/presentation/broadcast_page.dart';
 import '../../reports/presentation/reports_page.dart';
 import '../../settings/presentation/settings_page.dart';
 import '../../stores/state/store_cubit.dart';
@@ -24,6 +25,7 @@ enum _Section {
   reports,
   users,
   banners,
+  broadcast,
   settings,
 }
 
@@ -70,6 +72,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.reports:
       case _Section.users:
       case _Section.banners:
+      case _Section.broadcast:
       case _Section.settings:
         break;
     }
@@ -119,6 +122,12 @@ class _HomeShellState extends State<HomeShell> {
           selectedIcon: Icon(Icons.image),
           label: 'Баннеры',
         );
+      case _Section.broadcast:
+        return const NavigationDestination(
+          icon: Icon(Icons.campaign_outlined),
+          selectedIcon: Icon(Icons.campaign),
+          label: 'Рассылка',
+        );
       case _Section.settings:
         return const NavigationDestination(
           icon: Icon(Icons.settings_outlined),
@@ -152,6 +161,8 @@ class _HomeShellState extends State<HomeShell> {
         return const UsersListPage();
       case _Section.banners:
         return const BannersListPage();
+      case _Section.broadcast:
+        return const BroadcastPage();
       case _Section.settings:
         return const SettingsPage();
     }
@@ -200,6 +211,7 @@ class _HomeShellState extends State<HomeShell> {
           // lands on an "admin only" banner.
           if (isAdmin) _Section.users,
           if (isAdmin) _Section.banners,
+          if (isAdmin) _Section.broadcast,
           _Section.settings,
         ];
 
@@ -329,6 +341,20 @@ class _SideRail extends StatelessWidget {
                   label: 'Баннеры',
                   isSelected: selected == _Section.banners,
                   onTap: () => onSelected(_Section.banners),
+                );
+              }),
+              // Broadcast — admin role only. Sends a push to ALL customers,
+              // so we keep it behind the same gate as Banners.
+              Builder(builder: (ctx) {
+                final auth = ctx.watch<AuthCubit>().state;
+                final isAdmin = auth is Authenticated && auth.user.isAdmin;
+                if (!isAdmin) return const SizedBox.shrink();
+                return _RailItem(
+                  icon: Icons.campaign_outlined,
+                  selectedIcon: Icons.campaign,
+                  label: 'Рассылка',
+                  isSelected: selected == _Section.broadcast,
+                  onTap: () => onSelected(_Section.broadcast),
                 );
               }),
               _RailItem(
