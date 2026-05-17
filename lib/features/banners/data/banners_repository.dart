@@ -91,6 +91,35 @@ class BannersRepository {
     await api.dio.delete('$_adminPath/$id');
   }
 
+  /// Upload a zip of banner images in one call. Backend extracts the
+  /// zip, validates each image, and creates a banner row per file in
+  /// alphabetical filename order. Returns a per-file summary so the UI
+  /// can show which ones landed and which got rejected (wrong ratio,
+  /// corrupt file, etc).
+  Future<BannerBulkResult> bulkUploadZip({
+    required File zipFile,
+    bool active = true,
+  }) async {
+    final formData = FormData.fromMap({
+      'archive': await MultipartFile.fromFile(
+        zipFile.path,
+        filename: zipFile.uri.pathSegments.last,
+      ),
+      'active': active,
+    });
+    try {
+      final resp = await api.dio.post(
+        '$_adminPath/bulk-upload',
+        data: formData,
+      );
+      return BannerBulkResult.fromJson(
+        (resp.data as Map).cast<String, dynamic>(),
+      );
+    } on DioException catch (e) {
+      throw _mapValidationError(e);
+    }
+  }
+
   Future<void> reorder(List<int> orderedIds) async {
     await api.dio.post(
       '$_adminPath/reorder',
@@ -105,6 +134,37 @@ class BannersRepository {
     }
     return e;
   }
+}
+
+class BannerBulkResult {
+  final int createdCount;
+  final int skippedCount;
+  final List<BannerBulkError> errors;
+
+  BannerBulkResult({
+    required this.createdCount,
+    required this.skippedCount,
+    required this.errors,
+  });
+
+  factory BannerBulkResult.fromJson(Map<String, dynamic> j) => BannerBulkResult(
+        createdCount: j['created_count'] as int? ?? 0,
+        skippedCount: j['skipped_count'] as int? ?? 0,
+        errors: ((j['errors'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => BannerBulkError.fromJson(m.cast<String, dynamic>()))
+            .toList(),
+      );
+}
+
+class BannerBulkError {
+  final String filename;
+  final String error;
+  BannerBulkError({required this.filename, required this.error});
+  factory BannerBulkError.fromJson(Map<String, dynamic> j) => BannerBulkError(
+        filename: j['filename']?.toString() ?? '',
+        error: j['error']?.toString() ?? '',
+      );
 }
 
 class BannerValidationException implements Exception {

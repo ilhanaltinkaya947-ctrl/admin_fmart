@@ -1,8 +1,12 @@
+import 'dart:io';
+
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../data/banner_models.dart';
+import '../data/banners_repository.dart';
 import '../state/banners_cubit.dart';
 import 'banner_edit_page.dart';
 
@@ -66,12 +70,88 @@ class _BannersListPageState extends State<BannersListPage> {
     }
   }
 
+  Future<void> _bulkUploadZip() async {
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+      withData: false,
+    );
+    if (picked == null || picked.files.isEmpty) return;
+    final path = picked.files.single.path;
+    if (path == null) return;
+    if (!mounted) return;
+
+    // Show a non-dismissible spinner while the upload runs — the zip
+    // can be 20MB+ and we don't want the admin to think it hung.
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final repo = context.read<BannersRepository>();
+      final result = await repo.bulkUploadZip(zipFile: File(path));
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      await context.read<BannersCubit>().load();
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: Text('Загружено: ${result.createdCount}'),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Создано баннеров: ${result.createdCount}'),
+                if (result.skippedCount > 0)
+                  Text('Пропущено: ${result.skippedCount}'),
+                if (result.errors.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('Ошибки:',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  ...result.errors.map(
+                    (e) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text('• ${e.filename}: ${e.error}',
+                          style: const TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(c).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка загрузки: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Баннеры'),
         actions: [
+          IconButton(
+            tooltip: 'Загрузить zip с баннерами',
+            icon: const Icon(Icons.folder_zip_outlined),
+            onPressed: _bulkUploadZip,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () => context.read<BannersCubit>().load(),
