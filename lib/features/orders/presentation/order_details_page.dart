@@ -574,9 +574,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           onPressed: () => Navigator.of(context).pop(_order),
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
+      body: RefreshIndicator(
+        // Pull-to-refresh re-pulls order, customer, and refund history
+        // in one go. Awaits all three so the spinner sticks until every
+        // panel has fresh data — no half-loaded states.
+        onRefresh: _onPullToRefresh,
+        child: ListView(
+          // Forces RefreshIndicator to engage even on short orders that
+          // wouldn't otherwise overflow the viewport.
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          children: [
           _StatusBadge(status: _order.status),
           const SizedBox(height: 16),
           Text('Покупатель', style: Theme.of(context).textTheme.titleMedium),
@@ -829,7 +837,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           ),
         ],
       ),
+      ),
     );
+  }
+
+  /// Pull-to-refresh handler. Re-loads order + customer + refund history
+  /// in parallel and waits for all to finish so the RefreshIndicator
+  /// spinner reflects actual data freshness, not just the order call.
+  Future<void> _onPullToRefresh() async {
+    await Future.wait([
+      _pollOrder(),
+      _loadCustomer(),
+      if (_orderEverRefunded) _loadRefunds(),
+    ]);
   }
 }
 
