@@ -6,6 +6,7 @@ import '../../banners/presentation/banners_list_page.dart';
 import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
+import '../../reports/presentation/reports_page.dart';
 import '../../settings/presentation/settings_page.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../users/presentation/users_list_page.dart';
@@ -15,7 +16,16 @@ import 'dashboard_page.dart';
 /// NavigationRail. iPad portrait is ~810pt; phones are well below 600.
 const double _kRailBreakpoint = 720;
 
-enum _Section { dashboard, newOrders, orderHistory, customers, users, banners, settings }
+enum _Section {
+  dashboard,
+  newOrders,
+  orderHistory,
+  customers,
+  reports,
+  users,
+  banners,
+  settings,
+}
 
 class HomeShell extends StatefulWidget {
   final int storeId;
@@ -57,6 +67,7 @@ class _HomeShellState extends State<HomeShell> {
         break;
       case _Section.dashboard:
       case _Section.customers:
+      case _Section.reports:
       case _Section.users:
       case _Section.banners:
       case _Section.settings:
@@ -89,6 +100,12 @@ class _HomeShellState extends State<HomeShell> {
           icon: Icon(Icons.people_outline),
           selectedIcon: Icon(Icons.people),
           label: 'Клиенты',
+        );
+      case _Section.reports:
+        return const NavigationDestination(
+          icon: Icon(Icons.bar_chart_outlined),
+          selectedIcon: Icon(Icons.bar_chart),
+          label: 'Отчёты',
         );
       case _Section.users:
         return const NavigationDestination(
@@ -126,6 +143,11 @@ class _HomeShellState extends State<HomeShell> {
         );
       case _Section.customers:
         return const CustomersListPage();
+      case _Section.reports:
+        return ReportsPage(
+          storeId: widget.storeId,
+          storeName: widget.storeName,
+        );
       case _Section.users:
         return const UsersListPage();
       case _Section.banners:
@@ -171,6 +193,7 @@ class _HomeShellState extends State<HomeShell> {
           _Section.newOrders,
           _Section.orderHistory,
           _Section.customers,
+          _Section.reports,
           // Users (staff management) and Banners are admin-only. The
           // pages self-gate their bodies, but the nav entries must be
           // gated too — otherwise a manager sees the tab, taps it, and
@@ -272,6 +295,13 @@ class _SideRail extends StatelessWidget {
                 label: 'Клиенты',
                 isSelected: selected == _Section.customers,
                 onTap: () => onSelected(_Section.customers),
+              ),
+              _RailItem(
+                icon: Icons.bar_chart_outlined,
+                selectedIcon: Icons.bar_chart,
+                label: 'Отчёты',
+                isSelected: selected == _Section.reports,
+                onTap: () => onSelected(_Section.reports),
               ),
               // Users (staff management) — admin role only. Manager
               // doesn't see this entry (the page self-gates too, but the

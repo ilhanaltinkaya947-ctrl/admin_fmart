@@ -434,6 +434,92 @@ class OrderItemEditResult {
       );
 }
 
+class SalesByDayRow {
+  final DateTime date;
+  final int orderCount;
+  final double revenue;
+
+  SalesByDayRow({
+    required this.date,
+    required this.orderCount,
+    required this.revenue,
+  });
+
+  factory SalesByDayRow.fromJson(Map<String, dynamic> j) {
+    final raw = j['date']?.toString() ?? '';
+    return SalesByDayRow(
+      date: DateTime.tryParse(raw) ?? DateTime.fromMillisecondsSinceEpoch(0),
+      orderCount: j['order_count'] as int? ?? 0,
+      revenue: (j['revenue'] is num)
+          ? (j['revenue'] as num).toDouble()
+          : double.tryParse(j['revenue']?.toString() ?? '') ?? 0.0,
+    );
+  }
+}
+
+class SalesByDayResponse {
+  final int storeId;
+  final List<SalesByDayRow> rows;
+
+  SalesByDayResponse({required this.storeId, required this.rows});
+
+  factory SalesByDayResponse.fromJson(Map<String, dynamic> j) =>
+      SalesByDayResponse(
+        storeId: j['store_id'] as int? ?? 0,
+        rows: ((j['rows'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => SalesByDayRow.fromJson(m.cast<String, dynamic>()))
+            .toList(),
+      );
+}
+
+class TopProductRow {
+  final int productId;
+  final int qty;
+  final double revenue;
+  final String name;
+  final String? sku;
+  final String? imageUrl;
+
+  TopProductRow({
+    required this.productId,
+    required this.qty,
+    required this.revenue,
+    required this.name,
+    this.sku,
+    this.imageUrl,
+  });
+
+  factory TopProductRow.fromJson(Map<String, dynamic> j) => TopProductRow(
+        productId: j['product_id'] as int? ?? 0,
+        qty: j['qty'] as int? ?? 0,
+        revenue: (j['revenue'] is num)
+            ? (j['revenue'] as num).toDouble()
+            : double.tryParse(j['revenue']?.toString() ?? '') ?? 0.0,
+        name: (j['name'] as String?)?.trim().isNotEmpty == true
+            ? j['name'] as String
+            : 'Товар #${j['product_id']}',
+        sku: j['sku'] as String?,
+        imageUrl: j['image_url'] as String?,
+      );
+}
+
+class TopProductsResponse {
+  final int storeId;
+  final List<TopProductRow> rows;
+
+  TopProductsResponse({required this.storeId, required this.rows});
+
+  factory TopProductsResponse.fromJson(Map<String, dynamic> j) =>
+      TopProductsResponse(
+        storeId: j['store_id'] as int? ?? 0,
+        rows: ((j['rows'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => TopProductRow.fromJson(m.cast<String, dynamic>()))
+            .toList(),
+      );
+}
+
 class OrderItemPickedResult {
   final int orderId;
   final int itemId;

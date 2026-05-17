@@ -300,6 +300,44 @@ class OrdersRepository {
     return OrderItemEditResult.fromJson(asJsonMap(resp.data));
   }
 
+  /// Per-day order count + revenue between [dateFrom] and [dateTo].
+  /// Backend omits zero-day rows; caller zero-fills for the chart.
+  Future<SalesByDayResponse> getSalesByDay({
+    required int storeId,
+    required DateTime dateFrom,
+    required DateTime dateTo,
+    String tz = 'Asia/Almaty',
+  }) async {
+    final resp = await api.dio.get(
+      '/gw/order/admin/reports/sales-by-day',
+      queryParameters: {
+        'store_id': storeId,
+        'date_from': dateFrom.toUtc().toIso8601String(),
+        'date_to': dateTo.toUtc().toIso8601String(),
+        'tz': tz,
+      },
+    );
+    return SalesByDayResponse.fromJson(asJsonMap(resp.data));
+  }
+
+  Future<TopProductsResponse> getTopProducts({
+    required int storeId,
+    required DateTime dateFrom,
+    required DateTime dateTo,
+    int limit = 10,
+  }) async {
+    final resp = await api.dio.get(
+      '/gw/order/admin/reports/top-products',
+      queryParameters: {
+        'store_id': storeId,
+        'date_from': dateFrom.toUtc().toIso8601String(),
+        'date_to': dateTo.toUtc().toIso8601String(),
+        'limit': limit,
+      },
+    );
+    return TopProductsResponse.fromJson(asJsonMap(resp.data));
+  }
+
   Future<OrderItemPickedResult> setItemPicked({
     required int orderId,
     required int itemId,

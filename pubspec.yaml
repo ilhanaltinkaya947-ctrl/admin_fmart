@@ -2,7 +2,7 @@ name: admin_fmart
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.0+4
+version: 1.0.0+8
 
 environment:
   sdk: ^3.6.0
@@ -23,6 +23,7 @@ dependencies:
   uuid: ^4.5.1
   audioplayers: ^6.0.0
   image_picker: ^1.0.7
+  file_picker: ^8.1.4
   flutter_image_compress: ^2.2.0
   cached_network_image: ^3.3.1
 
@@ -36,6 +37,9 @@ dependencies:
   # Skeleton placeholders for list loading states — gives a perceived
   # speed boost over a bare spinner. Matches the customer app's pattern.
   shimmer: ^3.0.0
+  # Charts for the admin Reports tab (sales-by-day line chart). Pure-Dart,
+  # no native deps — keeps build time + iOS pod count down.
+  fl_chart: ^0.69.0
 
 
 dev_dependencies:
