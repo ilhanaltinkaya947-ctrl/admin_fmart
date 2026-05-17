@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:admin_fmart/core/services/sound_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../features/orders/data/orders_repository.dart';
@@ -96,6 +97,11 @@ class OrderWatcher {
       if (!newOrderDialogGuard.tryAcquire()) return;
 
       await sound.ring();
+      // Haptic alongside the sound for operators who feel the iPad
+      // before they hear it (e.g., iPad sitting under a stack of
+      // receipts). On models without the Taptic engine this is a
+      // no-op — harmless. iPhones get a strong tap.
+      HapticFeedback.heavyImpact();
 
       final ctx = navigatorKey.currentContext;
       if (ctx == null) {

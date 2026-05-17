@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -103,6 +104,11 @@ class _AppState extends State<App> {
 
       // В foreground можно сразу играть звук и обновляться.
       await _sound.ring();
+      // Haptic alongside the sound. On iPhone this is a strong tap;
+      // on iPad it's a no-op except on Pro models with the Taptic
+      // Engine — harmless either way. Picked up by the operator's
+      // hand even when the iPad volume is low or muted.
+      HapticFeedback.heavyImpact();
 
       // Попробуем найти order_id в payload (если ты его добавишь на бэке)
       final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
