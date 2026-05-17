@@ -756,8 +756,12 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
           const Divider(),
           const SizedBox(height: 12),
 
-          Text('Изменить статус', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
+          // Status-change form. When the order is in a terminal state
+          // (canceled / refunded / partially-refunded) the heading,
+          // reason field, error display, and Save button are ALL hidden
+          // — only a friendly "this order is done" message is shown.
+          // Before: heading + dropdown hid, but reason field + Save
+          // button sat orphaned looking like they could do something.
           Builder(builder: (context) {
             // Only offer transitions the backend will actually accept
             // from the current status. Previously the dropdown listed
@@ -771,7 +775,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
             if (allowed.isEmpty) {
               return Text(
-                'Этот статус заказа финальный — изменение недоступно.',
+                'Этот заказ завершён — изменение статуса недоступно.',
                 style: TextStyle(
                   fontSize: 13,
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -779,7 +783,12 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
               );
             }
 
-            return Row(
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('Изменить статус', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                Row(
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
@@ -812,29 +821,30 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                               CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.refresh),
                 ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _reasonCtrl,
+                  decoration: const InputDecoration(labelText: 'Причина (необязательно)', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                if (_error != null) ...[
+                  Text(_error!, style: const TextStyle(color: Colors.red)),
+                  const SizedBox(height: 12),
+                ],
+                SizedBox(
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: _saving ? null : _changeStatus,
+                    child: _saving
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Text('Сохранить'),
+                  ),
+                ),
               ],
             );
           }),
-
-          const SizedBox(height: 8),
-          TextField(
-            controller: _reasonCtrl,
-            decoration: const InputDecoration(labelText: 'Причина (необязательно)', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 12),
-          if (_error != null) ...[
-            Text(_error!, style: const TextStyle(color: Colors.red)),
-            const SizedBox(height: 12),
-          ],
-          SizedBox(
-            height: 48,
-            child: ElevatedButton(
-              onPressed: _saving ? null : _changeStatus,
-              child: _saving
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Сохранить'),
-            ),
-          ),
         ],
       ),
       ),
