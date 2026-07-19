@@ -1,6 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/format/phone.dart';
 import '../../../core/services/onesignal_service.dart';
 import '../data/auth_repository.dart';
 import '../state/auth_cubit.dart';
@@ -18,6 +20,9 @@ class _LoginPageState extends State<LoginPage> {
   final _passFocus = FocusNode();
   bool _loading = false;
   bool _passVisible = false;
+  // Defaults ON: staff using their own iPads expect to stay signed in.
+  // Unchecking wipes tokens on next app launch (shared/loaner device case).
+  bool _rememberMe = true;
   String? _error;
 
   @override
@@ -28,24 +33,14 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  /// Strip everything but digits and produce a canonical KZ phone form
-  /// (`+7XXXXXXXXXX`). Backend matches on this exact shape, so we
-  /// normalise client-side instead of relying on whatever the user
-  /// types — handles `8 700 …`, `+7 (700) …`, `77001234567`, etc.
-  String _normalisePhone(String raw) {
-    var digits = raw.replaceAll(RegExp(r'\D'), '');
-    if (digits.startsWith('8') && digits.length == 11) {
-      digits = '7${digits.substring(1)}';
-    }
-    if (digits.length == 10) {
-      digits = '7$digits'; // user typed without country code
-    }
-    return '+$digits';
-  }
-
   Future<void> _login() async {
     if (_phone.text.trim().isEmpty || _pass.text.isEmpty) {
       setState(() => _error = 'Введите телефон и пароль');
+      return;
+    }
+    final phone = normaliseKzPhone(_phone.text);
+    if (phone == null) {
+      setState(() => _error = 'Введите корректный номер телефона (+7…)');
       return;
     }
     setState(() {
@@ -58,18 +53,49 @@ class _LoginPageState extends State<LoginPage> {
       final oneSignal = context.read<OneSignalService>();
       final osId = await oneSignal.getUserIdSafe();
       await repo.login(
-        phone: _normalisePhone(_phone.text),
+        phone: phone,
         password: _pass.text,
         onesignalUserId: osId,
+        rememberMe: _rememberMe,
       );
       if (!mounted) return;
       await context.read<AuthCubit>().setAuthenticated();
     } catch (e) {
       debugPrint('[LOGIN] error: $e');
-      setState(() => _error = 'Не удалось войти. Проверь телефон и пароль.');
+      setState(() => _error = _humanizeError(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// Pull the server's actual error detail out of a DioException so QA can
+  /// distinguish "wrong password" from "OneSignal ID required" etc.
+  /// Falls back to the generic message for unexpected failures.
+  String _humanizeError(Object e) {
+    if (e is DioException) {
+      final data = e.response?.data;
+      String? detail;
+      if (data is Map) {
+        detail = (data['detail'] ?? data['message'] ?? data['error'])?.toString();
+      } else if (data is String && data.isNotEmpty) {
+        detail = data;
+      }
+      if (detail != null && detail.isNotEmpty) {
+        if (detail.toLowerCase().contains('invalid credentials')) {
+          return 'Неверный телефон или пароль.';
+        }
+        if (detail.toLowerCase().contains('onesignal')) {
+          return 'Не удалось зарегистрировать push-устройство. Подождите 5 секунд и попробуйте ещё раз.';
+        }
+        return 'Ошибка входа: $detail';
+      }
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout) {
+        return 'Нет связи с сервером. Проверьте интернет.';
+      }
+    }
+    return 'Не удалось войти. Проверь телефон и пароль.';
   }
 
   @override
@@ -195,7 +221,37 @@ class _LoginPageState extends State<LoginPage> {
                               ),
                             ),
                           ],
-                          const SizedBox(height: 20),
+                          const SizedBox(height: 8),
+                          InkWell(
+                            onTap: () => setState(() => _rememberMe = !_rememberMe),
+                            borderRadius: BorderRadius.circular(8),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Row(
+                                children: [
+                                  Checkbox(
+                                    value: _rememberMe,
+                                    onChanged: (v) =>
+                                        setState(() => _rememberMe = v ?? true),
+                                    materialTapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      'Запомнить меня',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: theme.colorScheme.onSurface,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
                           SizedBox(
                             width: double.infinity,
                             height: 52,

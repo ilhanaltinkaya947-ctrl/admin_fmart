@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../../orders/models/order_models.dart' show Pagination;
 import '../data/customers_repository.dart';
 import '../models/customer_models.dart';
@@ -44,8 +45,10 @@ class CustomersCubit extends Cubit<CustomersState> {
         q: _query,
       );
       emit(CustomersLoaded(items: data.items, pagination: data.pagination));
-    } catch (_) {
-      emit(CustomersFailure(message: 'Не удалось загрузить клиентов'));
+    } catch (e) {
+      emit(CustomersFailure(
+        message: describeApiError(e, subject: 'клиентов'),
+      ));
     } finally {
       _loading = false;
     }

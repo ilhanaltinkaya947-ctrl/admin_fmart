@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -5,6 +7,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api/api_client.dart';
 import 'core/api/api_config.dart';
+import 'core/services/new_order_counter.dart';
 import 'core/services/new_order_dialog_guard.dart';
 import 'core/services/onesignal_service.dart';
 import 'core/services/order_watcher.dart';
@@ -23,6 +26,8 @@ import 'features/customers/data/customers_repository.dart';
 import 'features/customers/state/customers_cubit.dart';
 import 'features/delivery/data/delivery_repository.dart';
 import 'features/delivery/state/delivery_cubit.dart';
+import 'features/delivery_slots/data/delivery_slots_repository.dart';
+import 'features/delivery_slots/state/slot_templates_cubit.dart';
 import 'features/home/presentation/home_shell.dart';
 import 'features/stores/data/stores_repository.dart';
 import 'features/stores/presentation/store_picker_page.dart';
@@ -43,7 +48,7 @@ class App extends StatefulWidget {
   State<App> createState() => _AppState();
 }
 
-class _AppState extends State<App> {
+class _AppState extends State<App> with WidgetsBindingObserver {
   final _navKey = GlobalKey<NavigatorState>();
 
   late final TokenStorage _tokenStorage;
@@ -58,14 +63,31 @@ class _AppState extends State<App> {
   late final UsersRepository _usersRepo;
   late final BannersRepository _bannersRepo;
   late final BroadcastRepository _broadcastRepo;
+  late final DeliverySlotsRepository _slotsRepo;
 
 
   late final SoundService _sound;
+  late final NewOrderCounter _newOrderCounter;
   OrderWatcher? _watcher;
+
+  // A notification tap that arrived before the app was ready to navigate
+  // (cold start: SDK click event fires before the navigator + auth exist).
+  // Replayed once the app reaches Authenticated. Latest-tap-wins.
+  int? _pendingOpenOrderId;
 
   @override
   void initState() {
     super.initState();
+    // Observe app lifecycle so we can restart the OrderWatcher when the
+    // operator brings the app back from background. iOS suspends our
+    // Dart timers when the app is sent to background; without an explicit
+    // restart, the watcher's _sinceUtc cursor stays frozen at the
+    // suspension time and orders that arrive in between get picked up as
+    // a single batch only when the next tick runs — and even then, the
+    // app's OneSignal foreground listener may already have fired without
+    // a sound (the dialog appearing "only after closing+reopening the
+    // app" symptom reported on launch day).
+    WidgetsBinding.instance.addObserver(this);
 
     _tokenStorage = TokenStorage();
     _prefsStorage = PrefsStorage();
@@ -84,10 +106,13 @@ class _AppState extends State<App> {
     _usersRepo = UsersRepository(api: _api);
     _bannersRepo = BannersRepository(api: _api);
     _broadcastRepo = BroadcastRepository(api: _api);
+    _slotsRepo = DeliverySlotsRepository(api: _api);
 
     _sound = SoundService();
+    _newOrderCounter = NewOrderCounter();
 
     _setupOneSignalForegroundHandler();
+    _setupOneSignalClickHandler();
   }
 
   void _handleUnauthorized() {
@@ -101,9 +126,23 @@ class _AppState extends State<App> {
 
   void _setupOneSignalForegroundHandler() {
     widget.oneSignalService.onForegroundNotification = (data) async {
+      // Bump the unread counter immediately — even if the dialog can't
+      // open (no nav context, dialog guard busy), the operator should
+      // still see the badge on the "Новые" tab next time they look.
+      _newOrderCounter.bump();
       // Coordinate with OrderWatcher so push + poll don't stack
       // two new-order dialogs on top of each other.
       if (!newOrderDialogGuard.tryAcquire()) return;
+
+      // Resolve the nav context BEFORE starting the siren: with no context
+      // there is no dialog whose dismissal would ever stop it, so we must not
+      // start an unstoppable loop. bump()/badge already recorded the order and
+      // the OrderWatcher poll re-alerts once a context exists.
+      final ctx = _navKey.currentContext;
+      if (ctx == null) {
+        newOrderDialogGuard.release();
+        return;
+      }
 
       // В foreground можно сразу играть звук и обновляться.
       await _sound.ring();
@@ -116,8 +155,10 @@ class _AppState extends State<App> {
       // Попробуем найти order_id в payload (если ты его добавишь на бэке)
       final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
 
-      final ctx = _navKey.currentContext;
-      if (ctx == null) {
+      // If the context unmounted while the siren was starting, stop it and
+      // bail — otherwise the loop would have no dialog to end it.
+      if (!ctx.mounted) {
+        unawaited(_sound.stop());
         newOrderDialogGuard.release();
         return;
       }
@@ -141,30 +182,13 @@ class _AppState extends State<App> {
                 onPressed: () async {
                   await _sound.stop();
                   if (c.mounted) Navigator.of(c).pop();
-
-                  final storeId = await _prefsStorage.getSelectedStoreId();
-                  if (storeId == null) return;
-
-                  // If the push payload included an order_id, jump straight
-                  // to that order's detail. Falls back to refreshing the
-                  // list when the id is missing or the lookup fails. Even
-                  // on the navigate-to-detail path, the outer refresh
-                  // below still fires — keeps the list fresh for when
-                  // the operator backs out of detail.
+                  // If the push payload included an order_id, jump straight to
+                  // that order's detail. Shared with the background/killed push
+                  // TAP path so both routes behave identically. The outer
+                  // refresh below still fires regardless, keeping the list
+                  // fresh for when the operator backs out of detail.
                   if (orderId != null) {
-                    try {
-                      final order = await _ordersRepo.getOrderById(
-                        storeId: storeId,
-                        orderId: orderId,
-                      );
-                      if (order != null) {
-                        _navKey.currentState?.push(
-                          MaterialPageRoute(
-                            builder: (_) => OrderDetailsPage(order: order),
-                          ),
-                        );
-                      }
-                    } catch (_) {/* fall through — outer refresh will still update the list */}
+                    await _openOrderById(orderId);
                   }
                 },
                 child: const Text('Открыть'),
@@ -192,6 +216,51 @@ class _AppState extends State<App> {
     };
   }
 
+  /// Resolve the selected store, look up the order, and push its detail page.
+  /// Shared by the foreground "Открыть" dialog button and the background/killed
+  /// notification-tap handler so both routes behave identically. Silent on
+  /// failure (missing store / lookup error) — the orders list stays the
+  /// fallback surface.
+  Future<void> _openOrderById(int orderId) async {
+    final storeId = await _prefsStorage.getSelectedStoreId();
+    if (storeId == null) return;
+    try {
+      final order = await _ordersRepo.getOrderById(
+        storeId: storeId,
+        orderId: orderId,
+      );
+      if (order != null) {
+        _navKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => OrderDetailsPage(order: order),
+          ),
+        );
+      }
+    } catch (_) {/* lookup failed — operator can still find it in the list */}
+  }
+
+  void _setupOneSignalClickHandler() {
+    widget.oneSignalService.onNotificationClick = (data) async {
+      // Push TAPPED while backgrounded or killed. Record it for the badge, then
+      // route to the order. On a cold start the click can fire before the
+      // navigator + auth exist; if so, stash the id and let the AuthCubit
+      // listener replay it once Authenticated.
+      _newOrderCounter.bump();
+      final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
+      if (orderId == null) return;
+
+      final navCtx = _navKey.currentContext;
+      final navReady = _navKey.currentState != null && navCtx != null;
+      final isAuthed =
+          navReady && navCtx.read<AuthCubit?>()?.state is Authenticated;
+      if (!navReady || !isAuthed) {
+        _pendingOpenOrderId = orderId;
+        return;
+      }
+      await _openOrderById(orderId);
+    };
+  }
+
   Future<void> _startWatcherIfPossible() async {
     final storeId = await _prefsStorage.getSelectedStoreId();
     if (storeId == null) return;
@@ -206,7 +275,11 @@ class _AppState extends State<App> {
       navigatorKey: _navKey,
     );
 
-    _watcher!.start(interval: const Duration(seconds: 30));
+    // 10s matches the customer-app polling cadence and the "operator sees
+    // new orders within seconds" expectation. 30s left a real gap where a
+    // walk-up customer order could sit invisible long enough for the
+    // operator to assume the system was dead.
+    _watcher!.start(interval: const Duration(seconds: 10));
   }
 
   Future<void> _stopWatcher() async {
@@ -215,9 +288,32 @@ class _AppState extends State<App> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Resume = operator pulled the iPad out of background or unlocked it
+    // with the admin app in foreground. Cheap to call: if no auth/store
+    // is selected yet, _startWatcherIfPossible early-returns.
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('[lifecycle] resumed — restarting OrderWatcher');
+      _startWatcherIfPossible();
+      // Re-assert the OneSignal binding on resume. bootstrap() re-binds on a
+      // COLD start only; a manager who enables notifications while the app is
+      // merely backgrounded returns via a RESUME (no bootstrap) and would stay
+      // unsubscribed until a full kill+relaunch — exactly the store 15/16 case
+      // (2026-07-06). Idempotent + best-effort; no-op if not authenticated.
+      final ctx = _navKey.currentContext;
+      if (ctx != null) {
+        ctx.read<AuthCubit>().reassertPushBinding();
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _watcher?.stop();
     _watcher = null;
+    _newOrderCounter.dispose();
     _sound.dispose();
     super.dispose();
   }
@@ -235,6 +331,7 @@ class _AppState extends State<App> {
         RepositoryProvider.value(value: _deliveryRepo),
         RepositoryProvider.value(value: _broadcastRepo),
         RepositoryProvider.value(value: widget.oneSignalService),
+        RepositoryProvider.value(value: _newOrderCounter),
       ],
       child: MultiBlocProvider(
         providers: [
@@ -264,6 +361,7 @@ class _AppState extends State<App> {
           ),
           BlocProvider(create: (_) => DeliveryCubit(repo: _deliveryRepo)),
           BlocProvider(create: (_) => BannersCubit(repo: _bannersRepo)),
+          BlocProvider(create: (_) => SlotTemplatesCubit(repo: _slotsRepo)),
         ],
         child: MaterialApp(
           navigatorKey: _navKey,
@@ -287,6 +385,17 @@ class _AppState extends State<App> {
             listener: (ctx, state) async {
               if (state is Authenticated) {
                 _startWatcherIfPossible();
+                // Replay a notification tap that arrived during cold start,
+                // before the navigator/auth were ready. Defer a frame so the
+                // router has swapped to the authenticated tree and _navKey has
+                // a live navigator to push onto.
+                final pending = _pendingOpenOrderId;
+                if (pending != null) {
+                  _pendingOpenOrderId = null;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _openOrderById(pending);
+                  });
+                }
               }
               if (state is Unauthenticated) {
                 await _stopWatcher();
@@ -302,6 +411,7 @@ class _AppState extends State<App> {
                 ctx.read<UsersCubit>().reset();
                 ctx.read<BannersCubit>().reset();
                 ctx.read<DeliveryCubit>().reset();
+                ctx.read<SlotTemplatesCubit>().reset();
               }
             },
             child: const _RootRouter(),

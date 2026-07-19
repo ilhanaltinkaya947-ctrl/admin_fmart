@@ -291,9 +291,12 @@ class _SalesChart extends StatelessWidget {
 
     // Zero-fill missing days — fl_chart wants a continuous x-axis to
     // draw a meaningful line; gaps would otherwise compress visually.
+    // .toLocal() is defensive: backend buckets in Asia/Almaty today, but
+    // if it ever changes to UTC-bucketing, late-evening sales near
+    // midnight would otherwise land in the wrong column on the chart.
     final byDate = <String, double>{
       for (final r in response!.rows)
-        DateFormat('yyyy-MM-dd').format(r.date): r.revenue,
+        DateFormat('yyyy-MM-dd').format(r.date.toLocal()): r.revenue,
     };
     final days = <DateTime>[];
     final startDay = DateTime(range.start.year, range.start.month, range.start.day);

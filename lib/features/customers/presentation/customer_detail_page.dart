@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 import '../../../core/format/money.dart';
 import '../../orders/models/order_models.dart';
 import '../data/customers_repository.dart';
 import '../models/customer_note.dart';
 import '../../orders/presentation/order_details_page.dart';
-import '../data/customers_repository.dart';
 import '../state/customer_detail_cubit.dart';
 
 class CustomerDetailPage extends StatelessWidget {
@@ -118,6 +118,7 @@ class _Body extends StatelessWidget {
           totalOrders: orders.pagination.total,
           totalSpend: stats.totalSpend,
           lastOrderAt: stats.lastOrderAt,
+          skippedCount: stats.skippedCount,
         ),
         const SizedBox(height: 16),
         _NotesSection(customerId: customer.id),
@@ -260,9 +261,11 @@ class _StatsRow extends StatelessWidget {
   final int totalOrders;
   final double totalSpend;
   final DateTime? lastOrderAt;
+  final int skippedCount;
 
   const _StatsRow({
     required this.totalOrders,
+    this.skippedCount = 0,
     required this.totalSpend,
     required this.lastOrderAt,
   });
@@ -270,27 +273,61 @@ class _StatsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final df = DateFormat('dd.MM.yyyy');
-    return Row(
+    return Column(
       children: [
-        Expanded(child: _StatCard(label: 'Заказов', value: '$totalOrders')),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _StatCard(
-            label: 'Сумма',
-            value: formatTenge(totalSpend.round()),
-          ),
+        Row(
+          children: [
+            Expanded(child: _StatCard(label: 'Заказов', value: '$totalOrders')),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _StatCard(
+                // When some orders had unparseable totals we mark the
+                // figure as approximate so the manager knows not to
+                // trust it to-the-tenge.
+                label: skippedCount > 0 ? 'Сумма (≈)' : 'Сумма',
+                value: formatTenge(totalSpend.round()),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _StatCard(
+                label: 'Последний',
+                value: lastOrderAt != null
+                    ? df.format(lastOrderAt!.toLocal())
+                    : '—',
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _StatCard(
-            label: 'Последний',
-            value: lastOrderAt != null
-                ? df.format(lastOrderAt!.toLocal())
-                : '—',
+        if (skippedCount > 0) ...[
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Icon(Icons.info_outline, size: 13, color: Colors.orange.shade700),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  'Не удалось разобрать сумму у $skippedCount '
+                  '${_pluralOrders(skippedCount)} — итог приблизительный.',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.orange.shade800,
+                  ),
+                ),
+              ),
+            ],
           ),
-        ),
+        ],
       ],
     );
+  }
+
+  static String _pluralOrders(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return 'заказа';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'заказов';
+    return 'заказов';
   }
 }
 
@@ -330,19 +367,47 @@ class _StatCard extends StatelessWidget {
 class _AggregateStats {
   final double totalSpend;
   final DateTime? lastOrderAt;
-  _AggregateStats({required this.totalSpend, required this.lastOrderAt});
+  /// Orders whose `totalAmount` couldn't be parsed and were excluded
+  /// from [totalSpend]. The stats card uses this to mark the figure as
+  /// approximate when non-zero, instead of silently under-reporting.
+  final int skippedCount;
+  _AggregateStats({
+    required this.totalSpend,
+    required this.lastOrderAt,
+    this.skippedCount = 0,
+  });
 }
 
 _AggregateStats _aggregateStats(List<Order> orders) {
   double total = 0;
+  int skipped = 0;
   DateTime? last;
   for (final o in orders) {
-    total += double.tryParse(o.totalAmount) ?? 0;
+    final parsed = double.tryParse(o.totalAmount);
+    if (parsed == null) {
+      // Silently treating unparseable totals as 0 used to under-report
+      // a customer's lifetime spend with no signal. Count + Sentry so
+      // we know how often it actually happens, and the stats card can
+      // warn the manager that the displayed total is approximate.
+      skipped++;
+      Sentry.addBreadcrumb(Breadcrumb(
+        category: 'customer.aggregate',
+        level: SentryLevel.warning,
+        message: 'Unparseable totalAmount on order #${o.id}: '
+            '"${o.totalAmount}"',
+      ));
+      continue;
+    }
+    total += parsed;
     if (last == null || o.createdAt.isAfter(last)) {
       last = o.createdAt;
     }
   }
-  return _AggregateStats(totalSpend: total, lastOrderAt: last);
+  return _AggregateStats(
+    totalSpend: total,
+    lastOrderAt: last,
+    skippedCount: skipped,
+  );
 }
 
 /// Staff-internal notes section on the customer detail page. Loads its

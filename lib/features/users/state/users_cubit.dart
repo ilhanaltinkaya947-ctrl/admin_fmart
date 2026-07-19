@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../../orders/models/order_models.dart' show Pagination;
 import '../data/users_repository.dart';
 import '../models/user_models.dart';
@@ -43,8 +44,10 @@ class UsersCubit extends Cubit<UsersState> {
         q: _query,
       );
       emit(UsersLoaded(items: data.items, pagination: data.pagination));
-    } catch (_) {
-      emit(UsersFailure(message: 'Не удалось загрузить пользователей'));
+    } catch (e) {
+      emit(UsersFailure(
+        message: describeApiError(e, subject: 'пользователей'),
+      ));
     } finally {
       _loading = false;
     }

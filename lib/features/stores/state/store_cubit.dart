@@ -1,7 +1,7 @@
 import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
-import 'package:flutter/cupertino.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../../../core/services/onesignal_service.dart';
 import '../../../core/storage/prefs_storage.dart';
 import '../data/stores_repository.dart';
@@ -46,7 +46,7 @@ class StoreCubit extends Cubit<StoreState> {
       final stores = await storesRepository.getStores();
       emit(StoreListLoaded(stores: stores));
     } catch (e) {
-      emit(const StoreFailure(message: 'Не удалось загрузить магазины'));
+      emit(StoreFailure(message: describeApiError(e, subject: 'магазины')));
     }
   }
 

@@ -10,10 +10,15 @@ class BroadcastRepository {
   Future<BroadcastResult> sendToAllCustomers({
     required String heading,
     required String message,
+    required BroadcastCategory category,
   }) async {
     final resp = await api.dio.post(
       '/gw/notification/admin/broadcast',
-      data: {'heading': heading, 'message': message},
+      data: {
+        'heading': heading,
+        'message': message,
+        'type': category.wire,
+      },
     );
     final j = asJsonMap(resp.data);
     return BroadcastResult(
@@ -21,6 +26,17 @@ class BroadcastRepository {
       recipients: j['recipients'] as int?,
     );
   }
+}
+
+/// Determines which inbox tab the push lands in on the customer device.
+/// Wire values must match the backend Literal: `news` | `promo`.
+enum BroadcastCategory {
+  news('news', 'Новости'),
+  promo('promo', 'Акция');
+
+  final String wire;
+  final String label;
+  const BroadcastCategory(this.wire, this.label);
 }
 
 class BroadcastResult {

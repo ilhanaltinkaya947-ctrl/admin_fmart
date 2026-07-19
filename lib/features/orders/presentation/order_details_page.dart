@@ -6,9 +6,13 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/feature_flags.dart';
+import '../../../core/format/address.dart';
 import '../../../core/format/money.dart';
 import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
+import 'substitution_sheets.dart';
+import '_sub_tokens.dart';
 import '../models/order_models.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
@@ -23,13 +27,15 @@ class OrderDetailsPage extends StatefulWidget {
   State<OrderDetailsPage> createState() => _OrderDetailsPageState();
 }
 
-class _OrderDetailsPageState extends State<OrderDetailsPage> {
+class _OrderDetailsPageState extends State<OrderDetailsPage>
+    with WidgetsBindingObserver {
   late Order _order;
 
   final _reasonCtrl = TextEditingController();
 
   bool _saving = false;
   bool _actionLoading = false;
+  bool _refundSheetOpen = false;
   String? _error;
 
   List<OrderStatusDto> _statuses = [];
@@ -93,6 +99,102 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     return s == 'paid' || s == 'processing';
   }
 
+  // In-flight cancel-substitution toggles, keyed by order_item id.
+  final Set<int> _subBusy = <int>{};
+
+  // True while the substitute picker sheet is open — pauses the 8s poll so
+  // _order (and the price the sheet shows a refund against) can't shift out
+  // from under the manager mid-compose.
+  bool _substituteSheetOpen = false;
+
+  /// Force-refetch the order now (after a substitution propose/cancel) so the
+  /// item chips reflect the new state without waiting for the 8s poll.
+  Future<void> _refetchOrderNow() async {
+    if (!mounted) return;
+    try {
+      final repo = context.read<OrdersRepository>();
+      final fresh = await repo.getOrderById(
+          storeId: _order.storeId, orderId: _order.id);
+      if (fresh != null && mounted) setState(() => _order = fresh);
+    } catch (_) {/* the 8s poll will catch up */}
+  }
+
+  Future<void> _openSubstitutePicker(OrderItem it) async {
+    final repo = context.read<OrdersRepository>();
+    _substituteSheetOpen = true;
+    final outcome = await showSubstitutePickerSheet(
+        context, repo: repo, order: _order, item: it);
+    _substituteSheetOpen = false;
+    if (!mounted) return;
+    if (outcome == SubstituteSheetOutcome.proposed) {
+      await _refetchOrderNow();
+      if (mounted) {
+        // Branded confirmation — a green check-disc + white copy on ST.green,
+        // consistent with the retoned studio (not the bare grey default).
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: ST.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(ST.rMd)),
+          content: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white, size: 20),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Замена предложена — покупатель получит уведомление',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ));
+      }
+    } else if (outcome == SubstituteSheetOutcome.removeItemRequested) {
+      await _removeItem(it);
+    }
+  }
+
+  Future<void> _cancelSubstitution(int subId, int itemId) async {
+    if (_subBusy.contains(itemId)) return;
+    // Retracting a live customer-facing proposal is irreversible — confirm.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Отменить замену?'),
+        content: const Text(
+            'Покупатель больше не увидит это предложение. Товар останется в заказе.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('Назад')),
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('Отменить замену')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _subBusy.add(itemId));
+    try {
+      final repo = context.read<OrdersRepository>();
+      await repo.cancelSubstitution(orderId: _order.id, subId: subId);
+      await _refetchOrderNow();
+    } on OrdersApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Не удалось отменить замену')));
+      }
+    } finally {
+      if (mounted) setState(() => _subBusy.remove(itemId));
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -104,7 +206,41 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     _loadStatuses();
     _loadCustomer();
     if (_orderEverRefunded) _loadRefunds();
+    WidgetsBinding.instance.addObserver(this);
+    // Rebuild when feature flags land so the gated «Заменить» (substitution)
+    // action appears as soon as the async /features fetch resolves, even if
+    // this page was opened before it returned. Also keeps the action reactive
+    // for the no-rebuild backend env flip that opens substitution to all
+    // managers. (The button itself is gated inside substitution_sheets.dart;
+    // rebuilding this page re-evaluates that child.)
+    AdminFeatureFlags.instance.flags.addListener(_onFlagsChanged);
     _startPolling();
+  }
+
+  void _onFlagsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Background-firing every 8s while the iPad is locked drains
+    // battery + cellular for no benefit (the operator can't see the
+    // screen). Pause polling on background, resume + one-shot refresh
+    // on foreground so the screen catches up instantly.
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
+      if (_pollTimer == null && mounted) {
+        _startPolling();
+        // Immediate catch-up so the operator doesn't stare at stale
+        // state for up to 8s after unlocking.
+        _pollOrder();
+      }
+    }
   }
 
   void _startPolling() {
@@ -120,6 +256,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   Future<void> _pollOrder() async {
     if (!mounted) return;
     if (_saving || _actionLoading || _itemBusy.isNotEmpty) return;
+    if (_substituteSheetOpen) return; // don't shift _order under an open sheet
 
     final storeState = context.read<StoreCubit>().state;
     if (storeState is! StoreSelected) return;
@@ -133,13 +270,25 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       if (fresh == null || !mounted) return;
 
       final statusChanged = fresh.status != _order.status;
-      setState(() => _order = fresh);
+      setState(() {
+        _order = fresh;
+        if (statusChanged) {
+          // The status changed under us (e.g. a consumer-driven transition
+          // landed during a poll). If the operator's pending dropdown
+          // selection is no longer a valid transition from the NEW status,
+          // clear it — otherwise DropdownButtonFormField(value: …) holds a
+          // value absent from its items and asserts/renders blank.
+          final allowed =
+              kAdminAllowedTransitions[fresh.status.toLowerCase().trim()] ??
+                  const <String>{};
+          if (_selectedStatus != null && !allowed.contains(_selectedStatus)) {
+            _selectedStatus = null;
+          }
+        }
+      });
       if (statusChanged) {
-        // Refresh the timeline so the new transition appears below.
-        // Note: we intentionally do NOT touch _selectedStatus — that's
-        // the dropdown's value, which represents the operator's pending
-        // selection, not server truth. The status badge at the top
-        // already reflects server truth via _order.status.
+        // Refresh the timeline so the new transition appears below. The
+        // status badge at the top already reflects server truth.
         _timelineKey.currentState?.refresh();
       }
     } catch (_) {
@@ -166,6 +315,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    AdminFeatureFlags.instance.flags.removeListener(_onFlagsChanged);
     _pollTimer?.cancel();
     _pollTimer = null;
     _reasonCtrl.dispose();
@@ -173,6 +324,24 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   }
 
   double _parseMoney(String v) => double.tryParse(v.replaceAll(',', '.')) ?? 0.0;
+
+  /// Copy [value] to the clipboard and toast the operator. No-op + toast
+  /// when the value is empty so a long-press on '—' doesn't silently
+  /// "succeed" with empty clipboard contents.
+  void _copyToClipboard(String value, {required String label}) {
+    final v = value.trim();
+    if (v.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$label пуст — нечего копировать')),
+      );
+      return;
+    }
+    Clipboard.setData(ClipboardData(text: v));
+    HapticFeedback.selectionClick();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$label скопирован')),
+    );
+  }
 
   Future<void> _loadCustomer() async {
     final cid = _order.customerId;
@@ -214,7 +383,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
         // picks one explicitly. If the previously-picked target is no
         // longer valid (status changed under us), clear it.
         final allowed =
-            kAdminAllowedTransitions[_order.status] ?? const <String>{};
+            kAdminAllowedTransitions[_order.status.toLowerCase().trim()] ?? const <String>{};
         if (_selectedStatus != null &&
             !allowed.contains(_selectedStatus)) {
           _selectedStatus = null;
@@ -293,6 +462,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   }
 
   Future<void> _cancelOrder() async {
+    final repo = context.read<OrdersRepository>();
+    final storeState = context.read<StoreCubit>().state;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -314,16 +485,38 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     });
 
     try {
-      final repo = context.read<OrdersRepository>();
       final res = await repo.cancelOrder(orderId: _order.id);
 
       if (!mounted) return;
       if (res.success) {
-        setState(() => _order = _order.copyWith(status: 'canceled'));
+        // Cancelling a PAID order now issues a REFUND server-side, so the order
+        // becomes 'refunded' (not 'canceled'). Re-fetch the true status instead
+        // of optimistically forcing 'canceled'. (2026-07-04)
+        Order? fresh;
+        if (storeState is StoreSelected) {
+          // Best-effort: a re-fetch blip must NOT turn a successful cancel into
+          // a failure. Fall back to the optimistic 'canceled' below.
+          try {
+            fresh = await repo.getOrderById(
+              storeId: storeState.storeId,
+              orderId: _order.id,
+            );
+          } catch (_) {
+            fresh = null;
+          }
+        }
+        if (!mounted) return;
+        setState(() => _order = fresh ?? _order.copyWith(status: 'canceled'));
         _timelineKey.currentState?.refresh();
       }
+      final isRefund = _order.status == 'refunded' ||
+          _order.status == 'partially-refunded';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Заказ отменён' : 'Не удалось отменить'))),
+        SnackBar(content: Text(res.message.isNotEmpty
+            ? res.message
+            : (res.success
+                ? (isRefund ? 'Оформлен возврат' : 'Заказ отменён')
+                : 'Не удалось отменить'))),
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
@@ -336,10 +529,129 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     }
   }
 
+  // True while a scheduled-order «Выпустить заказ» call is in flight — the
+  // button shows a spinner and disables so a laggy double-tap can't fire two
+  // releases. Separate from _actionLoading so it doesn't spin the
+  // cancel/refund buttons.
+  bool _releasing = false;
+
+  Future<void> _releaseOrder() async {
+    if (_releasing) return;
+    final repo = context.read<OrdersRepository>();
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Выпустить заказ?'),
+        content: Text(
+            'Заказ #${_order.id} выйдет из режима ожидания и попадёт в сборку сейчас, не дожидаясь 09:00.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('Нет')),
+          ElevatedButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('Выпустить')),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _releasing = true;
+      _error = null;
+    });
+
+    try {
+      final res = await repo.releaseOrder(orderId: _order.id);
+      if (!mounted) return;
+      if (res.success) {
+        // Re-fetch the true post-release status (backend flips scheduled →
+        // paid/processing) instead of guessing, so the badge + status form
+        // reflect server truth and the scheduled label disappears.
+        Order? fresh;
+        try {
+          fresh = await repo.getOrderById(
+            storeId: _order.storeId,
+            orderId: _order.id,
+          );
+        } catch (_) {
+          fresh = null;
+        }
+        if (!mounted) return;
+        // Prefer the re-fetched order (clears scheduled_for_at + gives the
+        // true new status). If the re-fetch blipped, fall back to an
+        // optimistic 'paid' — copyWith keeps scheduledForAt as the info
+        // label, but the badge/status form already reflect the release.
+        setState(() {
+          _order = fresh ?? _order.copyWith(status: 'paid');
+        });
+        _timelineKey.currentState?.refresh();
+        // Branded confirmation — matches the substitution snackbar tone.
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: ST.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(ST.rMd)),
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  res.message.isNotEmpty
+                      ? res.message
+                      : 'Заказ выпущен — передан в сборку',
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(res.message.isNotEmpty
+              ? res.message
+              : 'Не удалось выпустить заказ')),
+        );
+      }
+    } on OrdersApiException catch (e) {
+      if (!mounted) return;
+      _showErrorWithRetry(e.message, _releaseOrder);
+    } catch (_) {
+      if (!mounted) return;
+      _showErrorWithRetry('Не удалось выпустить заказ', _releaseOrder);
+    } finally {
+      if (mounted) setState(() => _releasing = false);
+    }
+  }
+
   Future<void> _openRefundSheet() async {
+    // Synchronous re-entrancy guard: a double-tap on «Возврат» (laggy shared
+    // iPad) must not stack two refund sheets — each would mint its OWN
+    // sessionIdempotencyKey, so confirming both would apply two DISTINCT
+    // refunds. Reset once the sheet closes (below).
+    if (_refundSheetOpen || _actionLoading) return;
+    setState(() => _refundSheetOpen = true);
+
     final total = _parseMoney(_order.totalAmount);
 
-    final amountCtrl = TextEditingController(text: total.toStringAsFixed(2));
+    // On a partially-refunded order the modal must validate + pre-fill
+    // against the REMAINING balance, not the full order total — otherwise a
+    // manager can accidentally re-refund the whole order. _refunds is the
+    // client-side refund history (loaded whenever the order was ever
+    // refunded); summing its amounts gives what's already been returned.
+    // The backend still enforces the true ceiling server-side (the dedupe +
+    // over-refund guard), so this is a UX guard, not the source of truth.
+    // NOTE: a backend `refunded_total` field on the order would be a cleaner
+    // single source than summing history rows — worth adding server-side.
+    final alreadyRefunded = _refunds.fold<double>(0.0, (s, r) => s + r.amount);
+    final remainingRaw = total - alreadyRefunded;
+    final remaining = remainingRaw < 0 ? 0.0 : remainingRaw;
+
+    final amountCtrl =
+        TextEditingController(text: remaining.toStringAsFixed(2));
     final reasonCtrl = TextEditingController();
 
     // ONE idempotency key for the entire modal session. Used by every
@@ -368,7 +680,27 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Возврат по заказу #${_order.id}', style: Theme.of(c).textTheme.titleMedium),
+              // Inline header with a close button — the sheet is set to
+              // isDismissible:false (to prevent accidental tap-to-close
+              // mid-confirm), so without this X the only exit is the
+              // "Закрыть" button at the bottom. On iPhone with the
+              // keyboard up that button falls below the visible area
+              // and the operator has nothing to tap.
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Возврат по заказу #${_order.id}',
+                      style: Theme.of(c).textTheme.titleMedium,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Закрыть',
+                    onPressed: () => Navigator.of(c).pop(null),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
               const SizedBox(height: 4),
               Text(
                 'Сумма заказа: ${total.toStringAsFixed(2)} ₸',
@@ -377,10 +709,38 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                   color: Theme.of(c).colorScheme.onSurfaceVariant,
                 ),
               ),
+              // Only surface the refund-so-far / remaining lines when
+              // something has already been returned — a fresh full-refund
+              // order doesn't need the extra rows.
+              if (alreadyRefunded > 0) ...[
+                const SizedBox(height: 2),
+                Text(
+                  'Уже возвращено: ${alreadyRefunded.toStringAsFixed(2)} ₸',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(c).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Осталось вернуть: ${remaining.toStringAsFixed(2)} ₸',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFFEE6F00),
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               TextField(
                 controller: amountCtrl,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                // Only digits + one decimal separator. Without this an
+                // operator could paste "12.5 ₸" or "$12.50" and the
+                // parse would silently floor it to 0.
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                ],
                 decoration: const InputDecoration(
                   labelText: 'Сумма возврата',
                   border: OutlineInputBorder(),
@@ -408,7 +768,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                   Expanded(
                     child: ElevatedButton(
                       onPressed: () async {
-                        final amount = double.tryParse(amountCtrl.text.trim().replaceAll(',', '.')) ?? 0.0;
+                        // Round to 2 decimals before send so the backend
+                        // doesn't receive a float like 100.12345600001
+                        // from operator-pasted text.
+                        final rawAmount = double.tryParse(
+                                amountCtrl.text.trim().replaceAll(',', '.')) ??
+                            0.0;
+                        final amount =
+                            double.parse(rawAmount.toStringAsFixed(2));
                         final reason = reasonCtrl.text.trim();
 
                         // жёсткая валидация — иначе будет мусор в бэке
@@ -416,8 +783,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                           ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Сумма должна быть > 0')));
                           return;
                         }
-                        if (amount > total + 0.0001) {
-                          ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Сумма больше суммы заказа')));
+                        // Cap at the REMAINING balance, not the full order
+                        // total, so a second partial refund can't exceed
+                        // what's left to return.
+                        if (amount > remaining + 0.0001) {
+                          ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Сумма больше остатка к возврату')));
                           return;
                         }
                         if (reason.isEmpty) {
@@ -430,7 +800,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                         // operator fat-fingered the amount. Without
                         // this any accidental tap of "Оформить" with
                         // pre-filled-to-full-amount sent a real refund.
-                        final isFullRefund = (amount + 0.0001 >= total);
+                        // "Full" now means the whole REMAINING balance —
+                        // i.e. this refund closes out the order.
+                        final isFullRefund = (amount + 0.0001 >= remaining);
                         final confirmed = await showDialog<bool>(
                           context: c,
                           barrierDismissible: false,
@@ -486,6 +858,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       },
     );
 
+    // Sheet closed → allow reopening. (The top-of-method guard blocked a
+    // double-tap from stacking a second sheet with its own idempotency key.)
+    if (mounted) setState(() => _refundSheetOpen = false);
+
     amountCtrl.dispose();
     reasonCtrl.dispose();
 
@@ -501,6 +877,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
   Future<void> _changeItemQty(OrderItem item, int newQty) async {
     if (newQty < 1) return;
     if (_itemBusy.contains(item.id)) return;
+    // Don't race a packaging save — both recompute the order total server-side,
+    // and interleaving them can leave a stale total on screen until the poll.
+    if (_saving) return;
     setState(() => _itemBusy.add(item.id));
     try {
       final repo = context.read<OrdersRepository>();
@@ -537,8 +916,147 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
     }
   }
 
+  Widget _buildPackagingChip() {
+    final big = _order.bigBagCount ?? 0;
+    final med = _order.mediumBagCount ?? 0;
+    final sum = _order.packagingSum ?? 0;
+    final editable = _itemsEditable;
+
+    String summary;
+    if (big == 0 && med == 0) {
+      summary = editable ? 'Не назначены — нажмите чтобы добавить' : '—';
+    } else {
+      summary = [
+        if (big > 0) 'Большой × $big',
+        if (med > 0) 'Средний × $med',
+      ].join('  ·  ');
+    }
+
+    final content = Row(
+      children: [
+        const Icon(Icons.shopping_bag_outlined,
+            color: Color(0xFFEE6F00), size: 22),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Пакеты',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF6B7280),
+                    fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                summary,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: (big == 0 && med == 0)
+                      ? const Color(0xFF6B7280)
+                      : const Color(0xFF111827),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (sum > 0)
+          Text(
+            formatTenge(sum),
+            style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFFEE6F00)),
+          ),
+        if (editable) ...[
+          const SizedBox(width: 6),
+          const Icon(Icons.edit_outlined,
+              size: 18, color: Color(0xFFEE6F00)),
+        ],
+      ],
+    );
+
+    final box = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3E6),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFFD9B0)),
+      ),
+      child: content,
+    );
+
+    if (!editable) return box;
+
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: _openPackagingSheet,
+        child: box,
+      ),
+    );
+  }
+
+  Future<void> _openPackagingSheet() async {
+    if (!_itemsEditable) return;
+    final result = await showModalBottomSheet<_PackagingDraft>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (c) => _PackagingEditSheet(
+        initialBig: _order.bigBagCount ?? 0,
+        initialMedium: _order.mediumBagCount ?? 0,
+      ),
+    );
+    if (result == null) return;
+    await _savePackaging(big: result.big, medium: result.medium);
+  }
+
+  Future<void> _savePackaging({required int big, required int medium}) async {
+    if (_saving) return;
+    // Don't race an in-flight item-qty/remove edit (same total-recompute reason).
+    if (_itemBusy.isNotEmpty) return;
+    setState(() => _saving = true);
+    try {
+      final repo = context.read<OrdersRepository>();
+      final res = await repo.updatePackaging(
+        orderId: _order.id,
+        bigBagCount: big,
+        mediumBagCount: medium,
+      );
+      if (!mounted) return;
+      setState(() {
+        _order = _order.copyWith(
+          totalAmount: res.totalAmount.toStringAsFixed(2),
+          bigBagCount: res.bigBagCount,
+          mediumBagCount: res.mediumBagCount,
+          packagingSum: res.packagingSum,
+        );
+      });
+      _timelineKey.currentState?.refresh();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Пакеты обновлены')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось обновить пакеты')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   Future<void> _removeItem(OrderItem item) async {
     if (_itemBusy.contains(item.id)) return;
+    if (_saving) return;
     if (_order.items.length <= 1) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -655,9 +1173,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
       if (!mounted) return;
       if (res.success) {
         final orderTotal = _parseMoney(_order.totalAmount);
-        // If the refunded amount covers the whole order it's a full refund;
-        // otherwise the backend keeps it in partially-refunded.
-        final newStatus = (amount + 0.0001 >= orderTotal) ? 'refunded' : 'partially-refunded';
+        // Compare the CUMULATIVE refunded amount (prior history + this one)
+        // against the order total — a second partial refund that closes out
+        // the order must flip it to 'refunded', not leave it stuck in
+        // 'partially-refunded'. (Optimistic; the 8s poll reconciles anyway.)
+        final priorRefunded =
+            _refunds.fold<double>(0.0, (s, r) => s + r.amount);
+        final newStatus = (priorRefunded + amount + 0.0001 >= orderTotal)
+            ? 'refunded'
+            : 'partially-refunded';
         setState(() => _order = _order.copyWith(status: newStatus));
         _timelineKey.currentState?.refresh();
         // Refetch the history so the just-applied refund row appears
@@ -751,13 +1275,41 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             ),
           ] else ...[
             Text('Имя: ${_customer?.fullName ?? '—'}'),
-            Text('Телефон: ${(_customer?.phone.isNotEmpty == true) ? _customer!.phone : '—'}'),
+            // Long-press to copy: managers without a paired iPhone can't
+            // call directly, but they can paste into a separate device
+            // or share via chat. Tap-to-copy is the lowest-friction
+            // affordance and needs no extra dependency.
+            GestureDetector(
+              onLongPress: () => _copyToClipboard(
+                _customer?.phone ?? '',
+                label: 'Телефон',
+              ),
+              child: Text(
+                'Телефон: ${(_customer?.phone.isNotEmpty == true) ? _customer!.phone : '—'}',
+              ),
+            ),
             if ((_customer?.email ?? '').trim().isNotEmpty)
-              Text('Email: ${_customer!.email}'),
+              GestureDetector(
+                onLongPress: () => _copyToClipboard(
+                  _customer!.email!,
+                  label: 'Email',
+                ),
+                child: Text('Email: ${_customer!.email}'),
+              ),
           ],
 
           const SizedBox(height: 8),
-          Text('Адрес: ${_order.deliveryAddress}'),
+          Builder(builder: (_) {
+            // Strip empty / "None" / trailing-comma noise that older
+            // customer addresses leave in the delivery_address field.
+            // E.g. "Адырбекова 114, , , ," → "Адырбекова 114".
+            final cleanedAddr = cleanDeliveryAddress(_order.deliveryAddress);
+            return GestureDetector(
+              onLongPress: () =>
+                  _copyToClipboard(cleanedAddr, label: 'Адрес'),
+              child: Text('Адрес: $cleanedAddr'),
+            );
+          }),
           if (_order.customerComment.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text('Комментарий: ${_order.customerComment}'),
@@ -767,6 +1319,55 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
               style: const TextStyle(
                   fontSize: 17, fontWeight: FontWeight.w700)),
           Text('Доставка: ${formatTenge(_parseMoney(_order.deliverySum))}'),
+          // Customer-picked delivery slot or off-hours scheduled time.
+          // Picker needs this to plan their day — when a customer chose
+          // «к 17:00» from the in-app slot picker, the assembler must
+          // see that target time prominently, not just on the orders
+          // list. Format: "К доставке: 17:00 (Сегодня)".
+          if (_order.scheduledForAt != null) ...[
+            const SizedBox(height: 4),
+            _ScheduledDeliveryRow(scheduledForAt: _order.scheduledForAt!),
+          ],
+          // Off-hours SCHEDULED order: the row above only LABELS the
+          // release time — this is the actual action that moves the order
+          // into fulfillment now, instead of forcing the manager to open
+          // the status dropdown and hand-pick «Оплачен». Only shown while
+          // the order is still parked in `scheduled`.
+          if (_order.status.toLowerCase() == 'scheduled') ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _releasing ? null : _releaseOrder,
+                icon: _releasing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.play_arrow_rounded, size: 20),
+                label: const Text('Выпустить заказ'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFEE6F00),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ),
+          ],
+          // Packaging — picker needs to know exact bag count before they
+          // start assembling the order. Big bag 30₸ (7+ items), medium
+          // 15₸ (up to 6). Fields are nullable for orders created before
+          // 2026-05-28 (no auto-packaging line back then). When the order
+          // is still editable (paid/processing) we render the chip even
+          // at 0/0 so the manager can override the heuristic (e.g. 7L of
+          // glass juice doesn't fit a Medium and needs to be bumped).
+          if ((_order.bigBagCount ?? 0) > 0 ||
+              (_order.mediumBagCount ?? 0) > 0 ||
+              _itemsEditable) ...[
+            const SizedBox(height: 8),
+            _buildPackagingChip(),
+          ],
           const SizedBox(height: 16),
 
           if (selectedStore == null) ...[
@@ -778,7 +1379,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
               totalAmount: totalAmount,
               shippingLat: _order.shippingLat,
               shippingLng: _order.shippingLng,
-              shippingAddress: _order.deliveryAddress,
+              shippingAddress: cleanDeliveryAddress(_order.deliveryAddress),
               storeCoordinates: selectedStore.coordinates,
               storeAddress: selectedStore.storeAddress,
               items: cargoItems,
@@ -822,7 +1423,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                 if (_canRefund)
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: _actionLoading ? null : _openRefundSheet,
+                      onPressed: (_actionLoading || _refundSheetOpen)
+                          ? null
+                          : _openRefundSheet,
                       icon: const Icon(Icons.replay, size: 18),
                       label: _actionLoading
                           ? const SizedBox(
@@ -892,16 +1495,29 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             ),
           ],
           const SizedBox(height: 8),
-          ...items.map((it) => OrderItemCard(
-                item: it,
-                editable: _itemsEditable,
-                busy: _itemBusy.contains(it.id),
-                onQtyChange: (newQty) => _changeItemQty(it, newQty),
-                onRemove: () => _removeItem(it),
-                onPickedToggle: _itemsEditable
-                    ? (v) => _setItemPicked(it, v)
-                    : null,
-                pickedBusy: _pickBusy.contains(it.id),
+          ...items.map((it) => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  OrderItemCard(
+                    item: it,
+                    editable: _itemsEditable,
+                    busy: _itemBusy.contains(it.id),
+                    onQtyChange: (newQty) => _changeItemQty(it, newQty),
+                    onRemove: () => _removeItem(it),
+                    onPickedToggle: _itemsEditable
+                        ? (v) => _setItemPicked(it, v)
+                        : null,
+                    pickedBusy: _pickBusy.contains(it.id),
+                  ),
+                  SubstitutionItemRow(
+                    order: _order,
+                    item: it,
+                    editable: _itemsEditable,
+                    busy: _subBusy.contains(it.id),
+                    onPropose: () => _openSubstitutePicker(it),
+                    onCancel: (subId) => _cancelSubstitution(subId, it.id),
+                  ),
+                ],
               )),
 
           const SizedBox(height: 16),
@@ -926,7 +1542,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             // EVERY status, so an admin could pick completed ->
             // pending-payment and get a silent rejection.
             final allowed =
-                kAdminAllowedTransitions[_order.status] ?? const <String>{};
+                kAdminAllowedTransitions[_order.status.toLowerCase().trim()] ?? const <String>{};
             final validStatuses = _statuses
                 .where((s) => allowed.contains(s.statusName))
                 .toList();
@@ -991,10 +1607,34 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
                   Text(_error!, style: const TextStyle(color: Colors.red)),
                   const SizedBox(height: 12),
                 ],
+                // A3: while any substitution is still awaiting the customer, the
+                // order can't advance (backend blocks ready-for-delivery/
+                // delivering + the last-line decline can auto-cancel). Show WHY
+                // the control is disabled instead of letting the manager hit a
+                // raw rejection.
+                if (_order.hasOpenSubstitution) ...[
+                  Row(
+                    children: [
+                      Icon(Icons.hourglass_top,
+                          size: 16, color: Colors.orange.shade800),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Дождитесь ответа покупателя по замене — заказ нельзя двигать дальше',
+                          style: TextStyle(
+                              fontSize: 12.5, color: Colors.orange.shade900),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                ],
                 SizedBox(
                   height: 48,
                   child: ElevatedButton(
-                    onPressed: _saving ? null : _changeStatus,
+                    onPressed: (_saving || _order.hasOpenSubstitution)
+                        ? null
+                        : _changeStatus,
                     child: _saving
                         ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                         : const Text('Сохранить'),
@@ -1173,11 +1813,13 @@ class _StatusBadge extends StatelessWidget {
     'refunded':        (bg: Color(0xFFFCE4EC), fg: Color(0xFFAD1457), icon: Icons.replay),
     'partially-refunded': (bg: Color(0xFFFCE4EC), fg: Color(0xFFAD1457), icon: Icons.replay_circle_filled_outlined),
     'payment-failed':  (bg: Color(0xFFFFEBEE), fg: Color(0xFFC62828), icon: Icons.error_outline),
+    'payment-timeout': (bg: Color(0xFFFFF4E5), fg: Color(0xFFAD6800), icon: Icons.timer_off_outlined),
+    'scheduled':       (bg: Color(0xFFEDE7F6), fg: Color(0xFF4527A0), icon: Icons.schedule),
   };
 
   @override
   Widget build(BuildContext context) {
-    final c = _colors[status] ??
+    final c = _colors[status.toLowerCase().trim()] ??
         (bg: Colors.grey.shade200, fg: Colors.grey.shade700, icon: Icons.help_outline);
     final theme = Theme.of(context);
     // Render as a row "Статус заказа: <chip>" instead of a full-width
@@ -1266,6 +1908,297 @@ class _PickProgressBar extends StatelessWidget {
               minHeight: 6,
               backgroundColor: scheme.surface,
               valueColor: AlwaysStoppedAnimation(color),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PackagingDraft {
+  final int big;
+  final int medium;
+  const _PackagingDraft({required this.big, required this.medium});
+}
+
+class _PackagingEditSheet extends StatefulWidget {
+  final int initialBig;
+  final int initialMedium;
+  const _PackagingEditSheet({
+    required this.initialBig,
+    required this.initialMedium,
+  });
+
+  @override
+  State<_PackagingEditSheet> createState() => _PackagingEditSheetState();
+}
+
+class _PackagingEditSheetState extends State<_PackagingEditSheet> {
+  static const _bigPrice = 30;
+  static const _mediumPrice = 15;
+
+  late int _big = widget.initialBig;
+  late int _medium = widget.initialMedium;
+
+  void _bump(bool isBig, int delta) {
+    setState(() {
+      if (isBig) {
+        _big = (_big + delta).clamp(0, 99);
+      } else {
+        _medium = (_medium + delta).clamp(0, 99);
+      }
+    });
+  }
+
+  bool get _changed =>
+      _big != widget.initialBig || _medium != widget.initialMedium;
+
+  @override
+  Widget build(BuildContext context) {
+    final insets = MediaQuery.of(context).viewInsets;
+    final total = _big * _bigPrice + _medium * _mediumPrice;
+    return Padding(
+      padding: EdgeInsets.only(bottom: insets.bottom),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE5E7EB),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const Text(
+                'Изменить пакеты',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Большой 30 ₸ · Средний 15 ₸',
+                style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
+              ),
+              const SizedBox(height: 18),
+              _PackagingRow(
+                label: 'Большой пакет',
+                priceLabel: '30 ₸',
+                count: _big,
+                onMinus: () => _bump(true, -1),
+                onPlus: () => _bump(true, 1),
+              ),
+              const SizedBox(height: 10),
+              _PackagingRow(
+                label: 'Средний пакет',
+                priceLabel: '15 ₸',
+                count: _medium,
+                onMinus: () => _bump(false, -1),
+                onPlus: () => _bump(false, 1),
+              ),
+              const SizedBox(height: 18),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF3E6),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Сумма за пакеты',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                    Text(
+                      '$total ₸',
+                      style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFFEE6F00)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: const Text('Отмена'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _changed
+                          ? () => Navigator.of(context).pop(
+                                _PackagingDraft(big: _big, medium: _medium),
+                              )
+                          : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFEE6F00),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: const Text(
+                        'Сохранить',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PackagingRow extends StatelessWidget {
+  final String label;
+  final String priceLabel;
+  final int count;
+  final VoidCallback onMinus;
+  final VoidCallback onPlus;
+  const _PackagingRow({
+    required this.label,
+    required this.priceLabel,
+    required this.count,
+    required this.onMinus,
+    required this.onPlus,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(priceLabel,
+                  style: const TextStyle(
+                      fontSize: 12, color: Color(0xFF6B7280))),
+            ],
+          ),
+        ),
+        _StepperBtn(icon: Icons.remove, onTap: count > 0 ? onMinus : null),
+        SizedBox(
+          width: 44,
+          child: Center(
+            child: Text(
+              '$count',
+              style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ),
+        _StepperBtn(icon: Icons.add, onTap: count < 99 ? onPlus : null),
+      ],
+    );
+  }
+}
+
+class _StepperBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+  const _StepperBtn({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return Material(
+      color: enabled ? const Color(0xFFFFF3E6) : const Color(0xFFF3F4F6),
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: SizedBox(
+          width: 38,
+          height: 38,
+          child: Icon(
+            icon,
+            size: 20,
+            color: enabled ? const Color(0xFFEE6F00) : const Color(0xFFB7BBC2),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// «К доставке: 17:00 (Сегодня)» row. Shown on order details whenever
+/// the customer picked a specific delivery slot OR the order was
+/// auto-scheduled for off-hours. Picker needs this front-and-center to
+/// plan their batch order — the orders list shows it conditionally,
+/// but most pickers spend time inside an individual order, so the
+/// detail page needs it too.
+class _ScheduledDeliveryRow extends StatelessWidget {
+  final DateTime scheduledForAt;
+  const _ScheduledDeliveryRow({required this.scheduledForAt});
+
+  String _dayLabel(DateTime when) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final slotDay = DateTime(when.year, when.month, when.day);
+    final diff = slotDay.difference(today).inDays;
+    if (diff == 0) return 'Сегодня';
+    if (diff == 1) return 'Завтра';
+    return DateFormat('d MMM', 'ru').format(when);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final local = scheduledForAt.toLocal();
+    final hhmm = DateFormat('HH:mm').format(local);
+    final day = _dayLabel(local);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3E6),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFFFD9B0)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.schedule, size: 18, color: Color(0xFFEE6F00)),
+          const SizedBox(width: 8),
+          const Text(
+            'К доставке:',
+            style: TextStyle(
+              fontSize: 13,
+              color: Color(0xFF6B7280),
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '$hhmm · $day',
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF111827),
             ),
           ),
         ],

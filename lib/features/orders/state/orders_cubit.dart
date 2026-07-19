@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
+
+import '../../../core/api/api_errors.dart';
 import '../data/orders_repository.dart';
 import '../models/order_filters.dart';
 import '../models/order_models.dart';
@@ -23,9 +25,20 @@ const _closedStatusCodes = {
   'refunded',
   'partially-refunded',
   'payment-failed',
+  // Abandoned-3DS orders (status id 12, «Оплата не завершена»). Without this
+  // they matched no tab and were invisible to managers in the list.
+  'payment-timeout',
 };
 
-enum OrdersTabPreset { active, closed, all }
+// Off-hours parked orders. Single-status preset on purpose so the
+// Запланированные tab shows ONLY scheduled — they're not part of the
+// active picking workload yet (no items being picked) and shouldn't
+// mix with Новые's "needs attention right now" semantics.
+const _scheduledStatusCodes = {
+  'scheduled',
+};
+
+enum OrdersTabPreset { active, closed, scheduled, all }
 
 class OrdersCubit extends Cubit<OrdersState> {
   final OrdersRepository ordersRepository;
@@ -75,7 +88,7 @@ class OrdersCubit extends Cubit<OrdersState> {
         filters: _filters,
       ));
     } catch (e) {
-      emit(OrdersFailure(message: 'Не удалось загрузить заказы'));
+      emit(OrdersFailure(message: describeApiError(e, subject: 'заказы')));
     } finally {
       _loading = false;
     }
@@ -92,9 +105,42 @@ class OrdersCubit extends Cubit<OrdersState> {
   /// first call so we can map status codes to ids the backend expects.
   Future<void> applyTabPreset(OrdersTabPreset preset) async {
     await _ensureStatusesLoaded();
+    // If the status fetch failed, the map is null and a non-"all" preset
+    // would silently resolve to an empty filter — which made "Новые"
+    // show every order instead of nothing. Surface it instead so the
+    // operator knows to pull-to-refresh rather than think the filter
+    // is broken on purpose.
+    if (preset != OrdersTabPreset.all && _statusIdByCode == null) {
+      emit(OrdersFailure(
+        message:
+            'Не удалось загрузить список статусов. Потяните вниз, чтобы повторить.',
+      ));
+      return;
+    }
     final ids = _idsForPreset(preset);
     final next = _filters.copyWith(statusIds: ids);
     if (next == _filters) return;
+    await applyFilters(next);
+  }
+
+  /// Drill-down helper for the Dashboard status-row taps. Resolves the
+  /// backend status code to an id via the cached map and applies it as
+  /// a single-status filter. If the status fetch hasn't completed or
+  /// the name is unknown, falls back to clearing the status filter so
+  /// the operator lands on something useful instead of an empty list.
+  Future<void> applyStatusByName(String statusName) async {
+    await _ensureStatusesLoaded();
+    if (_statusIdByCode == null) {
+      emit(OrdersFailure(
+        message:
+            'Не удалось загрузить список статусов. Потяните вниз, чтобы повторить.',
+      ));
+      return;
+    }
+    final id = _statusIdByCode![statusName];
+    final next = _filters.copyWith(
+      statusIds: id != null ? <int>[id] : const <int>[],
+    );
     await applyFilters(next);
   }
 
@@ -117,7 +163,10 @@ class OrdersCubit extends Cubit<OrdersState> {
       final res = await ordersRepository.getOrderStatuses();
       _statusIdByCode = {for (final s in res.items) s.statusName: s.id};
     } catch (_) {
-      _statusIdByCode = const {};
+      // Leave the map null on failure so the next refresh retries
+      // instead of caching an empty map forever (which used to make
+      // preset filters silently match nothing).
+      _statusIdByCode = null;
     }
   }
 
@@ -130,6 +179,9 @@ class OrdersCubit extends Cubit<OrdersState> {
         break;
       case OrdersTabPreset.closed:
         codes = _closedStatusCodes;
+        break;
+      case OrdersTabPreset.scheduled:
+        codes = _scheduledStatusCodes;
         break;
       case OrdersTabPreset.all:
         return const [];
@@ -148,8 +200,18 @@ class OrdersCubit extends Cubit<OrdersState> {
 
   Future<void> clearFilters() async {
     _searchDebounce?.cancel();
-    if (_filters.isEmpty) return;
-    await applyFilters(OrderFilters.empty);
+    // Keep the active tab preset's status filter when clearing — the
+    // empty-state "Сбросить фильтры" button on the Запланированные tab
+    // used to wipe everything and dump the manager into an unfiltered
+    // ALL-orders view (which looked like the tab was leaking). Preserve
+    // the preset's status_ids and only wipe search + date range.
+    final preserved = _filters.copyWith(
+      search: '',
+      clearDateFrom: true,
+      clearDateTo: true,
+    );
+    if (preserved == _filters) return;
+    await applyFilters(preserved);
   }
 
   Future<void> loadMore() async {

@@ -64,7 +64,27 @@ class Order {
   final bool isPromo;
   final DateTime createdAt;
   final DateTime updatedAt;
+  // Set only when status == 'scheduled'. ISO UTC string of the next
+  // 09:00 Almaty boundary — surfaced on the Запланированные tab so a
+  // manager can sort by urgency / see when each order would naturally
+  // release. Parsed leniently; null on rows from before the feature.
+  final DateTime? scheduledForAt;
+  // Packaging — surfaced to the picker so they pack the right
+  // bag count without guessing. Big bag = 30₸ (handles 7+ items),
+  // medium bag = 15₸ (handles up to 6 items). Backend computes
+  // counts in cart-service.checkout and stores them on the order;
+  // admin just displays. null on legacy orders (before 2026-05-28).
+  final int? bigBagCount;
+  final int? mediumBagCount;
+  final double? packagingSum;
   final List<OrderItem> items;
+
+  // Item substitution ("Замена товара"). `substitutions` = full array on the
+  // order-detail response; the two flags are the lightweight signals (also
+  // present on list rows).
+  final List<OrderSubstitution> substitutions;
+  final bool hasPendingSubstitution;
+  final DateTime? pendingSubstitutionExpiresAt;
 
   Order({
     required this.id,
@@ -82,8 +102,28 @@ class Order {
     required this.isPromo,
     required this.createdAt,
     required this.updatedAt,
+    this.scheduledForAt,
+    this.bigBagCount,
+    this.mediumBagCount,
+    this.packagingSum,
     required this.items,
+    this.substitutions = const [],
+    this.hasPendingSubstitution = false,
+    this.pendingSubstitutionExpiresAt,
   });
+
+  /// The open (still-awaiting-customer) proposal for [itemId], if any.
+  OrderSubstitution? openSubstitutionForItem(int itemId) {
+    for (final s in substitutions) {
+      if (s.orderItemId == itemId && s.isOpen) return s;
+    }
+    return null;
+  }
+
+  /// True while ANY substitution is still awaiting the customer. Advancing the
+  /// order to ready-for-delivery/delivering is blocked (backend + UI) until
+  /// every proposal resolves.
+  bool get hasOpenSubstitution => substitutions.any((s) => s.isOpen);
 
   static double _toDouble(dynamic v) {
     if (v == null) return 0.0;
@@ -107,16 +147,37 @@ class Order {
     isPromo: j['is_promo'] as bool? ?? false,
     createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ?? DateTime.now(),
     updatedAt: DateTime.tryParse(j['updated_at']?.toString() ?? '') ?? DateTime.now(),
+    scheduledForAt: j['scheduled_for_at'] != null
+        ? DateTime.tryParse(j['scheduled_for_at'].toString())
+        : null,
+    bigBagCount: j['big_bag_count'] as int?,
+    mediumBagCount: j['medium_bag_count'] as int?,
+    packagingSum: j['packaging_sum'] != null
+        ? _toDouble(j['packaging_sum'])
+        : null,
     items: ((j['items'] as List?) ?? [])
         .cast<Map<String, dynamic>>()
         .map(OrderItem.fromJson)
         .toList(),
+    substitutions: ((j['substitutions'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((m) => OrderSubstitution.fromJson(m.cast<String, dynamic>()))
+        .toList(),
+    hasPendingSubstitution: j['has_pending_substitution'] as bool? ?? false,
+    pendingSubstitutionExpiresAt: j['pending_substitution_expires_at'] == null
+        ? null
+        : DateTime.tryParse(j['pending_substitution_expires_at'].toString()),
   );
 
   Order copyWith({
     String? status,
     String? totalAmount,
     List<OrderItem>? items,
+    int? bigBagCount,
+    int? mediumBagCount,
+    double? packagingSum,
+    List<OrderSubstitution>? substitutions,
+    bool? hasPendingSubstitution,
   }) =>
       Order(
         id: id,
@@ -134,7 +195,122 @@ class Order {
         isPromo: isPromo,
         createdAt: createdAt,
         updatedAt: updatedAt,
+        scheduledForAt: scheduledForAt,
+        bigBagCount: bigBagCount ?? this.bigBagCount,
+        mediumBagCount: mediumBagCount ?? this.mediumBagCount,
+        packagingSum: packagingSum ?? this.packagingSum,
         items: items ?? this.items,
+        substitutions: substitutions ?? this.substitutions,
+        hasPendingSubstitution:
+            hasPendingSubstitution ?? this.hasPendingSubstitution,
+        pendingSubstitutionExpiresAt: pendingSubstitutionExpiresAt,
+      );
+}
+
+/// A manager's proposed replacement for an out-of-stock order item, awaiting
+/// the customer's accept/decline. Mirrors the order-service
+/// order_item_substitutions row surfaced on the order-detail response.
+class OrderSubstitution {
+  final int id;
+  final int orderItemId;
+  final String status; // proposed | accepted | declined | expired | canceled
+  final int originalProductId;
+  final String originalPrice;
+  final int originalQty;
+  final int substituteProductId;
+  final String substituteName;
+  final String substitutePrice;
+  final int substituteQty;
+  final String? managerNote;
+  final String? refundAmount;
+  final DateTime? expiresAt;
+  final DateTime? respondedAt;
+
+  OrderSubstitution({
+    required this.id,
+    required this.orderItemId,
+    required this.status,
+    required this.originalProductId,
+    required this.originalPrice,
+    required this.originalQty,
+    required this.substituteProductId,
+    required this.substituteName,
+    required this.substitutePrice,
+    required this.substituteQty,
+    this.managerNote,
+    this.refundAmount,
+    this.expiresAt,
+    this.respondedAt,
+  });
+
+  bool get isOpen => status == 'proposed';
+
+  static int _i(dynamic v) =>
+      v is int ? v : int.tryParse(v?.toString() ?? '') ?? 0;
+
+  factory OrderSubstitution.fromJson(Map<String, dynamic> j) =>
+      OrderSubstitution(
+        id: _i(j['id']),
+        orderItemId: _i(j['order_item_id']),
+        status: j['status'] as String? ?? '',
+        originalProductId: _i(j['original_product_id']),
+        originalPrice: j['original_price']?.toString() ?? '0',
+        originalQty: _i(j['original_qty']),
+        substituteProductId: _i(j['substitute_product_id']),
+        substituteName: j['substitute_name'] as String? ?? '',
+        substitutePrice: j['substitute_price']?.toString() ?? '0',
+        substituteQty: _i(j['substitute_qty']),
+        managerNote: j['manager_note'] as String?,
+        refundAmount: j['refund_amount']?.toString(),
+        expiresAt: j['expires_at'] == null
+            ? null
+            : DateTime.tryParse(j['expires_at'].toString()),
+        respondedAt: j['responded_at'] == null
+            ? null
+            : DateTime.tryParse(j['responded_at'].toString()),
+      );
+}
+
+/// A candidate substitute from catalog `/products/similar-products`
+/// (ProductResponse), filtered ≤ the OOS item's price. Shown in the
+/// admin picker sheet.
+class SimilarProduct {
+  final int id; // product_id
+  final String name;
+  final double price;
+  final double? salePrice;
+  final bool onSale;
+  final bool inStock;
+  final String? imageUrl;
+
+  SimilarProduct({
+    required this.id,
+    required this.name,
+    required this.price,
+    this.salePrice,
+    required this.onSale,
+    required this.inStock,
+    this.imageUrl,
+  });
+
+  /// Effective sell price = sale price when on sale, else base price. This is
+  /// the number the backend refunds against, so it's what the manager sees.
+  double get effectivePrice =>
+      (onSale && salePrice != null && salePrice! > 0) ? salePrice! : price;
+
+  static double _d(dynamic v) =>
+      v is num ? v.toDouble() : double.tryParse(v?.toString() ?? '') ?? 0.0;
+  static int _i(dynamic v) =>
+      v is int ? v : int.tryParse(v?.toString() ?? '') ?? 0;
+
+  factory SimilarProduct.fromJson(Map<String, dynamic> j) => SimilarProduct(
+        id: _i(j['id'] ?? j['product_id']),
+        name: j['name'] as String? ?? '',
+        price: _d(j['price']),
+        salePrice: j['sale_price'] == null ? null : _d(j['sale_price']),
+        onSale: j['on_sale'] as bool? ?? false,
+        inStock: j['in_stock'] as bool? ?? false,
+        imageUrl: j['image_url'] as String?,
       );
 }
 
@@ -330,7 +506,15 @@ const Map<String, String> kOrderStatusRu = {
   'canceled': 'Отменён',
   'refunded': 'Полный возврат',
   'partially-refunded': 'Частичный возврат',
-  'payment-failed': 'Ошибка',
+  'payment-failed': 'Карта отклонена',
+  // Customer opened the bank 3DS page but never finished — the bank
+  // never confirmed and never declined. No money captured. Distinct
+  // from 'Карта отклонена' (active decline) and 'Отменён' (deliberate
+  // cancellation) so managers know "customer wandered off mid-payment".
+  'payment-timeout': 'Оплата не завершена',
+  // Off-hours parked order. Customer already paid; awaits manager
+  // Release in the Запланированные tab to enter the picking flow.
+  'scheduled': 'Запланирован на утро',
 };
 
 String orderStatusRu(String code) => kOrderStatusRu[code] ?? code;
@@ -339,18 +523,34 @@ String orderStatusRu(String code) => kOrderStatusRu[code] ?? code;
 /// `StatusMachine.ADMIN_ALLOWED` (order-service status_machine.py).
 /// The status dropdown filters to these so an admin can't pick an
 /// invalid transition (e.g. completed -> pending-payment) and get a
-/// silent backend rejection. A status with an empty set is terminal.
+/// silent backend rejection.
+///
+/// Refund targets ('refunded', 'partially-refunded') are intentionally
+/// NOT listed here. Refunds can ONLY be applied through the refund
+/// modal (_openRefundSheet → writes order_refunds row + moves money via
+/// payment-service). Letting the admin pick "Частичный возврат" from
+/// this dropdown changed only the status — no money moved, no refund
+/// row recorded — and trapped the order in a terminal-looking state.
+/// Caught 2026-05-20 during Kiril's live order test.
+///
+/// 'partially-refunded' allows forward progress so the admin can still
+/// fulfill the remaining (non-refunded) items of the order.
 const Map<String, Set<String>> kAdminAllowedTransitions = {
   'pending-payment': {'paid', 'payment-failed', 'canceled'},
-  'paid': {'processing', 'canceled', 'refunded', 'partially-refunded'},
-  'processing': {'ready-for-delivery', 'canceled', 'refunded', 'partially-refunded'},
-  'ready-for-delivery': {'delivering', 'partially-refunded', 'refunded'},
-  'delivering': {'completed', 'partially-refunded', 'refunded'},
-  'completed': {'partially-refunded', 'refunded'},
+  'paid': {'processing', 'canceled'},
+  'processing': {'ready-for-delivery', 'canceled'},
+  'ready-for-delivery': {'delivering'},
+  'delivering': {'completed'},
+  'completed': {},
   'payment-failed': {'canceled'},
+  'payment-timeout': {'canceled'},
   'canceled': {},
-  'partially-refunded': {},
+  'partially-refunded': {'processing', 'ready-for-delivery', 'delivering', 'completed'},
   'refunded': {},
+  // Release a scheduled order: manager picks "Оплачен" → backend fires
+  // the normal PAID push to customer + picking flow starts. Cancel is
+  // also allowed in case customer rings to back out overnight.
+  'scheduled': {'paid', 'canceled'},
 };
 
 
@@ -431,6 +631,40 @@ class OrderItemEditResult {
         deliverySum: _toDouble(j['delivery_sum']),
         totalAmount: _toDouble(j['total_amount']),
         removed: j['removed'] as bool? ?? false,
+      );
+}
+
+class PackagingEditResult {
+  final bool ok;
+  final int orderId;
+  final int bigBagCount;
+  final int mediumBagCount;
+  final double packagingSum;
+  final double totalAmount;
+
+  PackagingEditResult({
+    required this.ok,
+    required this.orderId,
+    required this.bigBagCount,
+    required this.mediumBagCount,
+    required this.packagingSum,
+    required this.totalAmount,
+  });
+
+  static double _toDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString()) ?? 0.0;
+  }
+
+  factory PackagingEditResult.fromJson(Map<String, dynamic> j) =>
+      PackagingEditResult(
+        ok: j['ok'] as bool? ?? false,
+        orderId: j['order_id'] as int? ?? 0,
+        bigBagCount: j['big_bag_count'] as int? ?? 0,
+        mediumBagCount: j['medium_bag_count'] as int? ?? 0,
+        packagingSum: _toDouble(j['packaging_sum']),
+        totalAmount: _toDouble(j['total_amount']),
       );
 }
 
@@ -527,6 +761,10 @@ class ReviewItem {
   final int storeId;
   final int rating;
   final String? comment;
+  final List<String> photoUrls;
+  final String? replyText;
+  final String? replyTag;
+  final DateTime? repliedAt;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -537,9 +775,15 @@ class ReviewItem {
     required this.storeId,
     required this.rating,
     this.comment,
+    this.photoUrls = const [],
+    this.replyText,
+    this.replyTag,
+    this.repliedAt,
     required this.createdAt,
     required this.updatedAt,
   });
+
+  bool get isAnswered => (replyText ?? '').trim().isNotEmpty;
 
   factory ReviewItem.fromJson(Map<String, dynamic> j) => ReviewItem(
         id: j['id'] as int? ?? 0,
@@ -548,6 +792,13 @@ class ReviewItem {
         storeId: j['store_id'] as int? ?? 0,
         rating: j['rating'] as int? ?? 0,
         comment: j['comment'] as String?,
+        photoUrls: ((j['photo_urls'] as List?) ?? const [])
+            .map((e) => e.toString())
+            .where((e) => e.isNotEmpty)
+            .toList(),
+        replyText: j['reply_text'] as String?,
+        replyTag: j['reply_tag'] as String?,
+        repliedAt: DateTime.tryParse(j['replied_at']?.toString() ?? ''),
         createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ??
             DateTime.now(),
         updatedAt: DateTime.tryParse(j['updated_at']?.toString() ?? '') ??

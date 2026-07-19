@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/feature_flags.dart';
+import '../../../core/services/new_order_counter.dart';
 import '../../auth/state/auth_cubit.dart';
+import '../../orders/data/orders_repository.dart';
 import '../../banners/presentation/banners_list_page.dart';
+import '../../delivery_slots/presentation/slot_templates_list_page.dart';
 import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
@@ -21,12 +25,20 @@ const double _kRailBreakpoint = 720;
 enum _Section {
   dashboard,
   newOrders,
+  // Off-hours parked orders. Customer paid; picking waits until 09:00
+  // when a manager hits the Release button. Lives between Новые and
+  // История so it surfaces alongside the live workload.
+  scheduled,
   orderHistory,
   customers,
   reports,
   reviews,
   users,
   banners,
+  // Editor for delivery time slots — per-store template list with start/
+  // end window, slot duration, capacity cap. Customer app reads
+  // /delivery/slots and renders these as the checkout slot picker.
+  deliverySlots,
   broadcast,
   settings,
 }
@@ -55,7 +67,30 @@ class _HomeShellState extends State<HomeShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       context.read<OrdersCubit>().applyTabPreset(OrdersTabPreset.active);
+      // Load staged-rollout feature flags (review reply, substitution UI) so a
+      // backend env flip takes effect on next app open, no rebuild.
+      final ordersRepo = context.read<OrdersRepository>();
+      ordersRepo.getFeatures().then((f) {
+        AdminFeatureFlags.instance.set(f);
+      }).catchError((_) {
+        // Keep the safe all-off default on any error.
+      });
     });
+  }
+
+  /// Switch from Dashboard to the orders tab with an optional filter.
+  /// Called by [DashboardPage] KPI taps and status-row taps. Without a
+  /// status name we go to the "active" preset so the manager lands on
+  /// something useful (the active queue); with one, we filter precisely
+  /// to that status via the shared OrdersCubit.
+  void _drillToOrdersFromDashboard({String? statusName}) {
+    setState(() => _section = _Section.newOrders);
+    final cubit = context.read<OrdersCubit>();
+    if (statusName == null) {
+      cubit.applyTabPreset(OrdersTabPreset.active);
+    } else {
+      cubit.applyStatusByName(statusName);
+    }
   }
 
   void _select(_Section s) {
@@ -64,7 +99,14 @@ class _HomeShellState extends State<HomeShell> {
     final cubit = context.read<OrdersCubit>();
     switch (s) {
       case _Section.newOrders:
+        // Clear the badge as soon as the operator opens the tab — even
+        // if they don't actually scroll the list, having seen the tab
+        // counts as "they know about the new orders" for badge purposes.
+        context.read<NewOrderCounter>().reset();
         cubit.applyTabPreset(OrdersTabPreset.active);
+        break;
+      case _Section.scheduled:
+        cubit.applyTabPreset(OrdersTabPreset.scheduled);
         break;
       case _Section.orderHistory:
         cubit.applyTabPreset(OrdersTabPreset.closed);
@@ -75,6 +117,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.reviews:
       case _Section.users:
       case _Section.banners:
+      case _Section.deliverySlots:
       case _Section.broadcast:
       case _Section.settings:
         break;
@@ -90,10 +133,25 @@ class _HomeShellState extends State<HomeShell> {
           label: 'Сегодня',
         );
       case _Section.newOrders:
-        return const NavigationDestination(
-          icon: Icon(Icons.fiber_new_outlined),
-          selectedIcon: Icon(Icons.fiber_new),
+        // Wrap the icon in a ValueListenableBuilder so the badge count
+        // refreshes whenever app.dart bumps the counter from the
+        // OneSignal foreground handler. Showing a number rather than a
+        // dot so a busy morning ("12") reads at a glance from across
+        // the warehouse.
+        return NavigationDestination(
+          icon: _NewOrdersBadge(
+            child: const Icon(Icons.fiber_new_outlined),
+          ),
+          selectedIcon: _NewOrdersBadge(
+            child: const Icon(Icons.fiber_new),
+          ),
           label: 'Новые',
+        );
+      case _Section.scheduled:
+        return const NavigationDestination(
+          icon: Icon(Icons.schedule_outlined),
+          selectedIcon: Icon(Icons.schedule),
+          label: 'Заплан.',
         );
       case _Section.orderHistory:
         return const NavigationDestination(
@@ -131,6 +189,12 @@ class _HomeShellState extends State<HomeShell> {
           selectedIcon: Icon(Icons.image),
           label: 'Баннеры',
         );
+      case _Section.deliverySlots:
+        return const NavigationDestination(
+          icon: Icon(Icons.access_time_outlined),
+          selectedIcon: Icon(Icons.access_time_filled),
+          label: 'Слоты',
+        );
       case _Section.broadcast:
         return const NavigationDestination(
           icon: Icon(Icons.campaign_outlined),
@@ -152,8 +216,10 @@ class _HomeShellState extends State<HomeShell> {
         return DashboardPage(
           storeId: widget.storeId,
           storeName: widget.storeName,
+          onDrillToOrders: _drillToOrdersFromDashboard,
         );
       case _Section.newOrders:
+      case _Section.scheduled:
       case _Section.orderHistory:
         return OrdersListPage(
           storeId: widget.storeId,
@@ -175,6 +241,11 @@ class _HomeShellState extends State<HomeShell> {
         return const UsersListPage();
       case _Section.banners:
         return const BannersListPage();
+      case _Section.deliverySlots:
+        return SlotTemplatesListPage(
+          storeId: widget.storeId,
+          storeName: widget.storeName,
+        );
       case _Section.broadcast:
         return const BroadcastPage();
       case _Section.settings:
@@ -216,6 +287,7 @@ class _HomeShellState extends State<HomeShell> {
         final visibleSections = <_Section>[
           _Section.dashboard,
           _Section.newOrders,
+          _Section.scheduled,
           _Section.orderHistory,
           _Section.customers,
           _Section.reports,
@@ -226,6 +298,9 @@ class _HomeShellState extends State<HomeShell> {
           // lands on an "admin only" banner.
           if (isAdmin) _Section.users,
           if (isAdmin) _Section.banners,
+          // Slot config is per-store; managers run their store day-to-day,
+          // so they can tune their own caps. Admin gets it too.
+          _Section.deliverySlots,
           if (isAdmin) _Section.broadcast,
           _Section.settings,
         ];
@@ -308,6 +383,14 @@ class _SideRail extends StatelessWidget {
                 label: 'Новые заказы',
                 isSelected: selected == _Section.newOrders,
                 onTap: () => onSelected(_Section.newOrders),
+                badgeBuilder: (child) => _NewOrdersBadge(child: child),
+              ),
+              _RailItem(
+                icon: Icons.schedule_outlined,
+                selectedIcon: Icons.schedule,
+                label: 'Запланированные',
+                isSelected: selected == _Section.scheduled,
+                onTap: () => onSelected(_Section.scheduled),
               ),
               _RailItem(
                 icon: Icons.history_outlined,
@@ -365,6 +448,19 @@ class _SideRail extends StatelessWidget {
                   onTap: () => onSelected(_Section.banners),
                 );
               }),
+              // Delivery slots — staff (admin + manager).
+              Builder(builder: (ctx) {
+                final auth = ctx.watch<AuthCubit>().state;
+                final isStaff = auth is Authenticated && auth.user.isStaff;
+                if (!isStaff) return const SizedBox.shrink();
+                return _RailItem(
+                  icon: Icons.access_time_outlined,
+                  selectedIcon: Icons.access_time_filled,
+                  label: 'Слоты доставки',
+                  isSelected: selected == _Section.deliverySlots,
+                  onTap: () => onSelected(_Section.deliverySlots),
+                );
+              }),
               // Broadcast — admin role only. Sends a push to ALL customers,
               // so we keep it behind the same gate as Banners.
               Builder(builder: (ctx) {
@@ -407,12 +503,44 @@ class _SideRail extends StatelessWidget {
   }
 }
 
+/// Wraps any child widget with a Material 3 Badge whose count is the
+/// current [NewOrderCounter] value — used for both the nav rail icon
+/// and the bottom-nav destination so the unread indicator stays in
+/// lock-step with the push handler. Zero count renders as the plain
+/// child (no badge bubble).
+class _NewOrdersBadge extends StatelessWidget {
+  final Widget child;
+  const _NewOrdersBadge({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final counter = context.read<NewOrderCounter>();
+    return ValueListenableBuilder<int>(
+      valueListenable: counter.listenable,
+      builder: (_, count, ic) {
+        if (count <= 0) return ic!;
+        return Badge.count(
+          count: count,
+          // Cap shown number visually — 99+ keeps the badge from
+          // stretching the nav icon's bounds.
+          isLabelVisible: true,
+          child: ic,
+        );
+      },
+      child: child,
+    );
+  }
+}
+
 class _RailItem extends StatelessWidget {
   final IconData icon;
   final IconData selectedIcon;
   final String label;
   final bool isSelected;
   final VoidCallback onTap;
+  /// Optional wrapper around the icon — used to layer a Badge on top
+  /// (e.g. the "Новые" tab unread count). Null = render the icon plain.
+  final Widget Function(Widget child)? badgeBuilder;
 
   const _RailItem({
     required this.icon,
@@ -420,6 +548,7 @@ class _RailItem extends StatelessWidget {
     required this.label,
     required this.isSelected,
     required this.onTap,
+    this.badgeBuilder,
   });
 
   @override
@@ -443,10 +572,15 @@ class _RailItem extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             child: Row(
               children: [
-                Icon(
-                  isSelected ? selectedIcon : icon,
-                  color: fg,
-                ),
+                () {
+                  final iconWidget = Icon(
+                    isSelected ? selectedIcon : icon,
+                    color: fg,
+                  );
+                  return badgeBuilder == null
+                      ? iconWidget
+                      : badgeBuilder!(iconWidget);
+                }(),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(

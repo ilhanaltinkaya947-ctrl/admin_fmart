@@ -232,12 +232,18 @@ class _BannersListPageState extends State<BannersListPage> {
               },
               itemBuilder: (_, i) {
                 final b = state.items[i];
-                return _BannerTile(
+                // RepaintBoundary so dragging one banner doesn't force
+                // every other tile (each with a CachedNetworkImage) to
+                // re-rasterize per frame — that was the laggy-drag root
+                // cause on iPad with 8+ banners.
+                return RepaintBoundary(
                   key: ValueKey(b.id),
-                  index: i,
-                  banner: b,
-                  onEdit: () => _openEdit(banner: b),
-                  onDelete: () => _confirmDelete(b),
+                  child: _BannerTile(
+                    index: i,
+                    banner: b,
+                    onEdit: () => _openEdit(banner: b),
+                    onDelete: () => _confirmDelete(b),
+                  ),
                 );
               },
             );
@@ -256,7 +262,6 @@ class _BannerTile extends StatelessWidget {
   final VoidCallback onDelete;
 
   const _BannerTile({
-    super.key,
     required this.index,
     required this.banner,
     required this.onEdit,

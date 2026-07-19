@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../data/banner_models.dart';
 import '../data/banners_repository.dart';
 
@@ -44,7 +45,7 @@ class BannersCubit extends Cubit<BannersState> {
       final items = await repo.listAll();
       emit(BannersLoaded(items));
     } catch (e) {
-      emit(BannersFailure('Не удалось загрузить баннеры'));
+      emit(BannersFailure(describeApiError(e, subject: 'баннеры')));
     }
   }
 

@@ -31,8 +31,9 @@ class AuthRepository {
     required String phone,
     required String password,
     required String onesignalUserId,
+    bool rememberMe = true,
   }) async {
-    final resp = await api.dio.post('/gw/auth/login', data: {
+    final resp = await api.dio.post('/gw/auth/admin/login', data: {
       'phone': phone,
       'password': password,
       'onesignal_user_id': onesignalUserId,
@@ -45,12 +46,12 @@ class AuthRepository {
     }
     try {
       await tokenStorage
-          .saveTokens(access: access, refresh: refresh)
+          .saveTokens(access: access, refresh: refresh, rememberMe: rememberMe)
           .timeout(const Duration(seconds: 3));
     } on TimeoutException {
       debugPrint('[Auth] Token save timed out — retrying without timeout');
-      await tokenStorage.saveTokens(access: access, refresh: refresh);
+      await tokenStorage.saveTokens(
+          access: access, refresh: refresh, rememberMe: rememberMe);
     }
-
   }
 }

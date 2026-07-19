@@ -31,6 +31,20 @@ class ApiClient {
       onError: (e, handler) async {
         final code = e.response?.statusCode;
 
+        // Skip the refresh-on-401 dance for /gw/auth/refresh itself.
+        // Without this guard, an expired refresh token caused a deadlock:
+        //   /gw/auth/me 401 → _refresh() → POST /gw/auth/refresh 401 →
+        //   onError fires again → calls _refresh() → sees _refreshCompleter
+        //   != null → awaits the outer completer → outer completer can't
+        //   resolve until the POST returns → POST is stuck in onError →
+        //   permanent hang at cold-start loader. Managers reported this
+        //   2026-05-28 (white spinner on launch, never resolved).
+        final isRefreshRequest =
+            e.requestOptions.path.contains('/gw/auth/refresh');
+        if (isRefreshRequest) {
+          return handler.next(e);
+        }
+
         // Только 401 и только один повтор
         if (code != 401 || e.requestOptions.extra['retried'] == true) {
           return handler.next(e);

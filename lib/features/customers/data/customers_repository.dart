@@ -28,10 +28,12 @@ class CustomersRepository {
   }
 
   Future<CustomerInfo> getCustomerById(int customerId) async {
-    // Path must include the `/customers/` segment — without it this hit
-    // /gw/auth/admin/<id>, 404'd, and the customer detail page never
-    // loaded (order history + notes silently failed with it).
-    final resp = await api.dio.get('/gw/auth/admin/customers/$customerId');
+    // Auth-service does NOT expose `GET /admin/customers/{id}` — only the
+    // list, the notes sub-resource, and the backward-compat single-user
+    // lookup at `/admin/{user_id}`. Use that one; it returns a UserResponse
+    // shape that CustomerInfo.fromJson tolerates (all reads null-safe).
+    // Proper `/admin/customers/{id}` endpoint is a follow-up.
+    final resp = await api.dio.get('/gw/auth/admin/$customerId');
     return CustomerInfo.fromJson(asJsonMap(resp.data));
   }
 

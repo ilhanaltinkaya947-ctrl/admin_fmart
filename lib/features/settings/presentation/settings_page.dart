@@ -40,7 +40,6 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthCubit>().state;
     final store = context.watch<StoreCubit>().state;
-    final theme = Theme.of(context);
 
     String role = '—';
     String userName = '—';
@@ -124,31 +123,6 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('Сменить магазин'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => context.read<StoreCubit>().clearStore(),
-          ),
-          const SizedBox(height: 16),
-          _SectionHeader('Язык'),
-          _InfoCard(
-            children: [
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Русский'),
-                trailing: const Icon(Icons.check, color: Colors.green),
-                dense: true,
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Қазақша'),
-                subtitle: Text(
-                  'Скоро',
-                  style: TextStyle(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    fontSize: 12,
-                  ),
-                ),
-                enabled: false,
-                dense: true,
-              ),
-            ],
           ),
           const SizedBox(height: 16),
           _SectionHeader('Приложение'),

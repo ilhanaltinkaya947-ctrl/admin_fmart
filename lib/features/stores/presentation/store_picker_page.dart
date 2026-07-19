@@ -13,6 +13,13 @@ class StorePickerPage extends StatefulWidget {
 }
 
 class _StorePickerPageState extends State<StorePickerPage> {
+  /// Latches the auto-pick so it fires at most once per mount. Without
+  /// this a single-store manager could land in a loop where clearStore
+  /// → re-show picker → auto-pick → clearStore was indistinguishable
+  /// from a manual flow. Once latched, "сменить магазин" still works
+  /// (it'll show the picker again on the next mount).
+  bool _autoPicked = false;
+
   @override
   void initState() {
     super.initState();
@@ -65,6 +72,24 @@ class _StorePickerPageState extends State<StorePickerPage> {
             final visible = isAdmin
                 ? state.stores
                 : state.stores.where((s) => assigned.contains(s.storeId)).toList();
+
+            // Single-store managers shouldn't see a picker at all —
+            // auto-select their one store the first time the list
+            // resolves. Admins are never auto-picked (they need to
+            // choose which store they're acting in).
+            if (!_autoPicked &&
+                !isAdmin &&
+                visible.length == 1 &&
+                auth is Authenticated) {
+              _autoPicked = true;
+              final only = visible.first;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  context.read<StoreCubit>().selectStore(only);
+                }
+              });
+              return const Center(child: CircularProgressIndicator());
+            }
 
             if (visible.isEmpty) {
               return Center(

@@ -123,14 +123,18 @@ class OrdersRepository {
     required int storeId,
     required int orderId,
   }) async {
-    final page = await getOrders(
-      storeId: storeId,
-      page: 1,
-      perPage: 1,
-      search: orderId.toString(),
-    );
-    if (page.items.isEmpty) return null;
-    return page.items.first;
+    // storeId is intentionally unused now — the backend identifies the
+    // order by its own id. Kept in the signature so existing callers
+    // (and the polling loop on the order detail page) compile unchanged.
+    try {
+      final resp = await api.dio.get('/gw/order/admin/orders/$orderId');
+      final data = resp.data;
+      if (data is! Map) return null;
+      return Order.fromJson(data.cast<String, dynamic>());
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return null;
+      rethrow;
+    }
   }
 
   Future<NewOrdersResponse> getNewOrders({
@@ -177,11 +181,30 @@ class OrdersRepository {
     }
   }
 
-  /// Refund an order. [idempotencyKey] should be generated once per
-  /// admin-initiated refund attempt and reused if the call is retried —
-  /// backend does not currently dedupe by this header (planned), but
-  /// sending it now makes server-side dedupe a one-line change later
-  /// and at minimum gives us a per-attempt id in logs / Sentry.
+  /// Release an off-hours SCHEDULED order early — moves it out of the
+  /// `scheduled` holding status into the normal fulfillment flow (paid /
+  /// processing) so the picker can start assembling it before the 09:00
+  /// auto-release worker fires. Backend endpoint added in task #229.
+  Future<SimpleActionResponse> releaseOrder({required int orderId}) async {
+    try {
+      final resp =
+          await api.dio.post('/gw/order/admin/orders/$orderId/release');
+      return SimpleActionResponse.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось выпустить заказ',
+        statusCode: e.response?.statusCode,
+      );
+    }
+  }
+
+  /// Refund an order. [idempotencyKey] MUST be generated once per
+  /// admin-initiated refund attempt and reused if the call is retried.
+  /// The backend DEDUPES refunds by a partial unique index
+  /// `ux_order_refunds_idem (order_id, idempotency_key)` (task #60/#417), so a
+  /// retried call returns the first refund's result instead of applying a
+  /// duplicate. Do NOT regenerate the key per attempt — that would defeat the
+  /// dedupe and re-introduce the #79 double-apply class.
   Future<SimpleActionResponse> refundOrder({
     required int orderId,
     required double amount,
@@ -290,6 +313,26 @@ class OrdersRepository {
     return OrderItemEditResult.fromJson(asJsonMap(resp.data));
   }
 
+  /// Manager override for auto-assigned bag counts. Used when the
+  /// heuristic picked the wrong bag (e.g. 7L of glass juice doesn't fit
+  /// a Medium). Backend recomputes packaging_sum + adjusts total_amount
+  /// by the delta and writes a history row. Status-gated on the backend
+  /// (paid/processing only).
+  Future<PackagingEditResult> updatePackaging({
+    required int orderId,
+    required int bigBagCount,
+    required int mediumBagCount,
+  }) async {
+    final resp = await api.dio.patch(
+      '/gw/order/admin/orders/$orderId/packaging',
+      data: {
+        'big_bag_count': bigBagCount,
+        'medium_bag_count': mediumBagCount,
+      },
+    );
+    return PackagingEditResult.fromJson(asJsonMap(resp.data));
+  }
+
   Future<OrderItemEditResult> removeItem({
     required int orderId,
     required int itemId,
@@ -349,6 +392,7 @@ class OrdersRepository {
     int? maxRating,
     DateTime? dateFrom,
     DateTime? dateTo,
+    bool? answered,
   }) async {
     final resp = await api.dio.get(
       '/gw/order/admin/reviews',
@@ -360,9 +404,39 @@ class OrdersRepository {
         if (maxRating != null) 'max_rating': maxRating,
         if (dateFrom != null) 'date_from': dateFrom.toUtc().toIso8601String(),
         if (dateTo != null) 'date_to': dateTo.toUtc().toIso8601String(),
+        if (answered != null) 'answered': answered,
       },
     );
     return ReviewsListResponse.fromJson(asJsonMap(resp.data));
+  }
+
+  /// Per-user feature flags for staged rollout (review reply, substitution UI).
+  /// Empty/failed → caller keeps the safe all-off default.
+  Future<Map<String, bool>> getFeatures() async {
+    final resp = await api.dio.get('/gw/order/app/features');
+    final j = asJsonMap(resp.data);
+    return {
+      for (final e in j.entries)
+        if (e.value is bool) e.key.toString(): e.value as bool,
+    };
+  }
+
+  /// Manager replies to a customer review. Backend upserts the reply + fires
+  /// one push to the customer. [replyTag] is an optional resolution marker
+  /// (in_progress / refunded / resolved). Returns the updated review.
+  Future<ReviewItem> replyToReview({
+    required int orderId,
+    required String replyText,
+    String? replyTag,
+  }) async {
+    final resp = await api.dio.put(
+      '/gw/order/admin/reviews/$orderId/reply',
+      data: {
+        'reply_text': replyText,
+        if (replyTag != null) 'reply_tag': replyTag,
+      },
+    );
+    return ReviewItem.fromJson(asJsonMap(resp.data));
   }
 
   Future<ReviewStats> getReviewStats({
@@ -391,5 +465,78 @@ class OrdersRepository {
         ? await api.dio.post(path)
         : await api.dio.delete(path);
     return OrderItemPickedResult.fromJson(asJsonMap(resp.data));
+  }
+
+  // ───────────────────────── item substitution ─────────────────────────
+
+  /// Similar products for [productId] at [storeId], capped at [maxPrice]
+  /// (the OOS item's unit price) so the picker only offers equal-or-cheaper
+  /// candidates. Backend already filters in-stock + active.
+  Future<List<SimilarProduct>> getSimilarProducts({
+    required int storeId,
+    required int productId,
+    required double maxPrice,
+  }) async {
+    final resp = await api.dio.get(
+      '/gw/catalog/products/similar-products',
+      queryParameters: {
+        'store_id': storeId,
+        'product_id': productId,
+        'max_price': maxPrice,
+      },
+    );
+    final data = resp.data;
+    final list = (data is List) ? data : const [];
+    return list
+        .whereType<Map>()
+        .map((m) => SimilarProduct.fromJson(m.cast<String, dynamic>()))
+        .toList();
+  }
+
+  /// Propose an equal-or-cheaper substitute for an OOS item. The backend
+  /// re-validates the substitute price/stock (never trusts the client) and
+  /// returns 409 with a Russian reason on any violation (dearer, OOS, or an
+  /// already-open proposal for this item) — surfaced via [OrdersApiException].
+  Future<Map<String, dynamic>> proposeSubstitution({
+    required int orderId,
+    required int itemId,
+    required int substituteProductId,
+    String? managerNote,
+  }) async {
+    try {
+      final resp = await api.dio.post(
+        '/gw/order/admin/orders/$orderId/items/$itemId/substitute',
+        data: {
+          'substitute_product_id': substituteProductId,
+          if (managerNote != null && managerNote.trim().isNotEmpty)
+            'manager_note': managerNote.trim(),
+        },
+      );
+      return asJsonMap(resp.data);
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось предложить замену',
+        statusCode: e.response?.statusCode,
+      );
+    }
+  }
+
+  /// Withdraw a still-open proposal before the customer answers. 409 if the
+  /// customer already accepted/declined in the meantime.
+  Future<SimpleActionResponse> cancelSubstitution({
+    required int orderId,
+    required int subId,
+  }) async {
+    try {
+      final resp = await api.dio.post(
+        '/gw/order/admin/orders/$orderId/substitutions/$subId/cancel',
+      );
+      return SimpleActionResponse.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось отменить замену',
+        statusCode: e.response?.statusCode,
+      );
+    }
   }
 }

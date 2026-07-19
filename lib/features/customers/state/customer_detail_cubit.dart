@@ -1,6 +1,7 @@
 import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../../orders/models/order_models.dart' show CustomerInfo, OrdersPage;
 import '../data/customers_repository.dart';
 
@@ -28,8 +29,10 @@ class CustomerDetailCubit extends Cubit<CustomerDetailState> {
         customer: results[0] as CustomerInfo,
         orders: results[1] as OrdersPage,
       ));
-    } catch (_) {
-      emit(CustomerDetailFailure(message: 'Не удалось загрузить клиента'));
+    } catch (e) {
+      emit(CustomerDetailFailure(
+        message: describeApiError(e, subject: 'клиента'),
+      ));
     }
   }
 }

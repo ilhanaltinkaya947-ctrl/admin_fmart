@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
@@ -49,13 +50,56 @@ class _BannerEditPageState extends State<BannerEditPage> {
   }
 
   Future<void> _pick() async {
-    final picker = ImagePicker();
-    final picked = await picker.pickImage(
-      source: ImageSource.gallery,
-      // We don't pre-resize here — backend validates exact dimensions.
+    // Two sources because iOS image_picker only reaches the Photos library —
+    // banner artwork often arrives via Telegram/email and lives in Files/iCloud
+    // Drive. file_picker covers those.
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Из галереи'),
+              onTap: () => Navigator.of(sheetCtx).pop('gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_outlined),
+              title: const Text('Из файлов'),
+              subtitle: const Text('iCloud Drive, Файлы, и т.д.'),
+              onTap: () => Navigator.of(sheetCtx).pop('files'),
+            ),
+            const SizedBox(height: 4),
+          ],
+        ),
+      ),
     );
-    if (picked == null || !mounted) return;
-    setState(() => _pickedImage = File(picked.path));
+    if (choice == null || !mounted) return;
+
+    File? file;
+    if (choice == 'gallery') {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        // No pre-resize — backend validates exact dimensions.
+      );
+      if (picked != null) file = File(picked.path);
+    } else if (choice == 'files') {
+      // FileType.image opens UIImagePickerController which lands in
+      // Photos, not Files — defeats the whole point of the "Из файлов"
+      // option. FileType.custom with an explicit extension whitelist
+      // forces UIDocumentPickerViewController = iOS Files app.
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['jpg', 'jpeg', 'png', 'webp', 'heic'],
+        allowMultiple: false,
+        withData: false,
+      );
+      final path = result?.files.single.path;
+      if (path != null && path.isNotEmpty) file = File(path);
+    }
+    if (file == null || !mounted) return;
+    setState(() => _pickedImage = file);
   }
 
   Future<void> _save() async {
@@ -70,6 +114,27 @@ class _BannerEditPageState extends State<BannerEditPage> {
       return;
     }
 
+    // Normalise + light-validate the link URL: prefix https:// if the
+    // operator typed "google.com" without a scheme, and reject obvious
+    // garbage so customers don't tap dead banners. Empty link is fine —
+    // banner without a tap target is supported.
+    final rawLink = _linkCtrl.text.trim();
+    String? normalisedLink;
+    if (rawLink.isNotEmpty) {
+      var l = rawLink;
+      if (!l.startsWith('http://') && !l.startsWith('https://')) {
+        l = 'https://$l';
+      }
+      final uri = Uri.tryParse(l);
+      if (uri == null || !uri.hasAuthority || (uri.host).isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ссылка указана некорректно')),
+        );
+        return;
+      }
+      normalisedLink = l;
+    }
+
     setState(() => _saving = true);
     try {
       final cubit = context.read<BannersCubit>();
@@ -77,7 +142,7 @@ class _BannerEditPageState extends State<BannerEditPage> {
         await cubit.create(
           imageFile: _pickedImage!,
           title: _titleCtrl.text.trim(),
-          linkUrl: _linkCtrl.text.trim(),
+          linkUrl: normalisedLink ?? '',
           active: _active,
         );
       } else {
@@ -85,7 +150,7 @@ class _BannerEditPageState extends State<BannerEditPage> {
           id: widget.banner!.id,
           imageFile: _pickedImage,
           title: _titleCtrl.text.trim(),
-          linkUrl: _linkCtrl.text.trim(),
+          linkUrl: normalisedLink ?? '',
           active: _active,
         );
       }

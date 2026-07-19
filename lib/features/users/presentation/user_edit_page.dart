@@ -2,11 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/format/phone.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../../stores/data/stores_repository.dart';
 import '../../stores/models/store_models.dart';
 import '../data/users_repository.dart';
 import '../models/user_models.dart';
+
+/// Sentinel used by _save to bubble validation messages through the
+/// existing try/catch so they appear in the error banner the same way a
+/// backend error would, without prefixing "Не удалось сохранить".
+class _ValidationFailure implements Exception {
+  final String message;
+  _ValidationFailure(this.message);
+}
 
 class UserEditPage extends StatefulWidget {
   final AdminUser? existing;
@@ -73,20 +82,37 @@ class _UserEditPageState extends State<UserEditPage> {
 
     try {
       final repo = context.read<UsersRepository>();
-      final phone = _phoneCtrl.text.trim();
+      final phoneRaw = _phoneCtrl.text.trim();
       final email = _emailCtrl.text.trim();
       final firstName = _firstNameCtrl.text.trim();
       final lastName = _lastNameCtrl.text.trim();
       final password = _passwordCtrl.text;
       final stores = _role == 'admin' ? <int>[] : _assignedStoreIds.toList();
 
+      // Reject garbage email early — backend accepts the row but the user
+      // can never recover their password without a real address.
+      if (email.isNotEmpty && !isPlausibleEmail(email)) {
+        throw _ValidationFailure('Email указан некорректно');
+      }
+
       AdminUser saved;
       if (_isCreate) {
-        if (phone.isEmpty) {
-          throw Exception('Укажи телефон');
+        if (phoneRaw.isEmpty) {
+          throw _ValidationFailure('Укажите телефон');
+        }
+        // Normalise to +7XXXXXXXXXX so login matches. Rejecting up-front
+        // prevents the "user created but cannot log in" footgun where
+        // the admin types something like "test" and the backend stores
+        // it verbatim.
+        final phone = normaliseKzPhone(phoneRaw);
+        if (phone == null) {
+          throw _ValidationFailure('Введите корректный номер телефона (+7…)');
         }
         if (password.isEmpty) {
-          throw Exception('Укажи пароль');
+          throw _ValidationFailure('Укажите пароль');
+        }
+        if (password.length < 6) {
+          throw _ValidationFailure('Пароль должен быть не короче 6 символов');
         }
         saved = await repo.create(
           phone: phone,
@@ -174,6 +200,8 @@ class _UserEditPageState extends State<UserEditPage> {
   }
 
   String _humanError(Object e) {
+    // Surface validation messages verbatim — they're already user-facing.
+    if (e is _ValidationFailure) return e.message;
     final s = e.toString();
     if (s.contains('400')) return 'Проверь данные. Возможно, такой пользователь уже есть.';
     return 'Не удалось сохранить. ${s.length > 120 ? s.substring(0, 120) : s}';

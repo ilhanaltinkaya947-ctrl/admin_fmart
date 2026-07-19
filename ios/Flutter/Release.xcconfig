@@ -1,2 +1,11 @@
 #include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
 #include "Generated.xcconfig"
+
+// Dart-defines baked into release archives so Xcode Product → Archive
+// works without needing CLI flags. Base64 of comma-joined KEY=VALUE pairs:
+//   SENTRY_DSN=https://8734faaad83a8d8794a350af206a6e20@…/4511363319922768
+//   SENTRY_ENVIRONMENT=production
+//   SENTRY_RELEASE=admin@1.0.0+18
+// Rebuild this string after any version bump or DSN rotation:
+//   printf "%s" "K1=V1,K2=V2" | base64
+DART_DEFINES=U0VOVFJZX0RTTj1odHRwczovLzg3MzRmYWFhZDgzYThkODc5NGEzNTBhZjIwNmE2ZTIwQG80NTEwOTg0MzI4MjQ5MzQ0LmluZ2VzdC5kZS5zZW50cnkuaW8vNDUxMTM2MzMxOTkyMjc2OCxTRU5UUllfRU5WSVJPTk1FTlQ9cHJvZHVjdGlvbixTRU5UUllfUkVMRUFTRT1hZG1pbkAxLjAuMCsxOA==

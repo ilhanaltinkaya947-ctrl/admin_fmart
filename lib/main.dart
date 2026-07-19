@@ -67,6 +67,14 @@ Future<void> _bootstrap() async {
 
 Future<void> main() async {
   if (_sentryDsn.isEmpty) {
+    // Release builds must have crash reporting wired — fail visibly
+    // instead of silently shipping a non-observed app. Debug/profile
+    // builds still run without a DSN for local dev.
+    if (kReleaseMode) {
+      WidgetsFlutterBinding.ensureInitialized();
+      runApp(const _MissingSentryDsnApp());
+      return;
+    }
     await _bootstrap();
     return;
   }
@@ -75,6 +83,12 @@ Future<void> main() async {
     (options) {
       options.dsn = _sentryDsn;
       options.environment = _sentryEnv;
+      // Tagged so releases can be filtered in Sentry. Passed via
+      // --dart-define=SENTRY_RELEASE=admin@1.0.0+14 at build time.
+      options.release = const String.fromEnvironment(
+        'SENTRY_RELEASE',
+        defaultValue: 'unknown',
+      );
       options.tracesSampleRate = 0.1;
       options.attachScreenshot = false;
       options.attachViewHierarchy = false;
@@ -98,4 +112,36 @@ Future<void> main() async {
     },
     appRunner: _bootstrap,
   );
+}
+
+/// Shown only in release builds when the SENTRY_DSN dart-define is missing.
+/// A loud, deliberate failure beats silently shipping a build without
+/// crash reporting. If you see this, the build script forgot:
+///   --dart-define=SENTRY_DSN=https://...@sentry.io/...
+class _MissingSentryDsnApp extends StatelessWidget {
+  const _MissingSentryDsnApp();
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      home: Scaffold(
+        backgroundColor: Color(0xFFFFEBEE),
+        body: Center(
+          child: Padding(
+            padding: EdgeInsets.all(32),
+            child: Text(
+              'Build configuration error:\n'
+              'SENTRY_DSN dart-define missing.\n\n'
+              'Rebuild with --dart-define=SENTRY_DSN=…',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFC62828),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

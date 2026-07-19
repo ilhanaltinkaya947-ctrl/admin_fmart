@@ -35,6 +35,26 @@ const Map<String, String> _kYandexStatusRu = {
 String _yandexStatusRu(String code) =>
     _kYandexStatusRu[code.toLowerCase()] ?? code;
 
+// Statuses where Yandex no longer accepts accept/cancel calls. Sending
+// either returns 4xx and the admin gets a generic "Не удалось". Hide
+// the action buttons instead so the only path from here is "Обновить
+// статус" or "Ссылка курьера" (the link is fine to keep — it's a
+// read-only redirect).
+const Set<String> _kTerminalYandexStatuses = {
+  'delivered',
+  'delivered_finish',
+  'returned',
+  'returned_finish',
+  'cancelled',
+  'cancelled_with_payment',
+  'cancelled_by_taxi',
+  'failed',
+  'performer_not_found',
+};
+
+bool _isTerminalYandexStatus(String code) =>
+    _kTerminalYandexStatuses.contains(code.toLowerCase());
+
 class YandexDeliverySection extends StatefulWidget {
   final int orderId;
   final int storeId;
@@ -201,24 +221,43 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
                             : () => context.read<DeliveryCubit>().refresh(st.claimId, widget.orderId),
                         child: const Text('Обновить статус'),
                       ),
-                      ElevatedButton(
-                        onPressed: loading
-                            ? null
-                            : () => context.read<DeliveryCubit>().accept(st.claimId, st.version, widget.orderId),
-                        child: const Text('Принять'),
-                      ),
-                      OutlinedButton(
-                        onPressed: loading
-                            ? null
-                            : () => context.read<DeliveryCubit>().cancelFlow(st.claimId, st.version, widget.orderId),
-                        child: const Text('Отменить'),
-                      ),
+                      if (!_isTerminalYandexStatus(st.status))
+                        ElevatedButton(
+                          onPressed: loading
+                              ? null
+                              : () => context.read<DeliveryCubit>().accept(st.claimId, st.version, widget.orderId),
+                          child: const Text('Принять'),
+                        ),
+                      if (!_isTerminalYandexStatus(st.status))
+                        OutlinedButton(
+                          onPressed: loading
+                              ? null
+                              : () => context.read<DeliveryCubit>().cancelFlow(st.claimId, st.version, widget.orderId),
+                          child: const Text('Отменить'),
+                        ),
                       OutlinedButton(
                         onPressed: loading
                             ? null
                             : () => context.read<DeliveryCubit>().loadCourierLink(widget.orderId, st.claimId),
                         child: const Text('Ссылка курьера'),
                       ),
+                      // Re-request a fresh courier when the prior claim
+                      // ended in a terminal state (cancelled, taxi
+                      // cancelled, performer not found, etc.). Backend
+                      // (delivery-service.create_claim) now allows this
+                      // — it inserts a new row with a fresh Yandex
+                      // claim_id; get_by_order_id returns the latest
+                      // so subsequent UI reads pick up the new one.
+                      if (_isTerminalYandexStatus(st.status))
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.refresh, size: 18),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFEE6F00),
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: loading ? null : _create,
+                          label: const Text('Заново вызвать курьера'),
+                        ),
                     ],
                   ),
                   if (st.courierLink != null) ...[

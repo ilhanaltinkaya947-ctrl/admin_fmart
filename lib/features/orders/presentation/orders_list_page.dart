@@ -194,8 +194,55 @@ class _OrdersListPageState extends State<OrdersListPage> {
                         title: Text(
                           'Заказ #${o.id} — ${orderStatusRu(o.status)}',
                         ),
-                        subtitle: Text(
-                          '${o.deliveryAddress}\n${df.format(o.createdAt.toLocal())}',
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Tooltip(
+                              message: o.deliveryAddress,
+                              child: Text(
+                                o.deliveryAddress,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              df.format(o.createdAt.toLocal()),
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            // Customer-picked delivery slot OR off-hours
+                            // auto-scheduled time. Two variants:
+                            //   - status=scheduled → off-hours order
+                            //     parked until 09:00 release; prefix
+                            //     "Выпустить:" so manager knows the
+                            //     Запланированные-tab action.
+                            //   - any other status with scheduledForAt
+                            //     → customer chose a specific slot;
+                            //     prefix "К доставке:" so picker can
+                            //     plan their day at a glance.
+                            if (o.scheduledForAt != null) ...[
+                              const SizedBox(height: 2),
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.schedule_outlined,
+                                    size: 12,
+                                    color: Color(0xFFEE6F00),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${o.status == "scheduled" ? "Выпустить" : "К доставке"}: ${df.format(o.scheduledForAt!.toLocal())}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFFEE6F00),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
                         ),
                         isThreeLine: true,
                         trailing: Column(
