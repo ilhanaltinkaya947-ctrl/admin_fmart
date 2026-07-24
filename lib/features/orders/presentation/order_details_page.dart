@@ -654,6 +654,24 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         TextEditingController(text: remaining.toStringAsFixed(2));
     final reasonCtrl = TextEditingController();
 
+    // Structured refund-reason picker. Free-text alone produced un-analyzable
+    // garbage ("я", "1", "тест", 5 spellings of "нет в наличии"), so we can't
+    // measure the real out-of-stock rate. A canonical dropdown writes one of a
+    // fixed set of Russian labels into the SAME `reason` string the backend
+    // already stores — no schema/endpoint change, fully backward-compatible
+    // (old builds just keep sending free text). The free-text field below
+    // becomes an OPTIONAL note appended after the canonical label.
+    const refundReasons = <String>[
+      'Нет в наличии',
+      'Разница по весу',
+      'Брак / качество товара',
+      'Замена товара',
+      'Жалоба клиента',
+      'Отмена заказа',
+      'Другое',
+    ];
+    final reasonCode = ValueNotifier<String?>(null);
+
     // ONE idempotency key for the entire modal session. Used by every
     // submit attempt from this sheet — including any retries the
     // operator triggers if they re-tap "Оформить" before the spinner
@@ -747,11 +765,28 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 ),
               ),
               const SizedBox(height: 8),
+              ValueListenableBuilder<String?>(
+                valueListenable: reasonCode,
+                builder: (_, code, __) => DropdownButtonFormField<String>(
+                  value: code,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Причина возврата',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final r in refundReasons)
+                      DropdownMenuItem(value: r, child: Text(r)),
+                  ],
+                  onChanged: (v) => reasonCode.value = v,
+                ),
+              ),
+              const SizedBox(height: 8),
               TextField(
                 controller: reasonCtrl,
-                maxLines: 3,
+                maxLines: 2,
                 decoration: const InputDecoration(
-                  labelText: 'Причина возврата',
+                  labelText: 'Комментарий (необязательно)',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -776,7 +811,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                             0.0;
                         final amount =
                             double.parse(rawAmount.toStringAsFixed(2));
-                        final reason = reasonCtrl.text.trim();
+                        final code = reasonCode.value;
+                        final note = reasonCtrl.text.trim();
+                        // Canonical label is the structured reason; the free
+                        // note is appended after " · " so the stored string
+                        // stays analyzable by its canonical prefix while
+                        // preserving any operator detail.
+                        final reason = code == null
+                            ? note
+                            : (note.isEmpty ? code : '$code · $note');
 
                         // жёсткая валидация — иначе будет мусор в бэке
                         if (amount <= 0) {
@@ -790,8 +833,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                           ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Сумма больше остатка к возврату')));
                           return;
                         }
-                        if (reason.isEmpty) {
-                          ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Нужна причина возврата')));
+                        if (code == null) {
+                          ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Выберите причину возврата')));
+                          return;
+                        }
+                        // "Другое" is only meaningful with a note — otherwise
+                        // it's just the old un-analyzable free-text problem.
+                        if (code == 'Другое' && note.isEmpty) {
+                          ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content: Text('Для «Другое» добавьте комментарий')));
                           return;
                         }
 
@@ -864,6 +913,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
     amountCtrl.dispose();
     reasonCtrl.dispose();
+    reasonCode.dispose();
 
     if (result == null) return;
 

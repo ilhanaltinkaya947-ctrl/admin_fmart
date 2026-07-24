@@ -38,6 +38,10 @@ class _ReviewsPageState extends State<ReviewsPage> {
   final List<ReviewItem> _items = [];
   bool _hasMore = false;
   int? _ratingFilter;
+  // null = all · true = answered · false = unanswered. The backend + repo have
+  // supported this since the feature shipped, but it was never wired into the
+  // UI (loop-caught 2026-07-24).
+  bool? _answeredFilter;
   final ScrollController _scroll = ScrollController();
   bool _loadingMore = false;
 
@@ -92,6 +96,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
           offset: 0,
           minRating: _ratingFilter,
           maxRating: _ratingFilter,
+          answered: _answeredFilter,
         ),
       ]);
       if (!mounted) return;
@@ -123,6 +128,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
         offset: _items.length,
         minRating: _ratingFilter,
         maxRating: _ratingFilter,
+        answered: _answeredFilter,
       );
       if (!mounted) return;
       setState(() {
@@ -139,6 +145,12 @@ class _ReviewsPageState extends State<ReviewsPage> {
   void _setFilter(int? rating) {
     if (_ratingFilter == rating) return;
     setState(() => _ratingFilter = rating);
+    _load(reset: true);
+  }
+
+  void _setAnswered(bool? answered) {
+    if (_answeredFilter == answered) return;
+    setState(() => _answeredFilter = answered);
     _load(reset: true);
   }
 
@@ -164,6 +176,11 @@ class _ReviewsPageState extends State<ReviewsPage> {
             if (_stats != null) _StatsCard(stats: _stats!),
             const SizedBox(height: 12),
             _FilterRow(selected: _ratingFilter, onChange: _setFilter),
+            const SizedBox(height: 8),
+            _AnsweredFilterRow(
+              selected: _answeredFilter,
+              onChange: _setAnswered,
+            ),
             const SizedBox(height: 16),
             if (_loading)
               const Center(
@@ -367,6 +384,43 @@ class _FilterRow extends StatelessWidget {
               onSelected: (_) => onChange(star),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Answered/unanswered filter — mirrors _FilterRow's chip style. null = all.
+/// (Loop-caught 2026-07-24: backend supported this filter but the UI never
+/// offered it.)
+class _AnsweredFilterRow extends StatelessWidget {
+  final bool? selected;
+  final ValueChanged<bool?> onChange;
+  const _AnsweredFilterRow({required this.selected, required this.onChange});
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          ChoiceChip(
+            label: const Text('Все'),
+            selected: selected == null,
+            onSelected: (_) => onChange(null),
+          ),
+          const SizedBox(width: 8),
+          ChoiceChip(
+            label: const Text('Без ответа'),
+            selected: selected == false,
+            onSelected: (_) => onChange(false),
+          ),
+          const SizedBox(width: 8),
+          ChoiceChip(
+            label: const Text('С ответом'),
+            selected: selected == true,
+            onSelected: (_) => onChange(true),
+          ),
         ],
       ),
     );
@@ -850,10 +904,17 @@ class _ReplyComposerState extends State<_ReplyComposer> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottom),
+    return PopScope(
+      // Block dismiss (barrier tap / drag / back) while a reply is in flight,
+      // so the sheet can't close mid-PUT and leave a stale "unanswered" card
+      // that a manager re-replies to → duplicate reply + duplicate customer
+      // push. The submit button is already disabled while _sending; this closes
+      // the only remaining double-submit gap. (loop-caught 2026-07-24)
+      canPop: !_sending,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        padding: EdgeInsets.only(bottom: bottom),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -963,6 +1024,7 @@ class _ReplyComposerState extends State<_ReplyComposer> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
