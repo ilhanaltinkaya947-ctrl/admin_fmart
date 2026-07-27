@@ -52,3 +52,5 @@ ios/.symlinks/
 __MACOSX/
 .DS_Store
 ios/build/
+.env
+__pycache__/

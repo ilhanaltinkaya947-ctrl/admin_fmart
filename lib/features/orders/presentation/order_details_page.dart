@@ -373,6 +373,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     try {
       final repo = context.read<OrdersRepository>();
       final res = await repo.getOrderStatuses();
+      // Slow-network back-nav: the manager can dispose this page during the
+      // await (Shymkent 3G, 1-3s). Guard before setState — matches every other
+      // post-await handler in this file; without it this throws
+      // "setState after dispose" (Sentry noise). (audit 2026-07-27)
+      if (!mounted) return;
 
       final items = [...res.items]..sort((a, b) => a.id.compareTo(b.id));
 
