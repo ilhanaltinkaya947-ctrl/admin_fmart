@@ -166,6 +166,51 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
     await cubit.create(dto);
   }
 
+  Future<void> _acceptClaim(String claimId, int version) async {
+    final cubit = context.read<DeliveryCubit>();
+    await cubit.accept(claimId, version, widget.orderId);
+    if (!mounted) return;
+    final failed = cubit.state is DeliveryError;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(failed ? 'Не удалось принять заявку' : 'Курьер принят')),
+    );
+  }
+
+  // Cancelling a live Yandex claim is destructive + can cost the store money
+  // (`cancelled_with_payment` if the courier is already dispatched). Every
+  // other destructive action in the app confirms — this one must too. Confirm
+  // first, then act, then give explicit success/fail feedback so the manager
+  // doesn't re-tap into a double-cancel.
+  Future<void> _confirmAndCancel(String claimId, int version) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('Отменить доставку?'),
+        content: const Text(
+            'Курьер Яндекса будет отменён. Если курьер уже в пути, отмена может быть платной.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text('Назад'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text('Отменить доставку'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final cubit = context.read<DeliveryCubit>();
+    await cubit.cancelFlow(claimId, version, widget.orderId);
+    if (!mounted) return;
+    final failed = cubit.state is DeliveryError;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(failed ? 'Не удалось отменить доставку' : 'Доставка отменена')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -174,6 +219,32 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
         child: BlocBuilder<DeliveryCubit, DeliveryState>(
           builder: (ctx, st) {
             final loading = st is DeliveryLoading;
+
+            // The DeliveryCubit is app-scoped (singleton) and carries the
+            // orderId in its state. Push tap-routing can stack a 2nd order
+            // detail on top of this one and leave the cubit in the SIBLING
+            // order's state; when this (preserved) section rebuilds it would
+            // otherwise render + let the manager accept/cancel the WRONG
+            // order's live courier. If the current state belongs to a
+            // different order, re-init for OUR order and show a loader.
+            final stOrderId = st is DeliveryReady
+                ? st.orderId
+                : st is DeliveryNoClaim
+                    ? st.orderId
+                    : st is DeliveryTariffs
+                        ? st.orderId
+                        : null;
+            if (stOrderId != null && stOrderId != widget.orderId) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  context.read<DeliveryCubit>().initByOrder(widget.orderId);
+                }
+              });
+              return const SizedBox(
+                height: 88,
+                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              );
+            }
 
             final header = Row(
               children: [
@@ -225,14 +296,14 @@ class _YandexDeliverySectionState extends State<YandexDeliverySection> {
                         ElevatedButton(
                           onPressed: loading
                               ? null
-                              : () => context.read<DeliveryCubit>().accept(st.claimId, st.version, widget.orderId),
+                              : () => _acceptClaim(st.claimId, st.version),
                           child: const Text('Принять'),
                         ),
                       if (!_isTerminalYandexStatus(st.status))
                         OutlinedButton(
                           onPressed: loading
                               ? null
-                              : () => context.read<DeliveryCubit>().cancelFlow(st.claimId, st.version, widget.orderId),
+                              : () => _confirmAndCancel(st.claimId, st.version),
                           child: const Text('Отменить'),
                         ),
                       OutlinedButton(

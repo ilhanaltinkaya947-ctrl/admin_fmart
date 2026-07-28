@@ -158,7 +158,9 @@ class _ReviewsPageState extends State<ReviewsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Отзывы'),
+        // Store name in the title (matches Dashboard + Orders) so a
+        // multi-store manager can't reply to the wrong store's customer.
+        title: Text('Отзывы — ${widget.storeName}'),
         actions: [
           IconButton(
             tooltip: 'Обновить',

@@ -99,6 +99,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     return s == 'paid' || s == 'processing';
   }
 
+  // Dispatching / re-dispatching a Yandex courier makes no sense once the
+  // order is money-dead — a canceled/refunded/payment-failed/timed-out order
+  // has no delivery to make. Hide the create + "Заново вызвать курьера"
+  // controls (a manager could otherwise pay for a courier to deliver a
+  // canceled order). partially-refunded stays deliverable (remaining items).
+  bool get _deliveryUnavailable {
+    return const {'canceled', 'refunded', 'payment-failed', 'payment-timeout'}
+        .contains(_order.status.toLowerCase());
+  }
+
   // In-flight cancel-substitution toggles, keyed by order_item id.
   final Set<int> _subBusy = <int>{};
 
@@ -395,6 +405,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         }
       });
     } catch (_) {
+      // Same slow-network back-nav guard as the success branch above — the
+      // catch fires on a timeout/lost-response after the page is disposed;
+      // without this it throws "setState after dispose". (audit 2026-07-27)
+      if (!mounted) return;
       setState(() => _error = 'Не удалось загрузить список статусов');
     } finally {
       if (mounted) setState(() => _statusesLoading = false);
@@ -1427,6 +1441,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
           if (selectedStore == null) ...[
             const Text('Магазин не выбран (или не загружены данные магазина).'),
+          ] else if (_deliveryUnavailable) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'Заказ завершён — доставка недоступна.',
+                style: TextStyle(fontSize: 13),
+              ),
+            ),
           ] else ...[
             YandexDeliverySection(
               orderId: _order.id,
