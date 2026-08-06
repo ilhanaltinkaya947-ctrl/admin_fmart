@@ -39,6 +39,53 @@ ApiErrorKind classifyApiError(Object e) {
   return ApiErrorKind.unknown;
 }
 
+/// Built once — this runs on an error path, but there's no reason to
+/// recompile the pattern per failure.
+final RegExp _cyrillic = RegExp(r'[Ѐ-ӿ]');
+
+/// The backend's own operator-facing message for a deliberate rejection,
+/// or null when it didn't send one worth showing.
+///
+/// F-Mart services answer a *deliberate business rejection* with a Russian
+/// `detail` written for the person who will read it — «Нельзя вызвать
+/// курьера: заказ не готов к доставке» — and use English for internal or
+/// generic fallbacks ("Failed to create delivery claim", "Admin only").
+/// Only the Russian ones tell the operator something they can act on, so
+/// English details are skipped in favour of the caller's own message.
+///
+/// The language check is the discriminator on purpose: status codes alone
+/// don't separate these, because the same 400 carries both the useful
+/// Russian rejections and the useless English catch-all.
+///
+/// Restricted to 4xx, and never 401/403, for two reasons. A 5xx is not a
+/// decision about this order, so "the server is having trouble" is the
+/// honest thing to say — and the gateway's own 502/504 details ARE Russian
+/// but interpolate a raw exception ("Ошибка подключения к delivery: [Errno
+/// -2] ..."), which is precisely what an operator must never be shown.
+/// 401/403 are about the session, not the order, and the session-expired
+/// wording below is more actionable.
+///
+/// FastAPI also returns `detail` as a LIST for 422 validation errors. That
+/// shape is written for developers, never for an operator, so it's skipped.
+///
+/// Why this exists: the courier dispatch gate answers with a 409 explaining
+/// that the order was never paid or hasn't been released yet, and the
+/// manager was shown a flat «Не удалось создать заявку» instead — no way to
+/// tell a real refusal from a transient failure, so they would just retry.
+String? backendDetail(Object e) {
+  if (e is! DioException) return null;
+  final code = e.response?.statusCode;
+  if (code == null || code < 400 || code >= 500) return null;
+  if (code == 401 || code == 403) return null;
+  final data = e.response?.data;
+  if (data is! Map) return null;
+  final detail = data['detail'];
+  if (detail is! String) return null;
+  final text = detail.trim();
+  if (text.isEmpty) return null;
+  return _cyrillic.hasMatch(text) ? text : null;
+}
+
 /// Renders a failure as a short Russian message suitable for a Snackbar
 /// or in-page error tile. [subject] is the object being loaded — used
 /// only by the generic-unknown fallback so the message still reads
