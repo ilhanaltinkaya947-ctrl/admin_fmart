@@ -104,7 +104,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // has no delivery to make. Hide the create + "Заново вызвать курьера"
   // controls (a manager could otherwise pay for a courier to deliver a
   // canceled order). partially-refunded stays deliverable (remaining items).
+  bool get _isPickup => _order.fulfillmentType == 'pickup';
+
   bool get _deliveryUnavailable {
+    // САМОВЫВОЗ has no courier by definition — the customer is coming to
+    // collect. Showing "вызвать курьера" here would let a manager dispatch,
+    // and pay for, a Yandex courier to deliver an order nobody asked to have
+    // delivered. order-service already refuses to auto-dispatch a pickup
+    // order; this closes the MANUAL path a human could still take.
+    if (_isPickup) return true;
+
     return const {'canceled', 'refunded', 'payment-failed', 'payment-timeout'}
         .contains(_order.status.toLowerCase());
   }
@@ -1373,10 +1382,40 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             // customer addresses leave in the delivery_address field.
             // E.g. "Адырбекова 114, , , ," → "Адырбекова 114".
             final cleanedAddr = cleanDeliveryAddress(_order.deliveryAddress);
+            // For самовывоз this field holds the STORE's address — where the
+            // customer collects — not a customer address. Label it, or a
+            // manager reads it as "the customer lives at our shop" and a picker
+            // has no idea nobody is coming to deliver it.
+            final label = _isPickup ? 'Самовывоз из' : 'Адрес';
             return GestureDetector(
               onLongPress: () =>
-                  _copyToClipboard(cleanedAddr, label: 'Адрес'),
-              child: Text('Адрес: $cleanedAddr'),
+                  _copyToClipboard(cleanedAddr, label: label),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_isPickup) ...[
+                    Container(
+                      margin: const EdgeInsets.only(right: 8, top: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.orange.shade200),
+                      ),
+                      child: Text(
+                        'САМОВЫВОЗ',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.orange.shade900,
+                        ),
+                      ),
+                    ),
+                  ],
+                  Expanded(child: Text('$label: $cleanedAddr')),
+                ],
+              ),
             );
           }),
           if (_order.customerComment.isNotEmpty) ...[

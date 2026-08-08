@@ -59,6 +59,16 @@ class Order {
   final int storeId;
   final String storeName;
   final String deliveryAddress;
+
+  /// 'delivery' (courier) or 'pickup' (самовывоз).
+  ///
+  /// Defaults to delivery, so an order-service that predates this field — and
+  /// every historical order — reads exactly as it does today.
+  ///
+  /// For a PICKUP order [deliveryAddress] holds the STORE's address, i.e. where
+  /// the customer collects. Without this flag a manager reading that field
+  /// would think the customer lives at the shop.
+  final String fulfillmentType;
   final String customerComment;
   final String paymentMethod;
   final bool isPromo;
@@ -97,6 +107,7 @@ class Order {
     required this.storeId,
     required this.storeName,
     required this.deliveryAddress,
+    this.fulfillmentType = 'delivery',
     required this.customerComment,
     required this.paymentMethod,
     required this.isPromo,
@@ -142,6 +153,13 @@ class Order {
     storeId: j['store_id'] as int? ?? 0,
     storeName: j['store_name'] as String? ?? '',
     deliveryAddress: j['delivery_address'] as String? ?? '',
+    fulfillmentType: (j['fulfillment_type'] as String?)?.trim().toLowerCase() == 'pickup'
+        ? 'pickup'
+        // Anything else — absent, null, unrecognised, or from an older
+        // order-service — is a courier delivery. Never guess pickup: a wrongly
+        // "pickup" order would have its courier controls hidden and would
+        // simply never be delivered.
+        : 'delivery',
     customerComment: j['customer_comment'] as String? ?? '',
     paymentMethod: j['payment_method'] as String? ?? '',
     isPromo: j['is_promo'] as bool? ?? false,
