@@ -280,7 +280,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   Future<void> _pollOrder() async {
     if (!mounted) return;
     if (_saving || _actionLoading || _itemBusy.isNotEmpty) return;
+    // _handingOver and _releasing: a GET already in flight when the POST
+    // commits returns the PRE-write snapshot, so `_order = fresh` rolls the
+    // status back seconds after the green success toast and the button flips
+    // to its previous label. The manager, reasonably, taps it again.
+    if (_handingOver || _releasing) return;
     if (_substituteSheetOpen) return; // don't shift _order under an open sheet
+    // Same reason for the confirm dialog: it names the order and the action,
+    // and `toStatus` was captured from the order as it was when the dialog
+    // opened. Swapping _order underneath makes the dialog describe one thing
+    // and do another.
+    if (_confirmOpen) return;
 
     final storeState = context.read<StoreCubit>().state;
     if (storeState is! StoreSelected) return;
@@ -434,6 +444,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
 
   Future<void> _changeStatus() async {
+    // Entry guard, not just a disabled button. A disabled button is a
+    // rendering fact; this is the invariant. Re-entry here races a handover
+    // and can fire two transitions from the same starting status.
+    if (_saving || _handingOver) return;
     final status = (_selectedStatus ?? '').trim();
     if (status.isEmpty) {
       setState(() => _error = 'Выбери статус');
@@ -487,6 +501,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // dropdown's own Save button does not spin when this one is working.
   bool _handingOver = false;
 
+  /// True while a handover confirmation dialog is on screen, so the 8s poll
+  /// cannot swap `_order` out from under a dialog the manager is reading.
+  bool _confirmOpen = false;
+
   /// One-tap forward step for a самовывоз order.
   ///
   /// The dropdown can already do this. It takes three interactions to do it:
@@ -511,7 +529,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // then. Same ordering _releaseOrder uses.
     final repo = context.read<OrdersRepository>();
 
+    // Retry re-runs the FULL action, confirmation included. The earlier version
+    // passed confirmTitle:'' so «Повторить» fired the terminal «Выдать» with no
+    // dialog — and the case that surfaces the retry is a lost response, which
+    // is exactly when the manager is least sure whether it already happened.
+    Future<void> retry() => _pickupAdvance(
+          toStatus: toStatus,
+          confirmTitle: confirmTitle,
+          confirmBody: confirmBody,
+          confirmAction: confirmAction,
+          successText: successText,
+        );
+
     if (confirmTitle.isNotEmpty) {
+      _confirmOpen = true;
       final ok = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
@@ -527,6 +558,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           ],
         ),
       );
+      _confirmOpen = false;
       if (ok != true) return;
     }
     if (!mounted) return;
@@ -573,26 +605,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       ));
     } on OrdersApiException catch (e) {
       if (!mounted) return;
-      _showErrorWithRetry(
-          e.message,
-          () => _pickupAdvance(
-                toStatus: toStatus,
-                confirmTitle: '',
-                confirmBody: '',
-                confirmAction: '',
-                successText: successText,
-              ));
+      _showErrorWithRetry(e.message, retry);
     } catch (_) {
       if (!mounted) return;
-      _showErrorWithRetry(
-          'Не удалось обновить статус',
-          () => _pickupAdvance(
-                toStatus: toStatus,
-                confirmTitle: '',
-                confirmBody: '',
-                confirmAction: '',
-                successText: successText,
-              ));
+      _showErrorWithRetry('Не удалось обновить статус', retry);
     } finally {
       if (mounted) setState(() => _handingOver = false);
     }
@@ -1945,7 +1961,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 SizedBox(
                   height: 48,
                   child: ElevatedButton(
-                    onPressed: (_saving || _order.hasOpenSubstitution)
+                    // _handingOver too: without it, a manager who picked a
+                    // status in the dropdown and then tapped the green button
+                    // can still press Сохранить while the handover is in
+                    // flight. Both POSTs read the same pre-write status
+                    // server-side and both pass the transition check.
+                    onPressed: (_saving ||
+                            _handingOver ||
+                            _order.hasOpenSubstitution)
                         ? null
                         : _changeStatus,
                     child: _saving

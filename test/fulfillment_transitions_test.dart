@@ -589,6 +589,58 @@ void main() {
     });
   });
 
+  group('DEPLOY COUPLING with the backend', () {
+    // Verified against the RUNNING prod container on 2026-08-10:
+    //   status_machine.py:14
+    //   ADMIN_ALLOWED[READY_FOR_DELIVERY] = {DELIVERING, PARTIALLY_REFUNDED, REFUNDED}
+    // There is no COMPLETED. The fulfillment-aware policy exists only on the
+    // branch feat/pickup-fulfillment-aware and is NOT deployed.
+    const deployedBackendAllowsAtReady = {
+      'delivering',
+      'partially-refunded',
+      'refunded',
+    };
+
+    test('NEITHER side can ship alone: they must deploy together', () {
+      final clientOffers = adminAllowedTransitions(
+        'ready-for-delivery',
+        fulfillmentType: 'pickup',
+      );
+
+      // This app offers `completed`, which the deployed backend rejects...
+      expect(clientOffers, contains('completed'));
+      expect(deployedBackendAllowsAtReady, isNot(contains('completed')));
+
+      // ...and this app no longer offers `delivering`, which is the only thing
+      // the deployed backend WOULD accept. So there is zero overlap: a pickup
+      // order at «Готов к выдаче» has no working forward move, and the only
+      // button left is Отменить, which refunds a customer who already
+      // collected. Shipping the backend alone is the mirror image of the same
+      // freeze.
+      expect(clientOffers.intersection(deployedBackendAllowsAtReady), isEmpty,
+          reason: 'If this now overlaps, the backend policy has shipped. '
+              'Update deployedBackendAllowsAtReady from the running container '
+              'and delete this test.');
+    });
+
+    test('the client mask matches the backend policy BRANCH, entry for entry', () {
+      // fulfillment_policy.py on feat/pickup-fulfillment-aware:
+      //   DENY  pickup: ready-for-delivery -> {delivering}
+      //                 partially-refunded -> {delivering}
+      //   ALLOW pickup: ready-for-delivery -> {completed}
+      // Mirrored here. When these two drift, a manager gets a dropdown option
+      // the backend answers with a 409, which reads to them as a broken app.
+      expect(kFulfillmentTransitionDeny['pickup']?['ready-for-delivery'],
+          equals({'delivering'}));
+      expect(kFulfillmentTransitionDeny['pickup']?['partially-refunded'],
+          equals({'delivering'}));
+      expect(kFulfillmentTransitionAllow['pickup']?['ready-for-delivery'],
+          equals({'completed'}));
+      expect(kFulfillmentTransitionDeny['delivery'], isEmpty);
+      expect(kFulfillmentTransitionAllow['delivery'], isEmpty);
+    });
+  });
+
   group('discrimination: proves these tests would have caught the bug', () {
     test('the OLD map is the frozen-order bug', () {
       // The shipped 1.1.7+47 behaviour, replayed.

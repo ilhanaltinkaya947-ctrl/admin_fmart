@@ -218,7 +218,14 @@ class _OrdersListPageState extends State<OrdersListPage> {
                               // two competing ones.
                               Row(
                                 children: [
-                                  Container(
+                                  // Flexible: the chip Container had no width
+                                  // guard, only the text beside it did. There
+                                  // is no textScaler clamp anywhere in lib/, so
+                                  // at ~3x accessibility text in iPad Split
+                                  // View «САМОВЫВОЗ» alone exceeds the subtitle
+                                  // width and overflows.
+                                  Flexible(
+                                    child: Container(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 6, vertical: 2),
                                     decoration: BoxDecoration(
@@ -228,6 +235,8 @@ class _OrdersListPageState extends State<OrdersListPage> {
                                     ),
                                     child: const Text(
                                       'САМОВЫВОЗ',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         fontSize: 10,
                                         fontWeight: FontWeight.w700,
@@ -235,6 +244,7 @@ class _OrdersListPageState extends State<OrdersListPage> {
                                         letterSpacing: 0.5,
                                       ),
                                     ),
+                                  ),
                                   ),
                                   const SizedBox(width: 6),
                                   const Flexible(
