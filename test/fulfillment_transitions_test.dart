@@ -575,8 +575,13 @@ void main() {
       expect(pickupHandoverStep(o('pickup', 'processing')), isNotNull);
     });
 
-    test('every offered step is a transition the backend permits', () {
-      // The button must never propose something that 409s.
+    test('every offered step matches THIS APP\'s own transition map', () {
+      // NOTE THE NAME. This checks pickupHandoverStep against
+      // adminAllowedTransitions — two functions in the same file. It proves
+      // they agree with each other, NOT that either agrees with order-service.
+      // One bad edit adding the same wrong status to both would keep this green
+      // while every real request 409s. The only honest cross-tier check is a
+      // live call or a contract test; there is none.
       for (final status in kAllStatuses) {
         final step = pickupHandoverStep(o('pickup', status));
         if (step == null) continue;
@@ -601,6 +606,11 @@ void main() {
       'refunded',
     };
 
+    // ⚠️ WEAKNESS, stated rather than hidden: `deployedBackendAllowsAtReady` is a
+    // hand-transcribed snapshot. It is a Dart literal compared to another Dart
+    // literal, so it CANNOT fail because prod changed — only because someone
+    // remembered to edit it. That makes it a documented assumption, not a
+    // control. Re-read the running container before trusting it.
     test('NEITHER side can ship alone: they must deploy together', () {
       final clientOffers = adminAllowedTransitions(
         'ready-for-delivery',

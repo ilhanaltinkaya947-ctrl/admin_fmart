@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
@@ -280,11 +281,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   Future<void> _pollOrder() async {
     if (!mounted) return;
     if (_saving || _actionLoading || _itemBusy.isNotEmpty) return;
-    // _handingOver and _releasing: a GET already in flight when the POST
-    // commits returns the PRE-write snapshot, so `_order = fresh` rolls the
-    // status back seconds after the green success toast and the button flips
-    // to its previous label. The manager, reasonably, taps it again.
-    if (_handingOver || _releasing) return;
+    // _handingOver: a GET already in flight when the POST commits returns the
+    // PRE-write snapshot, so `_order = fresh` rolls the status back seconds
+    // after the green success toast and the button flips to its previous label.
+    // The manager, reasonably, taps it again.
+    //
+    // NOT `_releasing`. That is the scheduled-order release flag, used by
+    // DELIVERY orders, and adding it here would change the delivery path — the
+    // one thing this work promised not to do. The same race exists there and is
+    // pre-existing; it deserves its own change, not a silent ride-along.
+    if (_handingOver) return;
     if (_substituteSheetOpen) return; // don't shift _order under an open sheet
     // Same reason for the confirm dialog: it names the order and the action,
     // and `toStatus` was captured from the order as it was when the dialog
@@ -302,6 +308,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         orderId: _order.id,
       );
       if (fresh == null || !mounted) return;
+      // Re-checked AFTER the await, not only before it. The entry guard at the
+      // top runs when this tick STARTS; a poll that was already sitting in this
+      // GET when the manager tapped «Выдать» would otherwise apply its
+      // pre-write snapshot on top of the optimistic update the manager just
+      // watched succeed — rolling the badge back with the green toast still on
+      // screen. Guarding entry alone does not close a race that spans an await.
+      if (_handingOver || _saving) return;
 
       final statusChanged = fresh.status != _order.status;
       setState(() {
@@ -533,32 +546,54 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // passed confirmTitle:'' so «Повторить» fired the terminal «Выдать» with no
     // dialog — and the case that surfaces the retry is a lost response, which
     // is exactly when the manager is least sure whether it already happened.
-    Future<void> retry() => _pickupAdvance(
-          toStatus: toStatus,
-          confirmTitle: confirmTitle,
-          confirmBody: confirmBody,
-          confirmAction: confirmAction,
-          successText: successText,
-        );
+    // Captured so retry can tell whether the world moved on. The error snackbar
+    // can sit on screen for minutes; by the time «Повторить» is tapped a poll,
+    // or another manager, may have advanced the order. Replaying the original
+    // toStatus then fires a transition that is no longer valid from the CURRENT
+    // status — at best an opaque rejection, at worst a step backwards.
+    final fromStatus = _order.status;
+    Future<void> retry() {
+      if (_order.status != fromStatus) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Статус заказа уже изменился. Обновите экран.'),
+        ));
+        return Future<void>.value();
+      }
+      return _pickupAdvance(
+        toStatus: toStatus,
+        confirmTitle: confirmTitle,
+        confirmBody: confirmBody,
+        confirmAction: confirmAction,
+        successText: successText,
+      );
+    }
 
     if (confirmTitle.isNotEmpty) {
+      // try/finally, not a bare set-then-clear: anything that throws between
+      // the two leaves _confirmOpen stuck true, which silently disables the
+      // order poll for the rest of the session. A flag gating a background
+      // refresh fails invisibly — the screen just quietly stops updating.
       _confirmOpen = true;
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (c) => AlertDialog(
-          title: Text(confirmTitle),
-          content: Text(confirmBody),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(c).pop(false),
-                child: const Text('Отмена')),
-            ElevatedButton(
-                onPressed: () => Navigator.of(c).pop(true),
-                child: Text(confirmAction)),
-          ],
-        ),
-      );
-      _confirmOpen = false;
+      final bool? ok;
+      try {
+        ok = await showDialog<bool>(
+          context: context,
+          builder: (c) => AlertDialog(
+            title: Text(confirmTitle),
+            content: Text(confirmBody),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(c).pop(false),
+                  child: const Text('Отмена')),
+              ElevatedButton(
+                  onPressed: () => Navigator.of(c).pop(true),
+                  child: Text(confirmAction)),
+            ],
+          ),
+        );
+      } finally {
+        _confirmOpen = false;
+      }
       if (ok != true) return;
     }
     if (!mounted) return;
@@ -603,10 +638,30 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           ],
         ),
       ));
-    } on OrdersApiException catch (e) {
+    } on OrdersApiException catch (e, st) {
+      // Reported, not just shown. Before this the ONLY record of a handover
+      // failure was whatever the manager remembered to mention, so "how often
+      // does this fail, and why" had no queryable answer — and a frozen pickup
+      // order is exactly the failure this feature exists to prevent.
+      unawaited(Sentry.captureException(e, stackTrace: st, withScope: (scope) {
+        scope.setTag('feature', 'pickup_handover');
+        scope.setContexts('handover', {
+          'order_id': _order.id,
+          'from_status': fromStatus,
+          'to_status': toStatus,
+        });
+      }));
       if (!mounted) return;
       _showErrorWithRetry(e.message, retry);
-    } catch (_) {
+    } catch (e, st) {
+      unawaited(Sentry.captureException(e, stackTrace: st, withScope: (scope) {
+        scope.setTag('feature', 'pickup_handover');
+        scope.setContexts('handover', {
+          'order_id': _order.id,
+          'from_status': fromStatus,
+          'to_status': toStatus,
+        });
+      }));
       if (!mounted) return;
       _showErrorWithRetry('Не удалось обновить статус', retry);
     } finally {
