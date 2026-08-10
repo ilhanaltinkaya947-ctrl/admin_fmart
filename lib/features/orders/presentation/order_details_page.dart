@@ -297,9 +297,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           // selection is no longer a valid transition from the NEW status,
           // clear it — otherwise DropdownButtonFormField(value: …) holds a
           // value absent from its items and asserts/renders blank.
-          final allowed =
-              kAdminAllowedTransitions[fresh.status.toLowerCase().trim()] ??
-                  const <String>{};
+          final allowed = adminAllowedTransitions(
+            fresh.status,
+            fulfillmentType: fresh.fulfillmentType,
+          );
           if (_selectedStatus != null && !allowed.contains(_selectedStatus)) {
             _selectedStatus = null;
           }
@@ -406,8 +407,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         // transitions from the current order status, and the admin
         // picks one explicitly. If the previously-picked target is no
         // longer valid (status changed under us), clear it.
-        final allowed =
-            kAdminAllowedTransitions[_order.status.toLowerCase().trim()] ?? const <String>{};
+        final allowed = adminAllowedTransitions(
+          _order.status,
+          fulfillmentType: _order.fulfillmentType,
+        );
         if (_selectedStatus != null &&
             !allowed.contains(_selectedStatus)) {
           _selectedStatus = null;
@@ -1326,7 +1329,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           children: [
-          _StatusBadge(status: _order.status),
+          _StatusBadge(
+            status: _order.status,
+            fulfillmentType: _order.fulfillmentType,
+          ),
           const SizedBox(height: 16),
           Text('Покупатель', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
@@ -1662,8 +1668,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             // from the current status. Previously the dropdown listed
             // EVERY status, so an admin could pick completed ->
             // pending-payment and get a silent rejection.
-            final allowed =
-                kAdminAllowedTransitions[_order.status.toLowerCase().trim()] ?? const <String>{};
+            final allowed = adminAllowedTransitions(
+              _order.status,
+              fulfillmentType: _order.fulfillmentType,
+            );
             final validStatuses = _statuses
                 .where((s) => allowed.contains(s.statusName))
                 .toList();
@@ -1919,7 +1927,11 @@ class _RefundHistorySection extends StatelessWidget {
 /// across the room (iPad in the warehouse).
 class _StatusBadge extends StatelessWidget {
   final String status;
-  const _StatusBadge({required this.status});
+  /// Drives the RU wording only. The colours stay keyed on the status code, so
+  /// a самовывоз order at «Готов к выдаче» keeps the same teal a manager already
+  /// reads as "ready", instead of being re-taught a second colour language.
+  final String fulfillmentType;
+  const _StatusBadge({required this.status, this.fulfillmentType = 'delivery'});
 
   // Maps the backend status code to a (background, foreground, icon) tuple.
   static const _colors = <String, ({Color bg, Color fg, IconData icon})>{
@@ -1968,7 +1980,7 @@ class _StatusBadge extends StatelessWidget {
               Icon(c.icon, color: c.fg, size: 14),
               const SizedBox(width: 6),
               Text(
-                orderStatusRu(status),
+                orderStatusRu(status, fulfillmentType: fulfillmentType),
                 style: TextStyle(
                   color: c.fg,
                   fontWeight: FontWeight.w600,

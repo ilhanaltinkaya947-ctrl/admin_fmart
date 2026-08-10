@@ -192,7 +192,8 @@ class _OrdersListPageState extends State<OrdersListPage> {
                       final Order o = state.items[i];
                       return ListTile(
                         title: Text(
-                          'Заказ #${o.id} — ${orderStatusRu(o.status)}',
+                          'Заказ #${o.id} — '
+                          '${orderStatusRu(o.status, fulfillmentType: o.fulfillmentType)}',
                         ),
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,

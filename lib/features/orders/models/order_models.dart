@@ -153,7 +153,11 @@ class Order {
     storeId: j['store_id'] as int? ?? 0,
     storeName: j['store_name'] as String? ?? '',
     deliveryAddress: j['delivery_address'] as String? ?? '',
-    fulfillmentType: (j['fulfillment_type'] as String?)?.trim().toLowerCase() == 'pickup'
+    // `is String` rather than `as String?`: a cast throws on any non-string,
+    // and this is the field that decides whether courier controls appear. It
+    // must never be the reason an order screen fails to open.
+    fulfillmentType: (j['fulfillment_type'] is String) &&
+            (j['fulfillment_type'] as String).trim().toLowerCase() == 'pickup'
         ? 'pickup'
         // Anything else — absent, null, unrecognised, or from an older
         // order-service — is a courier delivery. Never guess pickup: a wrongly
@@ -208,6 +212,18 @@ class Order {
         storeId: storeId,
         storeName: storeName,
         deliveryAddress: deliveryAddress,
+        // MUST be carried. The constructor DEFAULTS this to 'delivery', so
+        // omitting it here does not fail loudly — it silently converts a
+        // самовывоз order into a courier one. `_order = _order.copyWith(status: …)`
+        // runs immediately after a manager saves a status change
+        // (order_details_page.dart:457), so the bug would fire on the single
+        // most common action in the flow: courier controls reappear, the badge
+        // reverts to «Готов к доставке», and «В пути» becomes selectable again
+        // on an order the customer is walking to collect.
+        //
+        // Deliberately NOT exposed as a copyWith parameter. How an order is
+        // fulfilled is decided at checkout and is never a local edit.
+        fulfillmentType: fulfillmentType,
         customerComment: customerComment,
         paymentMethod: paymentMethod,
         isPromo: isPromo,
@@ -535,7 +551,35 @@ const Map<String, String> kOrderStatusRu = {
   'scheduled': 'Запланирован на утро',
 };
 
-String orderStatusRu(String code) => kOrderStatusRu[code] ?? code;
+/// Status labels that read WRONG on a самовывоз order.
+///
+/// Mirrors `PICKUP_STATUS_RU_MAP` in order-service
+/// `app/domain/fulfillment_presentation.py`. Keep the two in step: the customer
+/// is told «Готов к выдаче» by the push, so a manager reading «Готов к доставке»
+/// on the same order is reading a different sentence about the same thing.
+///
+/// `delivering` is unreachable for pickup under the backend transition policy.
+/// It is listed anyway so that if some other door ever parks a pickup order
+/// there, the manager sees that it is WRONG rather than «В пути», which reads
+/// as a courier calmly doing their job.
+const Map<String, String> kPickupStatusRu = {
+  'ready-for-delivery': 'Готов к выдаче',
+  'completed': 'Выдан',
+  'delivering': 'Ошибка: курьер на самовывозе',
+};
+
+/// RU label for a status.
+///
+/// The default argument keeps every existing call site byte-identical. The
+/// dashboard aggregate and the status-filter sheet talk about statuses in the
+/// abstract, with no order in hand, and must keep saying «Готов к доставке».
+String orderStatusRu(String code, {String fulfillmentType = 'delivery'}) {
+  if (fulfillmentType == 'pickup') {
+    final override = kPickupStatusRu[code];
+    if (override != null) return override;
+  }
+  return kOrderStatusRu[code] ?? code;
+}
 
 /// Valid admin status transitions, mirrored from the backend
 /// `StatusMachine.ADMIN_ALLOWED` (order-service status_machine.py).
@@ -570,6 +614,71 @@ const Map<String, Set<String>> kAdminAllowedTransitions = {
   // also allowed in case customer rings to back out overnight.
   'scheduled': {'paid', 'canceled'},
 };
+
+/// Transitions REMOVED for a given fulfillment type.
+///
+/// Mirrors `FULFILLMENT_TRANSITION_DENY` in order-service
+/// `app/domain/fulfillment_policy.py`. If these two ever disagree, the manager
+/// gets a dropdown option the backend answers with a 409, which reads to them
+/// as "the app is broken".
+const Map<String, Map<String, Set<String>>> kFulfillmentTransitionDeny = {
+  'delivery': {},
+  'pickup': {
+    'ready-for-delivery': {'delivering'},
+    'partially-refunded': {'delivering'},
+  },
+};
+
+/// Transitions ADDED for a given fulfillment type.
+///
+/// Mirrors `FULFILLMENT_TRANSITION_ALLOW`. Pickup collapses
+/// `ready-for-delivery -> delivering -> completed` into
+/// `ready-for-delivery -> completed`, because for самовывоз the handover IS the
+/// completion. There is no courier leg to represent.
+const Map<String, Map<String, Set<String>>> kFulfillmentTransitionAllow = {
+  'delivery': {},
+  'pickup': {
+    'ready-for-delivery': {'completed'},
+  },
+};
+
+/// The transitions this order may actually take, `(base - deny) | allow`.
+///
+/// WHY THIS EXISTS AT ALL, AND WHY IT IS URGENT
+/// Before this, the map above was fulfillment-blind and offered exactly one
+/// forward move at `ready-for-delivery`: «В пути». On a самовывоз order the
+/// backend now refuses that transition, and `completed` was never offered — so
+/// a manager holding a bag the customer had already collected had NO legal
+/// button. The only thing that still worked was «Отменить», which refunds the
+/// full remaining amount and releases the stock: a full refund handed to
+/// someone who already walked out with the goods.
+///
+/// For 'delivery' both masks are empty, so this reduces to
+/// `kAdminAllowedTransitions[status]` by set algebra. That is the safety
+/// argument, and a test pins it across the whole status cross-product.
+Set<String> adminAllowedTransitions(
+  String status, {
+  String fulfillmentType = 'delivery',
+}) {
+  final key = status.toLowerCase().trim();
+  final base = kAdminAllowedTransitions[key];
+  // Unknown status denies everything, including the ALLOW half. Otherwise a
+  // typo'd status would come back with `{'completed'}` for pickup and offer a
+  // manager a transition the backend has never heard of.
+  if (base == null) return const <String>{};
+
+  // Anything that is not exactly 'pickup' is a courier delivery. Never guess
+  // pickup: a wrongly-pickup order loses its courier controls and is simply
+  // never delivered, which is silent. A wrongly-delivery order books a courier,
+  // which is visible and refundable.
+  final fulfillment = fulfillmentType.toLowerCase().trim() == 'pickup'
+      ? 'pickup'
+      : 'delivery';
+
+  final deny = kFulfillmentTransitionDeny[fulfillment]?[key] ?? const <String>{};
+  final allow = kFulfillmentTransitionAllow[fulfillment]?[key] ?? const <String>{};
+  return {...base.where((t) => !deny.contains(t)), ...allow};
+}
 
 
 class OrderEvent {
