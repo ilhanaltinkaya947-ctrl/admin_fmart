@@ -423,6 +423,42 @@ void main() {
       }
     });
 
+    test('the row rule agrees with the transition and label rules', () {
+      // All three key on the same concept. If they normalize differently, a raw
+      // value sends the row down one branch and the dropdown down another.
+      for (final raw in ['pickup', 'PICKUP', ' Pickup ', 'PickUp']) {
+        final o = Order(
+          id: 1,
+          customerId: 1,
+          status: 'ready-for-delivery',
+          totalAmount: '1',
+          deliverySum: '0',
+          shippingLat: 0,
+          shippingLng: 0,
+          storeId: 3,
+          storeName: 'S',
+          deliveryAddress: 'A',
+          fulfillmentType: raw,
+          customerComment: '',
+          paymentMethod: 'card',
+          isPromo: false,
+          createdAt: DateTime(2026),
+          updatedAt: DateTime(2026),
+          items: const [],
+        );
+        expect(orderRowDisplay(o).showsPickupChip, isTrue,
+            reason: 'row rule missed "$raw"');
+        expect(
+          adminAllowedTransitions(o.status, fulfillmentType: o.fulfillmentType),
+          contains('completed'),
+          reason: 'transition rule missed "$raw"',
+        );
+        expect(orderStatusRu(o.status, fulfillmentType: o.fulfillmentType),
+            'Готов к выдаче',
+            reason: 'label rule missed "$raw"');
+      }
+    });
+
     test('an unparseable fulfillment type renders as a delivery row', () {
       for (final v in [null, '', 'PICKUP_', 123, 'самовывоз']) {
         final o = Order.fromJson({

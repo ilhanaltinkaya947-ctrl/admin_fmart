@@ -659,7 +659,13 @@ class OrderRowDisplay {
 }
 
 OrderRowDisplay orderRowDisplay(Order o) {
-  final isPickup = o.fulfillmentType == 'pickup';
+  // Normalized exactly like `adminAllowedTransitions` and `orderStatusRu`.
+  // Order.fromJson already collapses the field to 'pickup' or 'delivery', so an
+  // exact match is correct today — but three helpers keying the same concept
+  // three different ways is how a raw value later sends the ROW down one branch
+  // and the TRANSITIONS down another. Same rule, written the same way, in all
+  // three places.
+  final isPickup = o.fulfillmentType.toLowerCase().trim() == 'pickup';
   return OrderRowDisplay(
     showsCustomerAddress: !isPickup,
     showsDeliveryFee: !isPickup,
