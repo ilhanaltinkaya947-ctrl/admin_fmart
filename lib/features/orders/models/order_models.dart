@@ -622,6 +622,51 @@ const Map<String, Set<String>> kAdminAllowedTransitions = {
   'scheduled': {'paid', 'canceled'},
 };
 
+/// What an orders-list row should show for a given order.
+///
+/// Pulled out of the widget tree deliberately. The rule "a самовывоз row must
+/// not present the STORE's address as the customer's, and must not show a
+/// delivery fee" is a decision, and a decision buried inside a ListTile builder
+/// cannot be tested without standing up a bloc, a cubit and a scroll view. As a
+/// pure function it is three assertions.
+class OrderRowDisplay {
+  /// Show `deliveryAddress` as the customer's address.
+  ///
+  /// False for pickup: on those orders that column holds the STORE's own
+  /// address, so rendering it in the customer-address slot tells a manager the
+  /// customer lives at the shop.
+  final bool showsCustomerAddress;
+
+  /// Show the «дост:» line.
+  ///
+  /// False for pickup: `delivery_sum` is 0 there, and «дост: 0 ₸» sitting under
+  /// a total reads as a discount that was applied, not as an absence of
+  /// delivery.
+  final bool showsDeliveryFee;
+
+  /// Show the САМОВЫВОЗ marker.
+  ///
+  /// True at EVERY pickup status, not only once the order is ready. `paid` and
+  /// `processing` are exactly when a picker triages the day's work, and that is
+  /// when the two kinds of order need to be told apart.
+  final bool showsPickupChip;
+
+  const OrderRowDisplay({
+    required this.showsCustomerAddress,
+    required this.showsDeliveryFee,
+    required this.showsPickupChip,
+  });
+}
+
+OrderRowDisplay orderRowDisplay(Order o) {
+  final isPickup = o.fulfillmentType == 'pickup';
+  return OrderRowDisplay(
+    showsCustomerAddress: !isPickup,
+    showsDeliveryFee: !isPickup,
+    showsPickupChip: isPickup,
+  );
+}
+
 /// Transitions REMOVED for a given fulfillment type.
 ///
 /// Mirrors `FULFILLMENT_TRANSITION_DENY` in order-service

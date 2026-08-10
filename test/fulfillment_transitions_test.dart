@@ -367,6 +367,82 @@ void main() {
     });
   });
 
+  group('orders list row', () {
+    Order orderOf(String fulfillment, String status) => Order.fromJson({
+          'id': 4312,
+          'status': status,
+          'total_amount': '12620',
+          'delivery_sum': '0',
+          'store_id': 3,
+          'store_name': 'F-Mart Фиркан Сити',
+          'delivery_address': 'улица Фиркан, 12',
+          'fulfillment_type': fulfillment,
+          'customer_comment': '',
+          'payment_method': 'card',
+          'is_promo': false,
+        });
+
+    test('a delivery row is unchanged at every status', () {
+      for (final status in kAllStatuses) {
+        final d = orderRowDisplay(orderOf('delivery', status));
+        expect(d.showsCustomerAddress, isTrue);
+        expect(d.showsDeliveryFee, isTrue);
+        expect(d.showsPickupChip, isFalse);
+      }
+    });
+
+    test('a pickup row never presents the store address as the customer\'s', () {
+      // deliveryAddress holds OUR shop's address on a pickup order.
+      for (final status in kAllStatuses) {
+        expect(orderRowDisplay(orderOf('pickup', status)).showsCustomerAddress,
+            isFalse,
+            reason: 'pickup at $status showed the store address as the customer address');
+      }
+    });
+
+    test('a pickup row never shows a delivery fee', () {
+      // «дост: 0 ₸» under a total reads as a discount, not as "no delivery".
+      for (final status in kAllStatuses) {
+        expect(orderRowDisplay(orderOf('pickup', status)).showsDeliveryFee,
+            isFalse);
+      }
+    });
+
+    test('the pickup marker shows at EVERY status, not just when ready', () {
+      // paid and processing are exactly when a picker triages the day's work,
+      // which is when the two kinds of order most need telling apart.
+      for (final status in kAllStatuses) {
+        expect(orderRowDisplay(orderOf('pickup', status)).showsPickupChip,
+            isTrue,
+            reason: 'pickup order at $status had no marker in the list');
+      }
+      for (final status in ['paid', 'processing']) {
+        final d = orderRowDisplay(orderOf('pickup', status));
+        expect(d.showsPickupChip, isTrue);
+        expect(d.showsCustomerAddress, isFalse);
+      }
+    });
+
+    test('an unparseable fulfillment type renders as a delivery row', () {
+      for (final v in [null, '', 'PICKUP_', 123, 'самовывоз']) {
+        final o = Order.fromJson({
+          'id': 1,
+          'status': 'paid',
+          'delivery_sum': '0',
+          'delivery_address': 'ул. Х',
+          'fulfillment_type': v,
+          'customer_comment': '',
+          'payment_method': 'card',
+          'is_promo': false,
+        });
+        final d = orderRowDisplay(o);
+        expect(d.showsPickupChip, isFalse, reason: '$v rendered as pickup');
+        expect(d.showsCustomerAddress, isTrue);
+        expect(d.showsDeliveryFee, isTrue);
+      }
+    });
+  });
+
   group('discrimination: proves these tests would have caught the bug', () {
     test('the OLD map is the frozen-order bug', () {
       // The shipped 1.1.7+47 behaviour, replayed.

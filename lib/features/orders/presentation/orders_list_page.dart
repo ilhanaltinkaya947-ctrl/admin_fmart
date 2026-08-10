@@ -190,6 +190,7 @@ class _OrdersListPageState extends State<OrdersListPage> {
                       }
 
                       final Order o = state.items[i];
+                      final display = orderRowDisplay(o);
                       return ListTile(
                         title: Text(
                           'Заказ #${o.id} — '
@@ -199,14 +200,53 @@ class _OrdersListPageState extends State<OrdersListPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Tooltip(
-                              message: o.deliveryAddress,
-                              child: Text(
-                                o.deliveryAddress,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                            if (display.showsCustomerAddress)
+                              Tooltip(
+                                message: o.deliveryAddress,
+                                child: Text(
+                                  o.deliveryAddress,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              )
+                            else
+                              // The address column holds the STORE's address on
+                              // a pickup order, so showing it here would tell
+                              // the manager the customer lives at our shop.
+                              // Same orange vocabulary as the scheduled row
+                              // below, so the row has one accent colour and not
+                              // two competing ones.
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFEE6F00)
+                                          .withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text(
+                                      'САМОВЫВОЗ',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFFEE6F00),
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  const Flexible(
+                                    child: Text(
+                                      'Клиент заберёт сам',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ),
                             const SizedBox(height: 2),
                             Text(
                               df.format(o.createdAt.toLocal()),
@@ -255,10 +295,15 @@ class _OrdersListPageState extends State<OrdersListPage> {
                               style: const TextStyle(
                                   fontWeight: FontWeight.w600),
                             ),
-                            Text(
-                              'дост: ${formatTenge(o.deliverySum)}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
+                            // Omitted for pickup: delivery_sum is 0 there, and
+                            // «дост: 0 ₸» under a total reads as a discount the
+                            // customer received rather than as "there is no
+                            // delivery".
+                            if (display.showsDeliveryFee)
+                              Text(
+                                'дост: ${formatTenge(o.deliverySum)}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
                           ],
                         ),
                         onTap: () async {
