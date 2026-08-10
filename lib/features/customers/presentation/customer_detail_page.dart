@@ -151,7 +151,8 @@ class _Body extends StatelessWidget {
           ...orders.items.map((o) => Card(
                 margin: const EdgeInsets.symmetric(vertical: 4),
                 child: ListTile(
-                  title: Text('Заказ #${o.id} — ${orderStatusRu(o.status)}'),
+                  title: Text('Заказ #${o.id} — '
+                      '${orderStatusRu(o.status, fulfillmentType: o.fulfillmentType)}'),
                   subtitle: Text(
                     '${df.format(o.createdAt.toLocal())}\n${o.deliveryAddress}',
                   ),

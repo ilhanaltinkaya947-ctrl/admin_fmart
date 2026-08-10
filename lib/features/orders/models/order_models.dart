@@ -574,11 +574,18 @@ const Map<String, String> kPickupStatusRu = {
 /// dashboard aggregate and the status-filter sheet talk about statuses in the
 /// abstract, with no order in hand, and must keep saying «Готов к доставке».
 String orderStatusRu(String code, {String fulfillmentType = 'delivery'}) {
-  if (fulfillmentType == 'pickup') {
-    final override = kPickupStatusRu[code];
+  // Normalized exactly as `adminAllowedTransitions` does. When these two
+  // disagreed, a raw ' Pickup ' sent the TRANSITIONS down the pickup branch
+  // while the LABELS stayed on delivery — a badge reading «Готов к доставке»
+  // whose only dropdown option was «Завершён». Unreachable today because
+  // Order.fromJson collapses the field first, but the two halves failed in
+  // opposite directions, which is the worst way for a duplicate rule to rot.
+  final key = code.toLowerCase().trim();
+  if (fulfillmentType.toLowerCase().trim() == 'pickup') {
+    final override = kPickupStatusRu[key];
     if (override != null) return override;
   }
-  return kOrderStatusRu[code] ?? code;
+  return kOrderStatusRu[key] ?? code;
 }
 
 /// Valid admin status transitions, mirrored from the backend

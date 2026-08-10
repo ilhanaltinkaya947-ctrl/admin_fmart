@@ -1494,9 +1494,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text(
-                'Заказ завершён — доставка недоступна.',
-                style: TextStyle(fontSize: 13),
+              // TWO reasons reach this branch and they need DIFFERENT words.
+              // `_deliveryUnavailable` was widened to include pickup, which
+              // silently turned the existing money-dead copy into a lie on
+              // 100% of самовывоз orders: a manager reading «Заказ завершён»
+              // does not press «Выдан», so the order sits in ready-for-delivery
+              // forever while the customer stands at the counter holding the
+              // bag. It also flatly contradicted the «Готов к выдаче» badge
+              // four rows above it.
+              child: Text(
+                _isPickup
+                    ? 'Самовывоз: курьер не нужен, покупатель заберёт заказ в магазине.'
+                    : 'Заказ завершён — доставка недоступна.',
+                style: const TextStyle(fontSize: 13),
               ),
             ),
           ] else ...[
@@ -1704,7 +1714,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                     items: validStatuses
                         .map((s) => DropdownMenuItem<String>(
                               value: s.statusName,
-                              child: Text(orderStatusRu(s.statusName)),
+                              child: Text(orderStatusRu(
+                                s.statusName,
+                                fulfillmentType: _order.fulfillmentType,
+                              )),
                             ))
                         .toList(),
                     onChanged: (_saving || _statusesLoading)
@@ -1967,10 +1980,15 @@ class _StatusBadge extends StatelessWidget {
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: c.bg,
+        // Flexible: «Ошибка: курьер на самовывозе» is 28 chars, 40% longer than
+        // the previous longest label. Unwrapped, it overflows in Split View or
+        // at large text scale, i.e. the label added to make an impossible state
+        // legible would be the one label that renders illegibly.
+        Flexible(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: c.bg,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(color: c.fg.withValues(alpha: 0.25)),
           ),
@@ -1979,15 +1997,19 @@ class _StatusBadge extends StatelessWidget {
             children: [
               Icon(c.icon, color: c.fg, size: 14),
               const SizedBox(width: 6),
-              Text(
-                orderStatusRu(status, fulfillmentType: fulfillmentType),
-                style: TextStyle(
-                  color: c.fg,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
+              Flexible(
+                child: Text(
+                  orderStatusRu(status, fulfillmentType: fulfillmentType),
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: c.fg,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
                 ),
               ),
             ],
+          ),
           ),
         ),
       ],

@@ -55,14 +55,54 @@ Set<String> happyReachable(String fulfillment, {String start = 'paid'}) {
 
 void main() {
   group('delivery is unchanged', () {
+    // GOLDEN LITERALS, not a comparison against kAdminAllowedTransitions.
+    //
+    // The first version of this test asserted
+    //   adminAllowedTransitions(s, 'delivery') == kAdminAllowedTransitions[s]
+    // which is `f(M[s]) == M[s]` with f = identity: true for ANY M. It pinned
+    // "the mask is the identity for delivery" and pinned NOTHING about the
+    // legacy sets. Deleting 'canceled' from 'paid' — removing the manager's
+    // ability to cancel a paid order, the most common delivery intervention —
+    // passed all 22 tests green. Written out longhand so a delivery regression
+    // has to survive a literal diff.
+    const goldenDelivery = <String, Set<String>>{
+      'pending-payment': {'paid', 'payment-failed', 'canceled'},
+      'paid': {'processing', 'canceled'},
+      'processing': {'ready-for-delivery', 'canceled'},
+      'ready-for-delivery': {'delivering'},
+      'delivering': {'completed'},
+      'completed': <String>{},
+      'payment-failed': {'canceled'},
+      'payment-timeout': {'canceled'},
+      'canceled': <String>{},
+      'partially-refunded': {
+        'processing',
+        'ready-for-delivery',
+        'delivering',
+        'completed',
+      },
+      'refunded': <String>{},
+      'scheduled': {'paid', 'canceled'},
+    };
+
     test('every status returns exactly the legacy set', () {
       for (final status in kAllStatuses) {
         expect(
           adminAllowedTransitions(status, fulfillmentType: 'delivery'),
-          equals(kAdminAllowedTransitions[status]),
+          equals(goldenDelivery[status]),
           reason: 'delivery transitions changed for $status',
         );
       }
+    });
+
+    test('the legacy map itself is unchanged', () {
+      // Catches an edit to kAdminAllowedTransitions even if someone also
+      // "fixes" the mask to compensate.
+      expect(kAdminAllowedTransitions.keys.toSet(), goldenDelivery.keys.toSet());
+      goldenDelivery.forEach((status, expected) {
+        expect(kAdminAllowedTransitions[status], equals(expected),
+            reason: 'legacy transition map edited for $status');
+      });
     });
 
     test('the default argument is delivery', () {
@@ -308,6 +348,22 @@ void main() {
       expect(after.isPromo, before.isPromo);
       expect(after.shippingLat, before.shippingLat);
       expect(after.shippingLng, before.shippingLng);
+      // The remaining constructor fields. The first version of this test
+      // claimed to "catch the NEXT field somebody forgets" while checking 13
+      // of 21 — a promise it did not keep. All of these are carried correctly
+      // today; they are asserted so that stays true.
+      expect(after.customerComment, before.customerComment);
+      expect(after.createdAt, before.createdAt);
+      expect(after.updatedAt, before.updatedAt);
+      expect(after.scheduledForAt, before.scheduledForAt);
+      expect(after.bigBagCount, before.bigBagCount);
+      expect(after.mediumBagCount, before.mediumBagCount);
+      expect(after.packagingSum, before.packagingSum);
+      expect(after.items, before.items);
+      expect(after.substitutions, before.substitutions);
+      expect(after.hasPendingSubstitution, before.hasPendingSubstitution);
+      expect(after.pendingSubstitutionExpiresAt,
+          before.pendingSubstitutionExpiresAt);
     });
   });
 
