@@ -106,6 +106,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // canceled order). partially-refunded stays deliverable (remaining items).
   bool get _isPickup => _order.fulfillmentType == 'pickup';
 
+  /// The one-tap handover step available right now, or null.
+  /// Pure decision lives in order_models.dart so it can be tested without
+  /// building this 2,000-line widget.
+  PickupHandoverStep? get _pickupNextStep => pickupHandoverStep(_order);
+
   bool get _deliveryUnavailable {
     // САМОВЫВОЗ has no courier by definition — the customer is coming to
     // collect. Showing "вызвать курьера" here would let a manager dispatch,
@@ -474,6 +479,122 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       _showErrorWithRetry('Не удалось обновить статус', _changeStatus);
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  // True while a pickup handover call is in flight. Separate from _saving and
+  // _releasing so a laggy double-tap cannot fire two transitions, and so the
+  // dropdown's own Save button does not spin when this one is working.
+  bool _handingOver = false;
+
+  /// One-tap forward step for a самовывоз order.
+  ///
+  /// The dropdown can already do this. It takes three interactions to do it:
+  /// open the dropdown, pick a status, press Сохранить — performed one-handed
+  /// with a customer waiting at the counter. This is the most frequent action
+  /// in the pickup flow, so it gets a button.
+  ///
+  /// Mirrors the «Выпустить заказ» pattern for scheduled orders, including the
+  /// pessimistic update: local state changes only AFTER the server agrees, so a
+  /// failure leaves the manager looking at real state rather than a phantom.
+  Future<void> _pickupAdvance({
+    required String toStatus,
+    required String confirmTitle,
+    required String confirmBody,
+    required String confirmAction,
+    required String successText,
+  }) async {
+    if (_handingOver || _saving) return;
+
+    // Resolved BEFORE the confirm dialog: reading it after the await is a
+    // use_build_context_synchronously violation, and the widget can be gone by
+    // then. Same ordering _releaseOrder uses.
+    final repo = context.read<OrdersRepository>();
+
+    if (confirmTitle.isNotEmpty) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: Text(confirmTitle),
+          content: Text(confirmBody),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(c).pop(false),
+                child: const Text('Отмена')),
+            ElevatedButton(
+                onPressed: () => Navigator.of(c).pop(true),
+                child: Text(confirmAction)),
+          ],
+        ),
+      );
+      if (ok != true) return;
+    }
+    if (!mounted) return;
+
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _handingOver = true;
+      _error = null;
+    });
+
+    try {
+      await repo.changeStatus(
+        orderId: _order.id,
+        status: toStatus,
+        reason: '',
+      );
+      if (!mounted) return;
+      setState(() {
+        _order = _order.copyWith(status: toStatus);
+        // The status just applied is now current, so it is no longer a valid
+        // target. Same clear the dropdown path does.
+        _selectedStatus = null;
+      });
+      _timelineKey.currentState?.refresh();
+      // Branded green confirmation, NOT the plain «Статус обновлён» snackbar.
+      // «Выдать» is irreversible and fires a push to the customer; a grey
+      // one-liner is too weak a signal for that, and a manager who glances away
+      // and does not register it taps again.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: ST.green,
+        behavior: SnackBarBehavior.floating,
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(ST.rMd)),
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle, color: Colors.white, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(successText,
+                  style: const TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ));
+    } on OrdersApiException catch (e) {
+      if (!mounted) return;
+      _showErrorWithRetry(
+          e.message,
+          () => _pickupAdvance(
+                toStatus: toStatus,
+                confirmTitle: '',
+                confirmBody: '',
+                confirmAction: '',
+                successText: successText,
+              ));
+    } catch (_) {
+      if (!mounted) return;
+      _showErrorWithRetry(
+          'Не удалось обновить статус',
+          () => _pickupAdvance(
+                toStatus: toStatus,
+                confirmTitle: '',
+                confirmBody: '',
+                confirmAction: '',
+                successText: successText,
+              ));
+    } finally {
+      if (mounted) setState(() => _handingOver = false);
     }
   }
 
@@ -1701,6 +1822,56 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               children: [
                 Text('Изменить статус', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
+                // ---- САМОВЫВОЗ one-tap handover -------------------------
+                // Only for pickup, and deliberately NOT added for delivery
+                // even though it would help there too: touching the live
+                // delivery path to make it nicer is exactly the opportunistic
+                // change that turns a safe feature into a regression.
+                if (_isPickup && _pickupNextStep != null) ...[
+                  SizedBox(
+                    height: 52,
+                    child: ElevatedButton.icon(
+                      onPressed: (_saving ||
+                              _handingOver ||
+                              _order.hasOpenSubstitution)
+                          ? null
+                          : () => _pickupAdvance(
+                                toStatus: _pickupNextStep!.toStatus,
+                                confirmTitle: _pickupNextStep!.confirmTitle,
+                                confirmBody: _pickupNextStep!.confirmBody,
+                                confirmAction: _pickupNextStep!.confirmAction,
+                                successText: _pickupNextStep!.successText,
+                              ),
+                      icon: _handingOver
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white))
+                          : Icon(_pickupNextStep!.toStatus == 'completed'
+                              ? Icons.check_circle_outline
+                              : Icons.inventory_2_outlined),
+                      label: Text(_pickupNextStep!.label),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: ST.green,
+                        foregroundColor: Colors.white,
+                        textStyle: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _pickupNextStep!.hint,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Divider(height: 1),
+                  const SizedBox(height: 14),
+                ],
                 Row(
               children: [
                 Expanded(

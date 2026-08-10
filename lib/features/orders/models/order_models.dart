@@ -622,6 +622,78 @@ const Map<String, Set<String>> kAdminAllowedTransitions = {
   'scheduled': {'paid', 'canceled'},
 };
 
+/// The single forward step a manager can take on a самовывоз order right now.
+///
+/// Pure data, no Flutter types, so the decision is unit-testable and the widget
+/// only renders it. The alternative — an if/else chain inside a 2,000-line
+/// build method — is how the wrong button ends up on the wrong status.
+class PickupHandoverStep {
+  final String toStatus;
+  final String label;
+
+  /// One line under the button saying what will happen. A manager pressing a
+  /// button that messages the customer should know it does that BEFORE tapping.
+  final String hint;
+
+  /// Empty title = no confirmation dialog.
+  final String confirmTitle;
+  final String confirmBody;
+  final String confirmAction;
+  final String successText;
+
+  const PickupHandoverStep({
+    required this.toStatus,
+    required this.label,
+    required this.hint,
+    required this.confirmTitle,
+    required this.confirmBody,
+    required this.confirmAction,
+    required this.successText,
+  });
+}
+
+/// The one-tap step for a pickup order at [status], or null if there isn't one.
+///
+/// Returns null for delivery orders by design: this button is pickup-only. The
+/// same shortcut would help delivery too, but adding it there would be an
+/// unrequested change to the live path that 446 real orders travel.
+PickupHandoverStep? pickupHandoverStep(Order o) {
+  if (o.fulfillmentType.toLowerCase().trim() != 'pickup') return null;
+
+  // An open substitution freezes the order server-side; the caller also
+  // disables the button, but returning a step here would still be a lie.
+  if (o.hasOpenSubstitution) return null;
+
+  switch (o.status.toLowerCase().trim()) {
+    case 'processing':
+      return PickupHandoverStep(
+        toStatus: 'ready-for-delivery',
+        label: 'Заказ собран',
+        hint: 'Покупатель получит уведомление, что заказ можно забирать.',
+        // No confirmation: this is forward progress, not terminal, and a
+        // manager who collected the bag already knows they collected it.
+        confirmTitle: '',
+        confirmBody: '',
+        confirmAction: '',
+        successText: 'Заказ №${o.id} готов к выдаче',
+      );
+    case 'ready-for-delivery':
+      return PickupHandoverStep(
+        toStatus: 'completed',
+        label: 'Выдать заказ',
+        hint: 'Проверьте последние 4 цифры номера телефона покупателя.',
+        // Confirmed: terminal, and it pushes «Заказ выдан» to the customer.
+        confirmTitle: 'Выдать заказ №${o.id}?',
+        confirmBody: 'Покупатель получит уведомление, что заказ выдан. '
+            'Отменить это действие нельзя.',
+        confirmAction: 'Выдать',
+        successText: 'Заказ №${o.id} выдан',
+      );
+    default:
+      return null;
+  }
+}
+
 /// What an orders-list row should show for a given order.
 ///
 /// Pulled out of the widget tree deliberately. The rule "a самовывоз row must

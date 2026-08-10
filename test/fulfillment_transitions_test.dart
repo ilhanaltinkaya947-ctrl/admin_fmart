@@ -479,6 +479,116 @@ void main() {
     });
   });
 
+  group('pickup handover button', () {
+    Order o(String fulfillment, String status, {bool openSub = false}) =>
+        Order.fromJson({
+          'id': 4312,
+          'status': status,
+          'delivery_sum': '0',
+          'delivery_address': 'улица Фиркан, 12',
+          'fulfillment_type': fulfillment,
+          'customer_comment': '',
+          'payment_method': 'card',
+          'is_promo': false,
+          'substitutions': openSub
+              ? [
+                  {
+                    'id': 1,
+                    'order_item_id': 5,
+                    'status': 'proposed',
+                    'original_product_id': 9,
+                    'original_price': '100',
+                  }
+                ]
+              : [],
+        });
+
+    test('delivery orders NEVER get the button, at any status', () {
+      // The same shortcut would help delivery, but adding it there is an
+      // unrequested change to the path 446 real orders travel.
+      for (final status in kAllStatuses) {
+        expect(pickupHandoverStep(o('delivery', status)), isNull,
+            reason: 'delivery at $status offered a pickup handover button');
+      }
+    });
+
+    test('processing offers «Заказ собран» with no confirmation', () {
+      final step = pickupHandoverStep(o('pickup', 'processing'))!;
+      expect(step.toStatus, 'ready-for-delivery');
+      expect(step.label, 'Заказ собран');
+      expect(step.confirmTitle, isEmpty); // forward progress, not terminal
+      expect(step.successText, contains('4312'));
+    });
+
+    test('ready-for-delivery offers «Выдать заказ» AND demands confirmation', () {
+      // Terminal, and it pushes «Заказ выдан» to the customer. It must not be
+      // possible to do that with one stray tap.
+      final step = pickupHandoverStep(o('pickup', 'ready-for-delivery'))!;
+      expect(step.toStatus, 'completed');
+      expect(step.label, 'Выдать заказ');
+      expect(step.confirmTitle, isNotEmpty);
+      expect(step.confirmBody, contains('уведомление'));
+      expect(step.successText, contains('выдан'));
+    });
+
+    test('the two steps chain into a complete handover', () {
+      final first = pickupHandoverStep(o('pickup', 'processing'))!;
+      final second = pickupHandoverStep(o('pickup', first.toStatus))!;
+      expect(second.toStatus, 'completed');
+      // ...and both are transitions the backend will actually accept.
+      expect(
+        adminAllowedTransitions('processing', fulfillmentType: 'pickup'),
+        contains(first.toStatus),
+      );
+      expect(
+        adminAllowedTransitions(first.toStatus, fulfillmentType: 'pickup'),
+        contains(second.toStatus),
+      );
+    });
+
+    test('no button on statuses where it would be wrong', () {
+      for (final status in [
+        'pending-payment',
+        'paid',
+        'scheduled',
+        'completed',
+        'canceled',
+        'refunded',
+        'payment-failed',
+        'payment-timeout',
+        'delivering',
+      ]) {
+        expect(pickupHandoverStep(o('pickup', status)), isNull,
+            reason: 'pickup at $status should offer no one-tap step');
+      }
+    });
+
+    test('an open substitution removes the button', () {
+      // The backend freezes the order until the customer answers. Offering the
+      // button anyway would hand the manager a guaranteed 409.
+      expect(pickupHandoverStep(o('pickup', 'processing', openSub: true)),
+          isNull);
+      expect(
+          pickupHandoverStep(o('pickup', 'ready-for-delivery', openSub: true)),
+          isNull);
+      // ...and it comes back once resolved.
+      expect(pickupHandoverStep(o('pickup', 'processing')), isNotNull);
+    });
+
+    test('every offered step is a transition the backend permits', () {
+      // The button must never propose something that 409s.
+      for (final status in kAllStatuses) {
+        final step = pickupHandoverStep(o('pickup', status));
+        if (step == null) continue;
+        expect(
+          adminAllowedTransitions(status, fulfillmentType: 'pickup'),
+          contains(step.toStatus),
+          reason: '$status -> ${step.toStatus} is offered but not allowed',
+        );
+      }
+    });
+  });
+
   group('discrimination: proves these tests would have caught the bug', () {
     test('the OLD map is the frozen-order bug', () {
       // The shipped 1.1.7+47 behaviour, replayed.
