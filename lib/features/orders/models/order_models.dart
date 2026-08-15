@@ -136,6 +136,26 @@ class Order {
   /// every proposal resolves.
   bool get hasOpenSubstitution => substitutions.any((s) => s.isOpen);
 
+  /// Whether a pending replacement must keep the handover closed.
+  ///
+  /// [hasOpenSubstitution] alone is not enough, and the gap is not theoretical.
+  /// The detail page is SEEDED from a list row, and the list endpoint does not
+  /// populate `substitutions` at all — `list_orders_for_store` builds each row
+  /// without them. So on the seed the array is empty and `hasOpenSubstitution`
+  /// is false no matter the truth, which left the one-tap «Заказ собран» (no
+  /// confirmation dialog) live until the first fetch returned. One tap there
+  /// tells a customer their order is ready while they are still being asked to
+  /// approve a replacement item.
+  ///
+  /// The list DOES send `has_pending_substitution`, which was parsed and then
+  /// read by nothing. So: trust the array when we have one, because it is
+  /// authoritative and goes false the moment the customer answers; fall back to
+  /// the flag only when the array is absent, which is exactly the seed. Reading
+  /// the flag unconditionally would risk the opposite failure — a stale true
+  /// freezing the button forever with no way back.
+  bool get substitutionBlocksHandover =>
+      substitutions.isEmpty ? hasPendingSubstitution : hasOpenSubstitution;
+
   static double _toDouble(dynamic v) {
     if (v == null) return 0.0;
     if (v is num) return v.toDouble();
@@ -672,7 +692,7 @@ PickupHandoverStep? pickupHandoverStep(
 
   // An open substitution freezes the order server-side; the caller also
   // disables the button, but returning a step here would still be a lie.
-  if (o.hasOpenSubstitution && !ignoreOpenSubstitution) return null;
+  if (o.substitutionBlocksHandover && !ignoreOpenSubstitution) return null;
 
   switch (o.status.toLowerCase().trim()) {
     case 'processing':
@@ -724,7 +744,7 @@ PickupHandoverStep? pickupHandoverStep(
 /// status genuinely has no handover step (e.g. `canceled`).
 String? pickupHandoverBlockedReason(Order o) {
   if (o.fulfillmentType.toLowerCase().trim() != 'pickup') return null;
-  if (o.hasOpenSubstitution) {
+  if (o.substitutionBlocksHandover) {
     return 'Ждём ответ покупателя по замене. '
         'Выдать заказ можно будет после ответа.';
   }
@@ -784,10 +804,17 @@ OrderRowDisplay orderRowDisplay(Order o) {
 
 /// Transitions REMOVED for a given fulfillment type.
 ///
-/// Mirrors `FULFILLMENT_TRANSITION_DENY` in order-service
-/// `app/domain/fulfillment_policy.py`. If these two ever disagree, the manager
-/// gets a dropdown option the backend answers with a 409, which reads to them
-/// as "the app is broken".
+/// ⚠️ This does NOT mirror `FULFILLMENT_TRANSITION_DENY` in order-service
+/// `app/domain/fulfillment_policy.py`, and that asymmetry is deliberate. The
+/// backend's pickup deny map is EMPTY on purpose: the admin app ships through
+/// TestFlight, so old and new iPads run against one backend, and a backend
+/// that denied these transitions would freeze orders for anyone still on the
+/// old build. Emptying it is what removed that deploy coupling.
+///
+/// The client stays stricter, which is the safe direction — it hides an option
+/// the backend would have accepted, so no 409 can result. Do NOT "sync" these
+/// two by copying the backend's empty map here: that puts «В пути» back on a
+/// самовывоз dropdown. If you change either side, change this comment too.
 const Map<String, Map<String, Set<String>>> kFulfillmentTransitionDeny = {
   'delivery': {},
   'pickup': {

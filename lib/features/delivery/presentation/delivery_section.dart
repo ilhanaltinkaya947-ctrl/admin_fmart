@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/format/money.dart';
+import '../data/delivery_repository.dart';
 import '../state/delivery_cubit.dart';
 import '../models/delivery_models.dart';
 import 'courier_map_page.dart';
@@ -540,25 +541,79 @@ class _SummaryCard extends StatelessWidget {
 ///
 /// Renders NOTHING in the normal case (no claim), which is every pickup order
 /// created by a current build.
-class PickupStrayClaimPanel extends StatefulWidget {
+class PickupStrayClaimPanel extends StatelessWidget {
   final int orderId;
 
   const PickupStrayClaimPanel({super.key, required this.orderId});
 
   @override
-  State<PickupStrayClaimPanel> createState() => _PickupStrayClaimPanelState();
+  Widget build(BuildContext context) {
+    // Its OWN DeliveryCubit, not the app-wide one, and this is load-bearing.
+    //
+    // The shared cubit's "is this state mine?" guard keys on an orderId that
+    // only the SUCCESS states carry — DeliveryReady, DeliveryNoClaim,
+    // DeliveryTariffs. DeliveryError and DeliveryLoading carry none, so the
+    // guard reads null and lets them through. Writing into the shared cubit
+    // from a pickup order therefore had a real cost: open delivery order #200
+    // with a live courier, get a pickup order pushed on top, let its lookup
+    // fail on a flaky store connection, pop back to #200 — its section never
+    // re-inits, sees DeliveryError, and renders «Заявка не создана» with
+    // «Создать заявку» ENABLED. delivery-service has no existing-active-claim
+    // gate, so the second tap dispatches a SECOND courier to a customer who
+    // already has one, at ~1,774₸ each.
+    //
+    // Scoping the cubit to this panel removes the shared-state question
+    // entirely rather than adding a second guard that the next state class
+    // will forget to satisfy.
+    return BlocProvider<DeliveryCubit>(
+      create: (_) => DeliveryCubit(repo: context.read<DeliveryRepository>())
+        ..initByOrder(orderId),
+      child: _PickupStrayClaimView(orderId: orderId),
+    );
+  }
 }
 
-class _PickupStrayClaimPanelState extends State<PickupStrayClaimPanel> {
+/// A самовывоз order should never have a Yandex courier attached to it, and
+/// the new build makes that impossible: the whole [YandexDeliverySection] is
+/// replaced by «курьер не нужен» copy on pickup orders.
+///
+/// That is exactly the problem. The admin app ships through TestFlight, so
+/// there is no way to force every iPad onto the new build at once. An older
+/// build does not understand `fulfillment_type` at all — it renders a pickup
+/// order as an ordinary delivery and will happily dispatch a courier for it.
+/// The courier then drives to an address the customer never intends to be at,
+/// and the manager who opens that same order on an UPDATED iPad sees only
+/// «курьер не нужен»: the live claim is invisible and there is no button that
+/// can stop it.
+///
+/// So this panel exists to make a stray claim visible and cancellable, and
+/// deliberately does nothing else — no create, no accept, no re-dispatch.
+/// Bringing a courier back to a pickup order is never the right answer, and
+/// an admin who is handed that button will eventually press it.
+///
+/// Renders NOTHING in the normal case (no claim), which is every pickup order
+/// created by a current build.
+class _PickupStrayClaimView extends StatefulWidget {
+  final int orderId;
+
+  const _PickupStrayClaimView({required this.orderId});
+
   @override
-  void initState() {
-    super.initState();
-    // Same lookup the delivery section does. On a pickup order it answers
-    // DeliveryNoClaim ~100% of the time and this widget stays invisible.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<DeliveryCubit>().initByOrder(widget.orderId);
-    });
-  }
+  State<_PickupStrayClaimView> createState() => _PickupStrayClaimViewState();
+}
+
+class _PickupStrayClaimViewState extends State<_PickupStrayClaimView> {
+  /// The last live claim this panel saw.
+  ///
+  /// Kept because a failed cancel emits DeliveryError, which is not a
+  /// DeliveryReady — so rendering straight off the current state made the
+  /// whole red panel VANISH at the exact moment it mattered, while the
+  /// courier was still en route and the only control that could stop it had
+  /// just disappeared. The manager's only recovery was to leave the screen
+  /// and come back, which is not a discoverable move.
+  DeliveryReady? _lastLive;
+
+  bool _cancelling = false;
 
   Future<void> _confirmAndCancel(String claimId, int version) async {
     final ok = await showDialog<bool>(
@@ -582,12 +637,21 @@ class _PickupStrayClaimPanelState extends State<PickupStrayClaimPanel> {
       ),
     );
     if (ok != true || !mounted) return;
+    setState(() => _cancelling = true);
     final cubit = context.read<DeliveryCubit>();
     await cubit.cancelFlow(claimId, version, widget.orderId);
     if (!mounted) return;
+    setState(() => _cancelling = false);
     final failed = cubit.state is DeliveryError;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(failed ? 'Не удалось отменить курьера' : 'Курьер отменён'),
+      content: Text(failed
+          // Deliberately not «Не удалось отменить курьера». cancelFlow wraps
+          // the cancel AND the follow-up refresh in one try, so a cancel that
+          // SUCCEEDED and then failed to re-read reports as a failure. Telling
+          // the manager it definitely did not work would send them tapping
+          // again; telling them to check is the honest instruction.
+          ? 'Не удалось подтвердить отмену. Проверьте статус заявки.'
+          : 'Курьер отменён'),
     ));
   }
 
@@ -595,16 +659,18 @@ class _PickupStrayClaimPanelState extends State<PickupStrayClaimPanel> {
   Widget build(BuildContext context) {
     return BlocBuilder<DeliveryCubit, DeliveryState>(
       builder: (context, st) {
-        // Guard on the order id: the cubit is app-wide, so a state left over
-        // from the previously-viewed order would otherwise show a warning on
-        // an order that has no claim at all.
-        if (st is! DeliveryReady || st.orderId != widget.orderId) {
-          return const SizedBox.shrink();
+        if (st is DeliveryReady && st.orderId == widget.orderId) {
+          // An already-cancelled claim is not a live courier. Showing a red
+          // alarm for it would train managers to ignore the panel.
+          _lastLive = _isTerminalYandexStatus(st.status) ? null : st;
+        } else if (st is DeliveryNoClaim && st.orderId == widget.orderId) {
+          _lastLive = null;
         }
-        // An already-cancelled claim is not a live courier. Showing a red
-        // alarm for it would train managers to ignore the panel.
-        final terminal = _isTerminalYandexStatus(st.status);
-        if (terminal) return const SizedBox.shrink();
+
+        final live = _lastLive;
+        if (live == null) return const SizedBox.shrink();
+
+        final failed = st is DeliveryError;
 
         return Container(
           width: double.infinity,
@@ -635,17 +701,31 @@ class _PickupStrayClaimPanelState extends State<PickupStrayClaimPanel> {
               const SizedBox(height: 6),
               Text(
                 'Заявка создана в старой версии приложения. Статус: '
-                '${_yandexStatusRu(st.status)}. Курьера нужно отменить, '
+                '${_yandexStatusRu(live.status)}. Курьера нужно отменить, '
                 'покупатель заберёт заказ сам.',
                 style: const TextStyle(fontSize: 13),
               ),
+              if (failed) ...[
+                const SizedBox(height: 8),
+                Text(
+                  st.message,
+                  style: const TextStyle(fontSize: 13, color: Colors.red),
+                ),
+              ],
               const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: () => _confirmAndCancel(st.claimId, st.version),
-                  icon: const Icon(Icons.cancel_outlined, size: 18),
-                  label: const Text('Отменить курьера'),
+                  onPressed: _cancelling
+                      ? null
+                      : () => _confirmAndCancel(live.claimId, live.version),
+                  icon: _cancelling
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.cancel_outlined, size: 18),
+                  label: Text(failed ? 'Попробовать ещё раз' : 'Отменить курьера'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.red,
                     side: const BorderSide(color: Colors.red),

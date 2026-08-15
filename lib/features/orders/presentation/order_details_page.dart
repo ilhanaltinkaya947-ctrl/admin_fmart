@@ -327,7 +327,25 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       // pre-write snapshot on top of the optimistic update the manager just
       // watched succeed — rolling the badge back with the green toast still on
       // screen. Guarding entry alone does not close a race that spans an await.
-      if (_handingOver || _saving) return;
+      // The post-await guard must MIRROR the entry guard, not be a subset of
+      // it. It previously checked only two of the five flags, so a GET that
+      // outlived an item edit, a cancel or a refund stamped its pre-write
+      // snapshot over the result: the manager watches a quantity drop 2 -> 1,
+      // then watches it climb back to 2 a second later, and taps «−» again.
+      //
+      // This was survivable while the first poll landed at t=8s. Adding the
+      // immediate fetch in initState put a guaranteed in-flight GET across the
+      // most interaction-dense seconds of every page open, on the DELIVERY
+      // path too — so the narrow guard had to be widened in the same change
+      // that made it reachable.
+      if (_handingOver ||
+          _saving ||
+          _actionLoading ||
+          _itemBusy.isNotEmpty ||
+          _substituteSheetOpen ||
+          _confirmOpen) {
+        return;
+      }
 
       final statusChanged = fresh.status != _order.status;
       setState(() {
@@ -548,7 +566,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     required String confirmAction,
     required String successText,
   }) async {
-    if (_handingOver || _saving) return;
+    // _actionLoading too, so the guard is symmetric with the one now on
+    // «Отменить» and «Возврат». A cancel or refund already in flight must
+    // block the handover exactly as the handover blocks them, or the race
+    // is simply closed from one side.
+    if (_handingOver || _saving || _actionLoading) return;
 
     // Resolved BEFORE the confirm dialog: reading it after the await is a
     // use_build_context_synchronously violation, and the widget can be gone by
@@ -665,16 +687,36 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         });
       }));
       if (!mounted) return;
-      // Only the backend's OWN Russian refusal is worth repeating verbatim
-      // («Заказ не оплачен», «Недопустимый переход статуса»). Anything else
-      // — an English internal fallback, a 5xx, a gateway detail carrying a
-      // raw errno — is noise to a manager standing at the counter with the
-      // customer in front of them, so it collapses to one honest sentence.
-      _showErrorWithRetry(
-        operatorSafeDetail(e.message, e.statusCode) ??
-            'Не удалось обновить статус. Попробуйте ещё раз.',
-        retry,
-      );
+      // Only the backend's OWN Russian refusal is worth repeating verbatim.
+      // Anything else — an English internal fallback, a 5xx, a gateway detail
+      // carrying a raw errno — is noise to a manager standing at the counter
+      // with the customer in front of them, so it collapses below.
+      //
+      // On THIS endpoint order-service currently answers in English for every
+      // refusal it has («Cannot transition order from status=…», «Order not
+      // found», «Admin only»), so operatorSafeDetail is null in practice and
+      // the wording below is what the manager actually reads. It is kept
+      // because that is a fact about today's backend, not a contract.
+      final detail = operatorSafeDetail(e.message, e.statusCode);
+      final code = e.statusCode;
+      if (detail != null) {
+        _showErrorWithRetry(detail, retry);
+      } else if (code == 409 || code == 404 || code == 400) {
+        // A deliberate refusal is not a transient failure. Offering
+        // «Повторить» here invites the manager to replay a request the server
+        // has already decided against — most often because a colleague on
+        // another iPad completed the same order seconds earlier, which is
+        // precisely when the customer is standing there and the retry loop
+        // feels like the app is broken.
+        _showError('Заказ уже изменился. Обновите экран.');
+      } else {
+        // Genuinely unknown or transient (5xx, no response at all). Retry is
+        // the right offer, and the wording no longer claims to know why.
+        _showErrorWithRetry(
+          'Не удалось обновить статус. Попробуйте ещё раз.',
+          retry,
+        );
+      }
     } catch (e, st) {
       unawaited(Sentry.captureException(e, stackTrace: st, withScope: (scope) {
         scope.setTag('feature', 'pickup_handover');
@@ -689,6 +731,23 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     } finally {
       if (mounted) setState(() => _handingOver = false);
     }
+  }
+
+  /// A refusal the server will repeat. Offers «Обновить» (re-read the truth)
+  /// rather than «Повторить» (re-send the request it just rejected).
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red.shade700,
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: 'Обновить',
+          textColor: Colors.white,
+          onPressed: () => _pollOrder(),
+        ),
+      ),
+    );
   }
 
   void _showErrorWithRetry(String message, Future<void> Function() onRetry) {
@@ -764,7 +823,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       SizedBox(
         height: 52,
         child: ElevatedButton.icon(
-          onPressed: (_saving || _handingOver)
+          onPressed: (_saving || _handingOver || _actionLoading)
               ? null
               : () => _pickupAdvance(
                     toStatus: step.toStatus,
@@ -803,6 +862,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   }
 
   Future<void> _cancelOrder() async {
+    // Belt to the button's braces. The disabled state above stops the tap;
+    // this stops the call, which is what matters if the button is ever
+    // rebuilt from a stale frame or reached from a future call site.
+    if (_actionLoading || _handingOver || _saving) return;
     final repo = context.read<OrdersRepository>();
     final storeState = context.read<StoreCubit>().state;
     final confirm = await showDialog<bool>(
@@ -831,8 +894,25 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               ),
               const SizedBox(height: 12),
             ],
-            const Text('Покупателю вернутся деньги за заказ. '
-                'Отменить это действие нельзя.'),
+            // Only promise a refund where money provably moved. `_canCancel`
+            // includes `pending-payment`, and a manager who reads a refund
+            // promise there repeats it to the customer on the phone; no
+            // refund follows, because our records show no capture. The app's
+            // own success snackbar already says «Заказ отменён», not
+            // «Оформлен возврат», so the promise contradicted the next screen.
+            //
+            // The opposite claim would be worse. `pending-payment` is NOT
+            // proof of no charge: a payment whose webhook never landed sits
+            // here while the customer really was billed, which is how two
+            // customers ended up 18,451₸ out of pocket with nothing recorded.
+            // So this says what we actually know and names the manual step,
+            // rather than guessing in either direction.
+            Text(_canRefund
+                ? 'Покупателю вернутся деньги за заказ. '
+                    'Отменить это действие нельзя.'
+                : 'Заказ не отмечен как оплаченный, поэтому возврат не '
+                    'создаётся. Если деньги всё же списались, оформите '
+                    'возврат отдельно. Отменить это действие нельзя.'),
           ],
         ),
         actions: [
@@ -1913,7 +1993,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 if (_canCancel) ...[
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: _actionLoading ? null : _cancelOrder,
+                      // _handingOver / _saving too. «Выдать заказ» now sits
+                      // directly above this button, and its only visible
+                      // progress is an 18pt spinner inside its own icon —
+                      // easy to miss with a customer in front of you. A
+                      // manager who reads that as "stuck" and taps «Отменить»
+                      // lands a cancel on an order that is completing, which
+                      // refunds a customer who is holding the bag.
+                      onPressed: (_actionLoading || _handingOver || _saving)
+                          ? null
+                          : _cancelOrder,
                       icon: const Icon(Icons.close, size: 18),
                       label: _actionLoading
                           ? const SizedBox(
@@ -1933,7 +2022,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 if (_canRefund)
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: (_actionLoading || _refundSheetOpen)
+                      onPressed: (_actionLoading ||
+                              _refundSheetOpen ||
+                              _handingOver ||
+                              _saving)
                           ? null
                           : _openRefundSheet,
                       icon: const Icon(Icons.replay, size: 18),

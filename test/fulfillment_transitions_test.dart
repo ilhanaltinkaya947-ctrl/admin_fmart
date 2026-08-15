@@ -695,6 +695,123 @@ void main() {
       );
     });
 
+    // The detail page is seeded from a LIST row, and the list endpoint does
+    // not send `substitutions` at all. So the array is empty on the seed no
+    // matter the truth, and the one-tap «Заказ собран» — which has NO confirm
+    // dialog — was live until the first fetch returned. The list DOES send
+    // `has_pending_substitution`; it was parsed and read by nothing.
+    group('the LIST SEED must not report a frozen order as ready', () {
+      Order seed({required bool pendingFlag}) => Order(
+            id: 1,
+            customerId: 1,
+            status: 'processing',
+            totalAmount: '1000',
+            deliverySum: '0',
+            shippingLat: 0,
+            shippingLng: 0,
+            storeId: 3,
+            storeName: 'S',
+            deliveryAddress: 'A',
+            fulfillmentType: 'pickup',
+            customerComment: '',
+            paymentMethod: 'card',
+            isPromo: false,
+            createdAt: DateTime(2026, 8, 15),
+            updatedAt: DateTime(2026, 8, 15),
+            items: const [],
+            // The seed shape: NO substitutions array, only the flag.
+            substitutions: const [],
+            hasPendingSubstitution: pendingFlag,
+          );
+
+      test('THE BUG: a seed with a pending substitution offers no button', () {
+        expect(pickupHandoverStep(seed(pendingFlag: true)), isNull,
+            reason: 'this is the one-tap «Заказ собран» with no confirmation');
+      });
+
+      test('and it explains itself rather than going silent', () {
+        expect(pickupHandoverBlockedReason(seed(pendingFlag: true)), isNotNull);
+      });
+
+      test('a clean seed is unaffected — the button still works', () {
+        final step = pickupHandoverStep(seed(pendingFlag: false));
+        expect(step, isNotNull);
+        expect(step!.toStatus, 'ready-for-delivery');
+      });
+
+      // The other direction matters just as much. If the flag were read
+      // unconditionally, a stale true on the DETAIL response would freeze the
+      // button forever with no way back. The array wins whenever we have one.
+      test('a resolved substitution unblocks even if the flag is stale', () {
+        // Detail-shaped: the array IS present and every proposal is answered,
+        // while `has_pending_substitution` is still true. The array must win,
+        // or a stale flag freezes the button with no way back.
+        final resolved = Order(
+          id: 3,
+          customerId: 1,
+          status: 'processing',
+          totalAmount: '1000',
+          deliverySum: '0',
+          shippingLat: 0,
+          shippingLng: 0,
+          storeId: 3,
+          storeName: 'S',
+          deliveryAddress: 'A',
+          fulfillmentType: 'pickup',
+          customerComment: '',
+          paymentMethod: 'card',
+          isPromo: false,
+          createdAt: DateTime(2026, 8, 15),
+          updatedAt: DateTime(2026, 8, 15),
+          items: const [],
+          substitutions: [
+            OrderSubstitution(
+              id: 1,
+              orderItemId: 1,
+              status: 'accepted',
+              originalProductId: 1,
+              originalPrice: '500',
+              originalQty: 1,
+              substituteProductId: 2,
+              substituteName: 'Молоко 2.5%',
+              substitutePrice: '450',
+              substituteQty: 1,
+            ),
+          ],
+          hasPendingSubstitution: true,
+        );
+        expect(resolved.hasOpenSubstitution, isFalse);
+        expect(resolved.substitutionBlocksHandover, isFalse,
+            reason: 'the authoritative array must beat the stale flag');
+        expect(pickupHandoverStep(resolved), isNotNull);
+      });
+
+      test('delivery is untouched by the seed rule', () {
+        final d = Order(
+          id: 2,
+          customerId: 1,
+          status: 'processing',
+          totalAmount: '1000',
+          deliverySum: '400',
+          shippingLat: 0,
+          shippingLng: 0,
+          storeId: 3,
+          storeName: 'S',
+          deliveryAddress: 'A',
+          customerComment: '',
+          paymentMethod: 'card',
+          isPromo: false,
+          createdAt: DateTime(2026, 8, 15),
+          updatedAt: DateTime(2026, 8, 15),
+          items: const [],
+          hasPendingSubstitution: true,
+        );
+        expect(pickupHandoverStep(d), isNull);
+        expect(pickupHandoverBlockedReason(d), isNull,
+            reason: 'no reason is ever invented for a delivery order');
+      });
+    });
+
     // The reason above is worth nothing if the widget cannot reach it.
     // `pickupHandoverStep` returns null on an open substitution, so a UI that
     // asks for the step FIRST and the reason second renders the explanation

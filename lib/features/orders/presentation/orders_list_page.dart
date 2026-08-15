@@ -283,7 +283,14 @@ class _OrdersListPageState extends State<OrdersListPage> {
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
-                                    '${o.status == "scheduled" ? "Выпустить" : "К доставке"}: ${df.format(o.scheduledForAt!.toLocal())}',
+                                    // Same «К доставке» leak the detail page
+                                    // fixed, on the sibling screen. A самовывоз
+                                    // placed after hours gets a scheduled time
+                                    // from the same rule, so the row said
+                                    // «САМОВЫВОЗ · Клиент заберёт сам» on one
+                                    // line and «К доставке: …» three lines
+                                    // below it. One order, two answers.
+                                    '${o.status == "scheduled" ? "Выпустить" : (display.showsPickupChip ? "К выдаче" : "К доставке")}: ${df.format(o.scheduledForAt!.toLocal())}',
                                     style: const TextStyle(
                                       fontSize: 12,
                                       color: Color(0xFFEE6F00),
