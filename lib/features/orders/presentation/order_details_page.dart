@@ -7,6 +7,7 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../../../core/feature_flags.dart';
 import '../../../core/format/address.dart';
 import '../../../core/format/money.dart';
@@ -240,6 +241,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // rebuilding this page re-evaluates that child.)
     AdminFeatureFlags.instance.flags.addListener(_onFlagsChanged);
     _startPolling();
+    // Fetch immediately, do not wait for the first tick.
+    //
+    // This page is seeded from a LIST row, and the list endpoint does not
+    // populate substitutions: order-service `list_orders_for_store` calls
+    // `order_to_dict` without them, so `hasOpenSubstitution` is FALSE on the
+    // seed regardless of the truth. Until the first poll ~8s later, every
+    // guard that reads it is a no-op — including the one that hides the
+    // one-tap «Заказ собран», which has no confirmation dialog to slow the
+    // manager down. A manager who proposes a replacement, goes back to the
+    // list and taps straight back in can complete the order while the
+    // customer is still being asked to accept a substitution.
+    _pollOrder();
   }
 
   void _onFlagsChanged() {
@@ -652,7 +665,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         });
       }));
       if (!mounted) return;
-      _showErrorWithRetry(e.message, retry);
+      // Only the backend's OWN Russian refusal is worth repeating verbatim
+      // («Заказ не оплачен», «Недопустимый переход статуса»). Anything else
+      // — an English internal fallback, a 5xx, a gateway detail carrying a
+      // raw errno — is noise to a manager standing at the counter with the
+      // customer in front of them, so it collapses to one honest sentence.
+      _showErrorWithRetry(
+        operatorSafeDetail(e.message, e.statusCode) ??
+            'Не удалось обновить статус. Попробуйте ещё раз.',
+        retry,
+      );
     } catch (e, st) {
       unawaited(Sentry.captureException(e, stackTrace: st, withScope: (scope) {
         scope.setTag('feature', 'pickup_handover');
@@ -684,17 +706,145 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     );
   }
 
+  /// The самовывоз handover control, or an empty list when it does not
+  /// apply. Returned as a list so the caller can spread it into a Column.
+  List<Widget> _pickupHandoverBlock(BuildContext context) {
+    if (!_isPickup) return const [];
+
+    // When the button is withheld, SAY WHY. A button that silently vanishes
+    // (or greys out with no text) reads as a broken app, and the manager's
+    // next move is to reach for «Отменить заказ» — refunding a customer who
+    // is standing at the counter and only needed to answer one question
+    // about a replacement item.
+    //
+    // This is checked BEFORE the step, not after: `pickupHandoverStep`
+    // already returns null on an open substitution, so an explanation placed
+    // after it can never render. `ignoreOpenSubstitution` asks the only
+    // question that matters here — would this order have a handover at all
+    // once the customer answers — so a canceled order stays silent.
+    final blocked = pickupHandoverBlockedReason(_order);
+    if (blocked != null) {
+      if (pickupHandoverStep(_order, ignoreOpenSubstitution: true) == null) {
+        return const [];
+      }
+      return [
+        const SizedBox(height: 16),
+        const Divider(),
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.orange.withValues(alpha: 0.45)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.hourglass_top,
+                  size: 18, color: Colors.orange),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(blocked, style: const TextStyle(fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+      ];
+    }
+
+    final step = _pickupNextStep;
+    if (step == null) return const [];
+
+    return [
+      const SizedBox(height: 16),
+      const Divider(),
+      const SizedBox(height: 12),
+      SizedBox(
+        height: 52,
+        child: ElevatedButton.icon(
+          onPressed: (_saving || _handingOver)
+              ? null
+              : () => _pickupAdvance(
+                    toStatus: step.toStatus,
+                    confirmTitle: step.confirmTitle,
+                    confirmBody: step.confirmBody,
+                    confirmAction: step.confirmAction,
+                    successText: step.successText,
+                  ),
+          icon: _handingOver
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+              : Icon(step.toStatus == 'completed'
+                  ? Icons.check_circle_outline
+                  : Icons.inventory_2_outlined),
+          label: Text(step.label),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: ST.green,
+            foregroundColor: Colors.white,
+            textStyle:
+                const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Text(
+        step.hint,
+        style: TextStyle(
+          fontSize: 12,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    ];
+  }
+
   Future<void> _cancelOrder() async {
     final repo = context.read<OrdersRepository>();
     final storeState = context.read<StoreCubit>().state;
     final confirm = await showDialog<bool>(
       context: context,
+      // The old body was exactly «Заказ #N будет отменён.» — it never said that
+      // MONEY MOVES. On delivery that was merely thin. On pickup it is a live
+      // refund-after-collection door: «Готов к выдаче» spans two physically
+      // different worlds — bag still on the shelf, and customer already walked
+      // out while the manager had not yet tapped «Выдать заказ» (one dropped
+      // request is enough). Cancelling in the second world refunds in full and
+      // stock is NOT returned, so the customer keeps both the goods and the
+      // money. Asking the physical question is the only thing that separates
+      // the two, because the app cannot tell them apart.
       builder: (c) => AlertDialog(
-        title: const Text('Отменить заказ?'),
-        content: Text('Заказ #${_order.id} будет отменён.'),
+        title: Text('Отменить заказ №${_order.id}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (_isPickup &&
+                _order.status.toLowerCase().trim() == 'ready-for-delivery') ...[
+              const Text(
+                'Покупатель уже забрал этот заказ?\n'
+                'Если да, не отменяйте. Нажмите «Выдать заказ».',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+            ],
+            const Text('Покупателю вернутся деньги за заказ. '
+                'Отменить это действие нельзя.'),
+          ],
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('Нет')),
-          ElevatedButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('Отменить')),
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Назад'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('Отменить заказ'),
+          ),
         ],
       ),
     );
@@ -1624,7 +1774,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           Text('Сумма: ${formatTenge(totalAmount)}',
               style: const TextStyle(
                   fontSize: 17, fontWeight: FontWeight.w700)),
-          Text('Доставка: ${formatTenge(_parseMoney(_order.deliverySum))}'),
+          // The orders LIST already drops this line for самовывоз
+          // (`orderRowDisplay.showsDeliveryFee`). Printing «Доставка: 0 ₸»
+          // here, eight lines under a САМОВЫВОЗ badge, reproduced on the
+          // detail screen exactly the misread the list fix was written to
+          // prevent — and made the two screens disagree about one order.
+          if (_isPickup)
+            const Text('Самовывоз, доставки нет')
+          else
+            Text('Доставка: ${formatTenge(_parseMoney(_order.deliverySum))}'),
           // Customer-picked delivery slot or off-hours scheduled time.
           // Picker needs this to plan their day — when a customer chose
           // «к 17:00» from the in-app slot picker, the assembler must
@@ -1632,7 +1790,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           // list. Format: "К доставке: 17:00 (Сегодня)".
           if (_order.scheduledForAt != null) ...[
             const SizedBox(height: 4),
-            _ScheduledDeliveryRow(scheduledForAt: _order.scheduledForAt!),
+            _ScheduledDeliveryRow(
+              scheduledForAt: _order.scheduledForAt!,
+              isPickup: _isPickup,
+            ),
           ],
           // Off-hours SCHEDULED order: the row above only LABELS the
           // release time — this is the actual action that moves the order
@@ -1701,6 +1862,12 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 style: const TextStyle(fontSize: 13),
               ),
             ),
+            // «Курьер не нужен» is true of every pickup order this build
+            // creates, and it is the ONLY thing shown here — so a courier
+            // dispatched by an older iPad, which does not know what pickup
+            // is, would be invisible and unstoppable from an updated one.
+            // Renders nothing unless such a claim actually exists.
+            if (_isPickup) PickupStrayClaimPanel(orderId: _order.id),
           ] else ...[
             YandexDeliverySection(
               orderId: _order.id,
@@ -1716,6 +1883,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               customerName: (_customer == null) ? null : _customer!.fullName == '—' ? null : _customer!.fullName,
             ),
           ],
+
+          // ---- САМОВЫВОЗ one-tap handover ---------------------------------
+          // Sits ABOVE Действия on purpose. It used to live inside «Изменить
+          // статус», which renders after Действия, so the first and largest
+          // button a manager met on a ready-for-pickup order was the red
+          // «Отменить заказ» — the one action that refunds the customer and
+          // cannot be undone — while «Выдать заказ», the thing they open this
+          // screen to do, was a scroll further down.
+          //
+          // Only for pickup, and deliberately NOT added for delivery even
+          // though it would help there too: touching the live delivery path
+          // to make it nicer is exactly the opportunistic change that turns a
+          // safe feature into a regression.
+          ..._pickupHandoverBlock(context),
 
           // Hide the whole Действия block when neither action makes sense
           // for the current status (e.g. canceled / refunded / payment-failed).
@@ -1893,56 +2074,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               children: [
                 Text('Изменить статус', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
-                // ---- САМОВЫВОЗ one-tap handover -------------------------
-                // Only for pickup, and deliberately NOT added for delivery
-                // even though it would help there too: touching the live
-                // delivery path to make it nicer is exactly the opportunistic
-                // change that turns a safe feature into a regression.
-                if (_isPickup && _pickupNextStep != null) ...[
-                  SizedBox(
-                    height: 52,
-                    child: ElevatedButton.icon(
-                      onPressed: (_saving ||
-                              _handingOver ||
-                              _order.hasOpenSubstitution)
-                          ? null
-                          : () => _pickupAdvance(
-                                toStatus: _pickupNextStep!.toStatus,
-                                confirmTitle: _pickupNextStep!.confirmTitle,
-                                confirmBody: _pickupNextStep!.confirmBody,
-                                confirmAction: _pickupNextStep!.confirmAction,
-                                successText: _pickupNextStep!.successText,
-                              ),
-                      icon: _handingOver
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white))
-                          : Icon(_pickupNextStep!.toStatus == 'completed'
-                              ? Icons.check_circle_outline
-                              : Icons.inventory_2_outlined),
-                      label: Text(_pickupNextStep!.label),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: ST.green,
-                        foregroundColor: Colors.white,
-                        textStyle: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _pickupNextStep!.hint,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  const Divider(height: 1),
-                  const SizedBox(height: 14),
-                ],
+                // The САМОВЫВОЗ one-tap handover used to live here, under
+                // «Изменить статус» and therefore BELOW «Отменить заказ».
+                // It moved above the Действия block — see _pickupHandoverBlock.
                 Row(
               children: [
                 Expanded(
@@ -2560,7 +2694,18 @@ class _StepperBtn extends StatelessWidget {
 /// detail page needs it too.
 class _ScheduledDeliveryRow extends StatelessWidget {
   final DateTime scheduledForAt;
-  const _ScheduledDeliveryRow({required this.scheduledForAt});
+
+  /// Pickup orders inherit `scheduled_for_at` from the same off-hours rule as
+  /// delivery (order-service `store_hours.py`), so a самовывоз placed at 22:30
+  /// gets one. Labelling that «К доставке» told the manager a courier was
+  /// involved, under a САМОВЫВОЗ badge. The time is right; only the noun was
+  /// wrong.
+  final bool isPickup;
+
+  const _ScheduledDeliveryRow({
+    required this.scheduledForAt,
+    this.isPickup = false,
+  });
 
   String _dayLabel(DateTime when) {
     final now = DateTime.now();
@@ -2588,9 +2733,9 @@ class _ScheduledDeliveryRow extends StatelessWidget {
         children: [
           const Icon(Icons.schedule, size: 18, color: Color(0xFFEE6F00)),
           const SizedBox(width: 8),
-          const Text(
-            'К доставке:',
-            style: TextStyle(
+          Text(
+            isPickup ? 'К выдаче:' : 'К доставке:',
+            style: const TextStyle(
               fontSize: 13,
               color: Color(0xFF6B7280),
               fontWeight: FontWeight.w500,

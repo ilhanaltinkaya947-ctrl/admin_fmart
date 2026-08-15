@@ -6,6 +6,7 @@ import 'package:equatable/equatable.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../data/delivery_repository.dart';
 import '../models/delivery_models.dart';
 
@@ -92,7 +93,15 @@ class DeliveryCubit extends Cubit<DeliveryState> {
         courierLink: null,
       ));
     } catch (e) {
-      emit(const DeliveryError('Не удалось создать заявку'));
+      // Show the backend's own reason when it sent one. delivery-service
+      // refuses a dispatch for an order that isn't deliverable with a 409
+      // «Нельзя вызвать курьера: заказ не готов к доставке» — the order was
+      // never paid, or it's still parked off-hours waiting to be released.
+      // Folding that into the flat message below told the manager only that
+      // "something failed", so the natural response was to tap again, which
+      // can never succeed. Falls back to the generic message for transport
+      // failures and for internal English details.
+      emit(DeliveryError(backendDetail(e) ?? 'Не удалось создать заявку'));
     }
   }
 

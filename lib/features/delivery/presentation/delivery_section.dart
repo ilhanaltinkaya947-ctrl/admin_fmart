@@ -519,3 +519,143 @@ class _SummaryCard extends StatelessWidget {
     );
   }
 }
+
+/// A самовывоз order should never have a Yandex courier attached to it, and
+/// the new build makes that impossible: the whole [YandexDeliverySection] is
+/// replaced by «курьер не нужен» copy on pickup orders.
+///
+/// That is exactly the problem. The admin app ships through TestFlight, so
+/// there is no way to force every iPad onto the new build at once. An older
+/// build does not understand `fulfillment_type` at all — it renders a pickup
+/// order as an ordinary delivery and will happily dispatch a courier for it.
+/// The courier then drives to an address the customer never intends to be at,
+/// and the manager who opens that same order on an UPDATED iPad sees only
+/// «курьер не нужен»: the live claim is invisible and there is no button that
+/// can stop it.
+///
+/// So this panel exists to make a stray claim visible and cancellable, and
+/// deliberately does nothing else — no create, no accept, no re-dispatch.
+/// Bringing a courier back to a pickup order is never the right answer, and
+/// an admin who is handed that button will eventually press it.
+///
+/// Renders NOTHING in the normal case (no claim), which is every pickup order
+/// created by a current build.
+class PickupStrayClaimPanel extends StatefulWidget {
+  final int orderId;
+
+  const PickupStrayClaimPanel({super.key, required this.orderId});
+
+  @override
+  State<PickupStrayClaimPanel> createState() => _PickupStrayClaimPanelState();
+}
+
+class _PickupStrayClaimPanelState extends State<PickupStrayClaimPanel> {
+  @override
+  void initState() {
+    super.initState();
+    // Same lookup the delivery section does. On a pickup order it answers
+    // DeliveryNoClaim ~100% of the time and this widget stays invisible.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<DeliveryCubit>().initByOrder(widget.orderId);
+    });
+  }
+
+  Future<void> _confirmAndCancel(String claimId, int version) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('Отменить курьера?'),
+        content: const Text(
+            'Это заказ на самовывоз, курьер ему не нужен. Заявка в Яндексе будет отменена. '
+            'Если курьер уже выехал, отмена может быть платной.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text('Назад'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text('Отменить курьера'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final cubit = context.read<DeliveryCubit>();
+    await cubit.cancelFlow(claimId, version, widget.orderId);
+    if (!mounted) return;
+    final failed = cubit.state is DeliveryError;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(failed ? 'Не удалось отменить курьера' : 'Курьер отменён'),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<DeliveryCubit, DeliveryState>(
+      builder: (context, st) {
+        // Guard on the order id: the cubit is app-wide, so a state left over
+        // from the previously-viewed order would otherwise show a warning on
+        // an order that has no claim at all.
+        if (st is! DeliveryReady || st.orderId != widget.orderId) {
+          return const SizedBox.shrink();
+        }
+        // An already-cancelled claim is not a live courier. Showing a red
+        // alarm for it would train managers to ignore the panel.
+        final terminal = _isTerminalYandexStatus(st.status);
+        if (terminal) return const SizedBox.shrink();
+
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(top: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.red.withValues(alpha: 0.5)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      size: 18, color: Colors.red),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'На заказе самовывоза есть курьер',
+                      style: TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Заявка создана в старой версии приложения. Статус: '
+                '${_yandexStatusRu(st.status)}. Курьера нужно отменить, '
+                'покупатель заберёт заказ сам.',
+                style: const TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => _confirmAndCancel(st.claimId, st.version),
+                  icon: const Icon(Icons.cancel_outlined, size: 18),
+                  label: const Text('Отменить курьера'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    side: const BorderSide(color: Colors.red),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

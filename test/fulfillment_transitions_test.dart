@@ -594,43 +594,220 @@ void main() {
     });
   });
 
-  group('DEPLOY COUPLING with the backend', () {
-    // Verified against the RUNNING prod container on 2026-08-10:
-    //   status_machine.py:14
-    //   ADMIN_ALLOWED[READY_FOR_DELIVERY] = {DELIVERING, PARTIALLY_REFUNDED, REFUNDED}
-    // There is no COMPLETED. The fulfillment-aware policy exists only on the
-    // branch feat/pickup-fulfillment-aware and is NOT deployed.
-    const deployedBackendAllowsAtReady = {
-      'delivering',
-      'partially-refunded',
-      'refunded',
-    };
+  group('partially-refunded is the COMMON pickup case, not an edge case', () {
+    Order o(String fulfillment, String status, {bool openSub = false}) =>
+        Order.fromJson({
+          'id': 4312,
+          'status': status,
+          'delivery_sum': '0',
+          'delivery_address': 'улица Фиркан, 12',
+          'fulfillment_type': fulfillment,
+          'customer_comment': '',
+          'payment_method': 'card',
+          'is_promo': false,
+          'substitutions': openSub
+              ? [
+                  {
+                    'id': 1,
+                    'order_item_id': 5,
+                    'status': 'proposed',
+                    'original_product_id': 9,
+                    'original_price': '100',
+                  }
+                ]
+              : [],
+        });
 
+
+    // ~10% of orders at this store lose a line to phantom stock, so a bag
+    // waiting at the counter has often already had one item refunded. Before
+    // 2026-08-14 the green button vanished at exactly that moment and the only
+    // remaining route was the dropdown, three screens below «Отменить».
+    test('pickup at partially-refunded still offers the handover', () {
+      final step = pickupHandoverStep(o('pickup', 'partially-refunded'));
+      expect(step, isNotNull);
+      expect(step!.toStatus, 'completed');
+      expect(step.label, 'Выдать заказ');
+      expect(step.confirmTitle, isNotEmpty,
+          reason: 'terminal + pushes the customer, so it must confirm');
+    });
+
+    test('the backend actually permits that transition', () {
+      expect(
+        adminAllowedTransitions('partially-refunded', fulfillmentType: 'pickup'),
+        contains('completed'),
+      );
+    });
+
+    test('DELIVERY at partially-refunded still gets NO button', () {
+      expect(
+        pickupHandoverStep(o('delivery', 'partially-refunded')),
+        isNull,
+      );
+    });
+  });
+
+  group('a vanished button must explain itself', () {
+    Order o(String fulfillment, String status, {bool openSub = false}) =>
+        Order.fromJson({
+          'id': 4312,
+          'status': status,
+          'delivery_sum': '0',
+          'delivery_address': 'улица Фиркан, 12',
+          'fulfillment_type': fulfillment,
+          'customer_comment': '',
+          'payment_method': 'card',
+          'is_promo': false,
+          'substitutions': openSub
+              ? [
+                  {
+                    'id': 1,
+                    'order_item_id': 5,
+                    'status': 'proposed',
+                    'original_product_id': 9,
+                    'original_price': '100',
+                  }
+                ]
+              : [],
+        });
+
+
+    test('an open substitution gives a reason, not silence', () {
+      final order = o('pickup', 'ready-for-delivery', openSub: true);
+      expect(pickupHandoverStep(order), isNull);
+      final why = pickupHandoverBlockedReason(order);
+      expect(why, isNotNull);
+      expect(why, contains('замен'),
+          reason: 'the manager must be told WHY, next to where the button was');
+    });
+
+    test('no reason is invented for a delivery order', () {
+      expect(
+        pickupHandoverBlockedReason(o('delivery', 'ready-for-delivery', openSub: true)),
+        isNull,
+      );
+    });
+
+    test('no reason when the button is simply not applicable', () {
+      expect(
+        pickupHandoverBlockedReason(o('pickup', 'canceled')),
+        isNull,
+      );
+    });
+
+    // The reason above is worth nothing if the widget cannot reach it.
+    // `pickupHandoverStep` returns null on an open substitution, so a UI that
+    // asks for the step FIRST and the reason second renders the explanation
+    // exactly never — the manager still sees a button that silently vanished.
+    // `ignoreOpenSubstitution` is what lets the widget ask the two questions
+    // in the order that actually works.
+    group('the explanation must be REACHABLE, not just correct', () {
+      test('a frozen order still reports the step it would have', () {
+        final frozen = o('pickup', 'ready-for-delivery', openSub: true);
+        expect(pickupHandoverStep(frozen), isNull,
+            reason: 'the button itself stays gone');
+        final would = pickupHandoverStep(frozen, ignoreOpenSubstitution: true);
+        expect(would, isNotNull);
+        expect(would!.toStatus, 'completed');
+      });
+
+      test('partially-refunded, the common pickup case, is reachable too', () {
+        final frozen = o('pickup', 'partially-refunded', openSub: true);
+        expect(pickupHandoverStep(frozen, ignoreOpenSubstitution: true),
+            isNotNull);
+      });
+
+      // The other half: a status with no handover must stay silent even when
+      // a substitution is open, or every canceled order grows a tile telling
+      // the manager to wait for an answer that will never matter.
+      test('a status with no handover stays silent', () {
+        for (final s in ['canceled', 'completed', 'pending-payment']) {
+          expect(
+            pickupHandoverStep(o('pickup', s, openSub: true),
+                ignoreOpenSubstitution: true),
+            isNull,
+            reason: 'status $s should render nothing at all',
+          );
+        }
+      });
+
+      test('the flag never opens the door for a delivery order', () {
+        expect(
+          pickupHandoverStep(o('delivery', 'ready-for-delivery', openSub: true),
+              ignoreOpenSubstitution: true),
+          isNull,
+        );
+      });
+
+      test('the flag defaults to false — no caller changes behaviour', () {
+        final frozen = o('pickup', 'ready-for-delivery', openSub: true);
+        expect(pickupHandoverStep(frozen),
+            pickupHandoverStep(frozen, ignoreOpenSubstitution: false));
+        expect(pickupHandoverStep(frozen), isNull);
+      });
+
+      test('it changes nothing when no substitution is open', () {
+        for (final s in [
+          'processing',
+          'ready-for-delivery',
+          'partially-refunded'
+        ]) {
+          final order = o('pickup', s);
+          expect(
+            pickupHandoverStep(order, ignoreOpenSubstitution: true)?.toStatus,
+            pickupHandoverStep(order)?.toStatus,
+            reason: 'status $s must be unaffected by the flag',
+          );
+        }
+      });
+    });
+  });
+
+  group('mixed-fleet safety (the deploy coupling was DELETED 2026-08-14)', () {
     // ⚠️ WEAKNESS, stated rather than hidden: `deployedBackendAllowsAtReady` is a
     // hand-transcribed snapshot. It is a Dart literal compared to another Dart
     // literal, so it CANNOT fail because prod changed — only because someone
     // remembered to edit it. That makes it a documented assumption, not a
     // control. Re-read the running container before trusting it.
-    test('NEITHER side can ship alone: they must deploy together', () {
-      final clientOffers = adminAllowedTransitions(
+    //
+    // 2026-08-14: IT WENT STALE EXACTLY AS PREDICTED, and the suite stayed
+    // green while asserting something false about production.
+    //
+    // The fulfillment-aware policy SHIPPED on 2026-08-14 with an EMPTY pickup
+    // deny mask, so the deployed backend now accepts BOTH `delivering` (which
+    // the shipped 1.1.7 admin offers) and `completed` (which this build
+    // offers). The coupling this group is named after was deliberately
+    // deleted, so that the app and the backend could ship weeks apart.
+    //
+    // The old test asserted "NEITHER side can ship alone". Leaving it green
+    // would have told the next reader not to ship a thing that is already
+    // live. It is replaced by the invariant that actually protects the store:
+    // whatever build is on a given iPad, that manager must always have a legal
+    // forward move. That is what a frozen order actually means, and unlike the
+    // snapshot it stays true as the backend evolves.
+    test('EVERY admin build in the field keeps a legal forward move', () {
+      // What the shipped 1.1.7 admin offers at ready-for-delivery.
+      const oldAdminOffers = {'delivering'};
+      final newAdminOffers = adminAllowedTransitions(
         'ready-for-delivery',
         fulfillmentType: 'pickup',
       );
 
-      // This app offers `completed`, which the deployed backend rejects...
-      expect(clientOffers, contains('completed'));
-      expect(deployedBackendAllowsAtReady, isNot(contains('completed')));
+      // Deployed backend after 2026-08-14 (empty pickup deny mask): the base
+      // table, plus `completed` from the ALLOW half.
+      const deployedBackendNow = {
+        'delivering',
+        'partially-refunded',
+        'refunded',
+        'completed',
+      };
 
-      // ...and this app no longer offers `delivering`, which is the only thing
-      // the deployed backend WOULD accept. So there is zero overlap: a pickup
-      // order at «Готов к выдаче» has no working forward move, and the only
-      // button left is Отменить, which refunds a customer who already
-      // collected. Shipping the backend alone is the mirror image of the same
-      // freeze.
-      expect(clientOffers.intersection(deployedBackendAllowsAtReady), isEmpty,
-          reason: 'If this now overlaps, the backend policy has shipped. '
-              'Update deployedBackendAllowsAtReady from the running container '
-              'and delete this test.');
+      expect(oldAdminOffers.intersection(deployedBackendNow), isNotEmpty,
+          reason: 'An iPad still on 1.1.7 would have NO working forward move '
+              'on a pickup order. Its only button would be Отменить, which '
+              'refunds a customer who may already have collected.');
+      expect(newAdminOffers.intersection(deployedBackendNow), isNotEmpty,
+          reason: 'This build would have no working forward move.');
     });
 
     test('the client mask matches the backend policy BRANCH, entry for entry', () {

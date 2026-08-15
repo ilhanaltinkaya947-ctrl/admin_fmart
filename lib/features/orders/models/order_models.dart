@@ -657,12 +657,22 @@ class PickupHandoverStep {
 /// Returns null for delivery orders by design: this button is pickup-only. The
 /// same shortcut would help delivery too, but adding it there would be an
 /// unrequested change to the live path that 446 real orders travel.
-PickupHandoverStep? pickupHandoverStep(Order o) {
+/// [ignoreOpenSubstitution] answers a different question: "would there be a
+/// step here if the substitution were settled?". The UI needs it to tell two
+/// cases apart that otherwise both return null — an order WAITING on the
+/// customer's substitution answer, which deserves an explanation, and an order
+/// where a handover simply does not apply (canceled, already collected), where
+/// any message at all would be noise. Never pass true to decide whether the
+/// button may be TAPPED.
+PickupHandoverStep? pickupHandoverStep(
+  Order o, {
+  bool ignoreOpenSubstitution = false,
+}) {
   if (o.fulfillmentType.toLowerCase().trim() != 'pickup') return null;
 
   // An open substitution freezes the order server-side; the caller also
   // disables the button, but returning a step here would still be a lie.
-  if (o.hasOpenSubstitution) return null;
+  if (o.hasOpenSubstitution && !ignoreOpenSubstitution) return null;
 
   switch (o.status.toLowerCase().trim()) {
     case 'processing':
@@ -677,11 +687,19 @@ PickupHandoverStep? pickupHandoverStep(Order o) {
         confirmAction: '',
         successText: 'Заказ №${o.id} готов к выдаче',
       );
+    // `partially-refunded` is NOT terminal, and on pickup it is the COMMON
+    // case, not an edge case: ~10% of orders at this store lose an item to
+    // phantom stock, so a bag waiting at the counter has often already had one
+    // line refunded. Without this branch the green button vanished at exactly
+    // the moment the customer was standing there, and the only remaining route
+    // was the dropdown — three screens below «Отменить», which refunds in full.
+    // The transition table already permits partially-refunded -> completed.
     case 'ready-for-delivery':
+    case 'partially-refunded':
       return PickupHandoverStep(
         toStatus: 'completed',
         label: 'Выдать заказ',
-        hint: 'Проверьте последние 4 цифры номера телефона покупателя.',
+        hint: 'Сверьте имя и последние 4 цифры телефона выше.',
         // Confirmed: terminal, and it pushes «Заказ выдан» to the customer.
         confirmTitle: 'Выдать заказ №${o.id}?',
         confirmBody: 'Покупатель получит уведомление, что заказ выдан. '
@@ -692,6 +710,25 @@ PickupHandoverStep? pickupHandoverStep(Order o) {
     default:
       return null;
   }
+}
+
+/// Why the handover button is absent, for a pickup order that has no step.
+///
+/// Returning null from [pickupHandoverStep] used to make the whole block
+/// disappear with no trace, and the explanation lived four controls below the
+/// fold. A manager who had used the button ten minutes earlier concluded the
+/// app was broken. This lets the caller render the button DISABLED with the
+/// reason directly under it, which is where an error belongs.
+///
+/// Null means "no explanation needed" — either this is a delivery order, or the
+/// status genuinely has no handover step (e.g. `canceled`).
+String? pickupHandoverBlockedReason(Order o) {
+  if (o.fulfillmentType.toLowerCase().trim() != 'pickup') return null;
+  if (o.hasOpenSubstitution) {
+    return 'Ждём ответ покупателя по замене. '
+        'Выдать заказ можно будет после ответа.';
+  }
+  return null;
 }
 
 /// What an orders-list row should show for a given order.
