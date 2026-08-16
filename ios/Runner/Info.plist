@@ -53,5 +53,17 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<!-- Export compliance. FALSE means "uses no NON-EXEMPT encryption".
+	     This app only speaks HTTPS/TLS to its own backend and to the payment
+	     provider, and standard TLS is explicitly exempt under the regulations
+	     Apple points at. It ships no custom crypto.
+
+	     Declaring it here removes the "Missing Compliance" question that App
+	     Store Connect otherwise asks on EVERY upload, which is a manual step
+	     someone has to answer identically each time and can answer wrongly
+	     once. If the app ever adds non-standard encryption, this must be
+	     revisited rather than left as a convenience. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
