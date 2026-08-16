@@ -20,8 +20,24 @@ class DeliveryCubit extends Cubit<DeliveryState> {
 
   /// Wipe in-memory state on logout so the next admin doesn't see the
   /// previous user's pending delivery claim view.
+  /// Every state change goes through here.
+  ///
+  /// This cubit used to be app-wide and immortal, so a bare `emit` was safe.
+  /// `PickupStrayClaimPanel` now creates a ROUTE-SCOPED instance, which is
+  /// closed the moment the manager taps back — while `initByOrder`'s two
+  /// sequential GETs may still be in flight. The late `emit` then throws
+  /// StateError out of an un-awaited Future: not a crash, but Sentry noise
+  /// that looks like a real fault.
+  ///
+  /// A helper rather than 22 hand-written guards, because the one that gets
+  /// forgotten is the one that fires.
+  void _safeEmit(DeliveryState state) {
+    if (isClosed) return;
+    emit(state);
+  }
+
   void reset() {
-    emit(const DeliveryIdle());
+    _safeEmit(const DeliveryIdle());
   }
 
   // String newRequestId() => _uuid.v4();
@@ -37,11 +53,11 @@ class DeliveryCubit extends Cubit<DeliveryState> {
   }
 
   Future<void> initByOrder(int orderId) async {
-    emit(const DeliveryLoading());
+    _safeEmit(const DeliveryLoading());
     try {
       final claim = await repo.getClaimByOrder(orderId);
       final info = await repo.claimInfo(claim.claimId);
-      emit(DeliveryReady(
+      _safeEmit(DeliveryReady(
         orderId: orderId,
         claimId: claim.claimId,
         status: info.status,
@@ -57,33 +73,33 @@ class DeliveryCubit extends Cubit<DeliveryState> {
       // order that may ALREADY have a Yandex claim, inviting the admin
       // to create a duplicate.
       if (e.response?.statusCode == 404) {
-        emit(DeliveryNoClaim(orderId: orderId));
+        _safeEmit(DeliveryNoClaim(orderId: orderId));
       } else {
-        emit(const DeliveryError(
+        _safeEmit(const DeliveryError(
             'Не удалось загрузить заявку на доставку. Проверьте соединение.'));
       }
     } catch (_) {
-      emit(const DeliveryError(
+      _safeEmit(const DeliveryError(
           'Не удалось загрузить заявку на доставку. Проверьте соединение.'));
     }
   }
 
   Future<void> calculate(CalculateDeliveryRequestDto dto) async {
-    emit(const DeliveryLoading());
+    _safeEmit(const DeliveryLoading());
     try {
       final calc = await repo.calculate(dto);
-      emit(DeliveryTariffs(orderId: dto.orderId ?? 0, calc: calc));
+      _safeEmit(DeliveryTariffs(orderId: dto.orderId ?? 0, calc: calc));
     } catch (e) {
-      emit(const DeliveryError('Не удалось рассчитать доставку'));
+      _safeEmit(const DeliveryError('Не удалось рассчитать доставку'));
     }
   }
 
   Future<void> create(CreateClaimRequestDto dto) async {
-    emit(const DeliveryLoading());
+    _safeEmit(const DeliveryLoading());
     try {
       final created = await repo.createClaim(dto);
       final info = await repo.claimInfo(created.claimId);
-      emit(DeliveryReady(
+      _safeEmit(DeliveryReady(
         orderId: dto.orderId,
         claimId: created.claimId,
         status: info.status,
@@ -101,15 +117,15 @@ class DeliveryCubit extends Cubit<DeliveryState> {
       // "something failed", so the natural response was to tap again, which
       // can never succeed. Falls back to the generic message for transport
       // failures and for internal English details.
-      emit(DeliveryError(backendDetail(e) ?? 'Не удалось создать заявку'));
+      _safeEmit(DeliveryError(backendDetail(e) ?? 'Не удалось создать заявку'));
     }
   }
 
   Future<void> refresh(String claimId, int orderId) async {
-    emit(const DeliveryLoading());
+    _safeEmit(const DeliveryLoading());
     try {
       final info = await repo.claimInfo(claimId);
-      emit(DeliveryReady(
+      _safeEmit(DeliveryReady(
         orderId: orderId,
         claimId: claimId,
         status: info.status,
@@ -119,28 +135,28 @@ class DeliveryCubit extends Cubit<DeliveryState> {
         courierLink: null,
       ));
     } catch (_) {
-      emit(const DeliveryError('Не удалось обновить статус'));
+      _safeEmit(const DeliveryError('Не удалось обновить статус'));
     }
   }
 
   Future<void> accept(String claimId, int version, int orderId) async {
-    emit(const DeliveryLoading());
+    _safeEmit(const DeliveryLoading());
     try {
       await repo.accept(claimId, version);
       await refresh(claimId, orderId);
     } catch (_) {
-      emit(const DeliveryError('Не удалось принять заявку'));
+      _safeEmit(const DeliveryError('Не удалось принять заявку'));
     }
   }
 
   Future<void> cancelFlow(String claimId, int version, int orderId) async {
-    emit(const DeliveryLoading());
+    _safeEmit(const DeliveryLoading());
     try {
       final ci = await repo.cancelInfo(claimId);
       await repo.cancel(claimId, version, ci.cancelState);
       await refresh(claimId, orderId);
     } catch (_) {
-      emit(const DeliveryError('Не удалось отменить заявку'));
+      _safeEmit(const DeliveryError('Не удалось отменить заявку'));
     }
   }
 
@@ -150,12 +166,12 @@ class DeliveryCubit extends Cubit<DeliveryState> {
 
     try {
       final url = await repo.courierUrl(orderId);
-      emit(st.copyWith(courierLink: url.link));
+      _safeEmit(st.copyWith(courierLink: url.link));
     } catch (_) {
       // Surface as transient error then go back to the previous Ready state
       // so the operator sees feedback without losing the claim view.
-      emit(const DeliveryError('Не удалось получить ссылку курьера'));
-      emit(st);
+      _safeEmit(const DeliveryError('Не удалось получить ссылку курьера'));
+      _safeEmit(st);
     }
   }
 }

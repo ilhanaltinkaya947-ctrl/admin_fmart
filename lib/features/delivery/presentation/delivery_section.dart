@@ -715,17 +715,39 @@ class _PickupStrayClaimViewState extends State<_PickupStrayClaimView> {
               const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,
+                // After a failure this becomes «Обновить статус», NOT a retry.
+                //
+                // Yandex uses optimistic concurrency: `version` is captured
+                // when the panel loads, and the courier accepting the claim
+                // bumps it. A retry that replays the captured version fails
+                // for exactly the same reason, forever — and because the error
+                // branch never refreshes `_lastLive`, nothing in the panel can
+                // ever recover. The manager's only escape was to leave the
+                // screen, which nobody discovers, while an uncancellable
+                // courier drives to a customer who is not there. That is the
+                // infinite-retry dead end that got 1.9.0 archived.
+                //
+                // It also fixes the opposite face: `cancelFlow` wraps the
+                // cancel AND the follow-up refresh in one try, so a cancel
+                // that SUCCEEDED and then failed to re-read also lands here.
+                // Re-reading resolves that honestly — the claim comes back
+                // terminal and the panel disappears on its own.
                 child: OutlinedButton.icon(
                   onPressed: _cancelling
                       ? null
-                      : () => _confirmAndCancel(live.claimId, live.version),
+                      : failed
+                          ? () => context
+                              .read<DeliveryCubit>()
+                              .initByOrder(widget.orderId)
+                          : () => _confirmAndCancel(live.claimId, live.version),
                   icon: _cancelling
                       ? const SizedBox(
                           width: 16,
                           height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.cancel_outlined, size: 18),
-                  label: Text(failed ? 'Попробовать ещё раз' : 'Отменить курьера'),
+                      : Icon(failed ? Icons.refresh_rounded : Icons.cancel_outlined,
+                          size: 18),
+                  label: Text(failed ? 'Обновить статус' : 'Отменить курьера'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.red,
                     side: const BorderSide(color: Colors.red),
