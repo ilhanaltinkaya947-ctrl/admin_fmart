@@ -765,8 +765,6 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     );
   }
 
-  /// The самовывоз handover control, or an empty list when it does not
-  /// apply. Returned as a list so the caller can spread it into a Column.
   /// How long this bag is still being held, and what to do once it is not.
   ///
   /// Deliberately NOT a blocker. Kiril confirmed the store's process on
@@ -817,6 +815,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     ];
   }
 
+  /// The самовывоз handover control, or an empty list when it does not
+  /// apply. Returned as a list so the caller can spread it into a Column.
   List<Widget> _pickupHandoverBlock(BuildContext context) {
     if (!_isPickup) return const [];
 
@@ -840,6 +840,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         const SizedBox(height: 16),
         const Divider(),
         const SizedBox(height: 12),
+        // The hold notice belongs here too, not only on the unblocked path.
+        // An unanswered replacement is one of the likeliest REASONS a bag sits
+        // past its hold, so this is exactly the combination where the manager
+        // needs both facts: the deadline tells them whether to phone now, and
+        // the substitution notice tells them why the handover is frozen.
+        // Without this the list row goes red while the order screen shows no
+        // deadline at all.
+        ..._pickupHoldNotice(context),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(12),

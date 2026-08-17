@@ -110,12 +110,54 @@ void main() {
     });
   });
 
-  group('copyWith carries the deadline', () {
-    test('a status-only copy keeps the deadline', () {
-      final future = DateTime.now().toUtc().add(const Duration(hours: 3));
-      final o = Order.fromJson(_orderJson(pickupHoldUntil: future.toIso8601String()));
-      final copy = o.copyWith(status: 'ready_for_delivery');
-      expect(copy.pickupHoldUntil, equals(o.pickupHoldUntil));
+  group('a local status change must stop the overdue prompt', () {
+    // This is the one that bites. `pickupHoldUntil` is server-derived and
+    // computed CONDITIONALLY on status, but the app mutates status locally and
+    // optimistically, and copyWith carries the deadline through unconditionally
+    // (it is not even a copyWith parameter). The detail page hides the problem,
+    // because its 8s poll overwrites from server truth. THE LIST HAS NO TIMER,
+    // so the order popped back to it keeps the stale field and the row tells the
+    // cashier to phone a customer who already walked out with their bag.
+    final past = DateTime.now().toUtc().subtract(const Duration(hours: 2));
+
+    Order overdueOrder() =>
+        Order.fromJson(_orderJson(pickupHoldUntil: past.toIso8601String()));
+
+    test('copyWith still carries the field itself', () {
+      final o = overdueOrder();
+      expect(o.copyWith(status: 'ready-for-delivery').pickupHoldUntil,
+          equals(o.pickupHoldUntil),
+          reason: 'the field is not dropped; the GETTER is what gates it');
+    });
+
+    test('handing over stops it being overdue', () {
+      final o = overdueOrder();
+      expect(o.isPickupOverdue, isTrue);
+      expect(o.copyWith(status: 'completed').isPickupOverdue, isFalse,
+          reason: 'a bag just handed over must not say «Позвоните клиенту»');
+    });
+
+    test('cancelling stops it being overdue', () {
+      // The detail page falls back to copyWith(status: 'canceled') when the
+      // post-cancel refetch fails, which on Shymkent 3G is common.
+      expect(overdueOrder().copyWith(status: 'canceled').isPickupOverdue, isFalse);
+    });
+
+    test('refunding stops it being overdue', () {
+      expect(overdueOrder().copyWith(status: 'refunded').isPickupOverdue, isFalse);
+    });
+
+    test('the two hold statuses still report overdue', () {
+      for (final s in ['ready-for-delivery', 'partially-refunded']) {
+        expect(overdueOrder().copyWith(status: s).isPickupOverdue, isTrue,
+            reason: '$s is a genuine hold status and must stay actionable');
+      }
+    });
+
+    test('a pre-counter status never reports overdue', () {
+      for (final s in ['paid', 'processing', 'scheduled']) {
+        expect(overdueOrder().copyWith(status: s).isPickupOverdue, isFalse);
+      }
     });
   });
 }

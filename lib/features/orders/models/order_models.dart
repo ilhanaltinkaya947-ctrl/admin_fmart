@@ -144,9 +144,32 @@ class Order {
   ///
   /// Comparing a possibly-UTC deadline against a local `now` is safe: Dart
   /// compares the underlying instants, not the wall-clock fields.
+  ///
+  /// GATED ON STATUS, and it has to be. `pickupHoldUntil` is server-derived and
+  /// computed CONDITIONALLY on status, but the app mutates status locally and
+  /// optimistically: handing over does `copyWith(status: 'completed')`, and
+  /// cancel, refund and the dropdown save do the same. `copyWith` carries the
+  /// deadline through unconditionally, so without this guard a just-handed-over
+  /// bag keeps a live deadline.
+  ///
+  /// The detail page would hide that, because its 8s poll overwrites from server
+  /// truth. The LIST does not poll at all, and the order popped back to it
+  /// carries the stale field, so the row sits there telling the cashier to phone
+  /// a customer who has already walked out with their bag. It would not heal
+  /// until someone pulled to refresh.
+  ///
+  /// The status set mirrors `PICKUP_HOLD_STATUSES` in order-service
+  /// (`app/domain/fulfillment_presentation.py`). If you change either side,
+  /// change both, and this comment.
+  static const Set<String> _pickupHoldStatuses = {
+    'ready-for-delivery',
+    'partially-refunded',
+  };
+
   bool get isPickupOverdue {
     final until = pickupHoldUntil;
     if (until == null) return false;
+    if (!_pickupHoldStatuses.contains(status.toLowerCase().trim())) return false;
     return DateTime.now().isAfter(until);
   }
 
