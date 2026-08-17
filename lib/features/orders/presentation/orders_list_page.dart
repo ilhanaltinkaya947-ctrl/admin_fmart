@@ -300,6 +300,35 @@ class _OrdersListPageState extends State<OrdersListPage> {
                                 ],
                               ),
                             ],
+                            // The store's overdue cue, on the list and not only
+                            // inside the order. The process Kiril described on
+                            // 2026-08-17 starts with someone NOTICING, and
+                            // nobody opens twenty orders to find the one that
+                            // has been sitting since yesterday.
+                            //
+                            // Renders only on a самовывоз order still waiting at
+                            // the counter, because that is the only case
+                            // order-service sends a deadline for at all.
+                            if (o.isPickupOverdue) ...[
+                              const SizedBox(height: 2),
+                              Row(
+                                children: [
+                                  const Icon(Icons.phone_in_talk,
+                                      size: 12, color: Colors.red),
+                                  const SizedBox(width: 4),
+                                  const Expanded(
+                                    child: Text(
+                                      'Не забрали в срок. Позвоните клиенту.',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.red,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                         isThreeLine: true,

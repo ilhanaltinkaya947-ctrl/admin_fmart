@@ -79,6 +79,16 @@ class Order {
   // manager can sort by urgency / see when each order would naturally
   // release. Parsed leniently; null on rows from before the feature.
   final DateTime? scheduledForAt;
+  // When a самовывоз order stops being held for the customer. Sent by
+  // order-service on both the list and the detail response, computed from the
+  // same history row as the deadline the CUSTOMER sees, so the two can never
+  // disagree about one bag. Never derive it here from a local "+24h": the hold
+  // length is store policy and can change without an app release.
+  //
+  // Non-null only while a pickup order is actually waiting at the counter
+  // (status ready_for_delivery). null on delivery orders, on every other
+  // status, and on rows from before 2026-08-17.
+  final DateTime? pickupHoldUntil;
   // Packaging — surfaced to the picker so they pack the right
   // bag count without guessing. Big bag = 30₸ (handles 7+ items),
   // medium bag = 15₸ (handles up to 6 items). Backend computes
@@ -114,6 +124,7 @@ class Order {
     required this.createdAt,
     required this.updatedAt,
     this.scheduledForAt,
+    this.pickupHoldUntil,
     this.bigBagCount,
     this.mediumBagCount,
     this.packagingSum,
@@ -122,6 +133,22 @@ class Order {
     this.hasPendingSubstitution = false,
     this.pendingSubstitutionExpiresAt,
   });
+
+  /// True once a самовывоз order has sat past its hold deadline.
+  ///
+  /// This is the store's cue to act, not a state the backend tracks: Kiril
+  /// confirmed on 2026-08-17 that at hour 25 the старший кассир phones the
+  /// customer, and cancels only if they cannot be reached or decline. So an
+  /// overdue order is still perfectly collectable, and nothing here may block
+  /// the handover because of it.
+  ///
+  /// Comparing a possibly-UTC deadline against a local `now` is safe: Dart
+  /// compares the underlying instants, not the wall-clock fields.
+  bool get isPickupOverdue {
+    final until = pickupHoldUntil;
+    if (until == null) return false;
+    return DateTime.now().isAfter(until);
+  }
 
   /// The open (still-awaiting-customer) proposal for [itemId], if any.
   OrderSubstitution? openSubstitutionForItem(int itemId) {
@@ -189,6 +216,9 @@ class Order {
     isPromo: j['is_promo'] as bool? ?? false,
     createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ?? DateTime.now(),
     updatedAt: DateTime.tryParse(j['updated_at']?.toString() ?? '') ?? DateTime.now(),
+    pickupHoldUntil: j['pickup_hold_until'] != null
+        ? DateTime.tryParse(j['pickup_hold_until'].toString())
+        : null,
     scheduledForAt: j['scheduled_for_at'] != null
         ? DateTime.tryParse(j['scheduled_for_at'].toString())
         : null,
@@ -250,6 +280,7 @@ class Order {
         createdAt: createdAt,
         updatedAt: updatedAt,
         scheduledForAt: scheduledForAt,
+        pickupHoldUntil: pickupHoldUntil,
         bigBagCount: bigBagCount ?? this.bigBagCount,
         mediumBagCount: mediumBagCount ?? this.mediumBagCount,
         packagingSum: packagingSum ?? this.packagingSum,

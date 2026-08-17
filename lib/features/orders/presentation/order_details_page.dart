@@ -767,6 +767,56 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
   /// The самовывоз handover control, or an empty list when it does not
   /// apply. Returned as a list so the caller can spread it into a Column.
+  /// How long this bag is still being held, and what to do once it is not.
+  ///
+  /// Deliberately NOT a blocker. Kiril confirmed the store's process on
+  /// 2026-08-17: at hour 25 the старший кассир phones the customer and only
+  /// cancels if they cannot be reached or decline. So an expired hold is a
+  /// prompt to call, not an invalid order, and «Выдать заказ» stays live
+  /// underneath this. Graying the button out here would strand a customer who
+  /// turned up on hour 25 with the cashier unable to hand over their own bag.
+  ///
+  /// Only ever renders on a ready-for-collection самовывоз order, because that
+  /// is the only case where order-service sends the deadline at all.
+  List<Widget> _pickupHoldNotice(BuildContext context) {
+    final until = _order.pickupHoldUntil;
+    if (until == null) return const [];
+
+    final when = DateFormat('HH:mm, d MMM', 'ru').format(until.toLocal());
+    final overdue = _order.isPickupOverdue;
+    final color = overdue ? Colors.red : Colors.blueGrey;
+
+    return [
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.45)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(overdue ? Icons.phone_in_talk : Icons.schedule,
+                size: 18, color: color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                overdue
+                    ? 'Срок хранения истёк $when. Позвоните клиенту и уточните, '
+                        'будет ли он забирать заказ.'
+                    : 'Храним заказ до $when.',
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+    ];
+  }
+
   List<Widget> _pickupHandoverBlock(BuildContext context) {
     if (!_isPickup) return const [];
 
@@ -820,6 +870,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       const SizedBox(height: 16),
       const Divider(),
       const SizedBox(height: 12),
+      ..._pickupHoldNotice(context),
       SizedBox(
         height: 52,
         child: ElevatedButton.icon(
