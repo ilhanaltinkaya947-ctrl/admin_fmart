@@ -16,6 +16,21 @@ const _activeStatusCodes = {
   'processing',
   'ready-for-delivery',
   'delivering',
+  // Moved out of «Закрытые» on 2026-08-17. order-service's own state machine
+  // says it plainly — "Partial refund is not terminal, the rest of the order
+  // still ships" — and it allows partially-refunded to go on to processing,
+  // ready-for-delivery, delivering or completed. Filing it under closed
+  // contradicted the backend.
+  //
+  // It matters most on самовывоз. About a tenth of orders here lose a line to
+  // phantom stock, so a bag waiting at the counter has often already had one
+  // line refunded, and that refund moved the order off the tab managers
+  // actually work from. The overdue cue would have been invisible for exactly
+  // the cohort it was built for.
+  //
+  // Partially refunded DELIVERY orders now appear here too. That is the same
+  // correction, not a side effect: one of those is still out for delivery.
+  'partially-refunded',
 };
 
 const _closedStatusCodes = {
@@ -23,7 +38,6 @@ const _closedStatusCodes = {
   'completed',
   'canceled',
   'refunded',
-  'partially-refunded',
   'payment-failed',
   // Abandoned-3DS orders (status id 12, «Оплата не завершена»). Without this
   // they matched no tab and were invisible to managers in the list.

@@ -54,6 +54,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // checkbox spins instead of double-firing on a second tap.
   final Set<int> _pickBusy = <int>{};
 
+  /// When a local mutation last COMMITTED.
+  ///
+  /// The busy-flag guards only cover a poll that returns while the write is
+  /// still in flight. The common race is the other one: a GET issued a moment
+  /// BEFORE the tap returns a moment AFTER the write committed, by which point
+  /// every busy flag has already been cleared, so the guards wave through a
+  /// pre-write snapshot. The picker watches the box they just ticked untick
+  /// itself, and eight seconds later it heals.
+  ///
+  /// Any poll that STARTED before this stamp is stale by definition and must
+  /// not be applied. Covers picks, quantity changes and item removal in one
+  /// rule rather than one flag per action.
+  DateTime? _lastLocalWriteAt;
+
   final _timelineKey = GlobalKey<OrderTimelineSectionState>();
 
   // Refund history — populated only when the order has ever been refunded.
@@ -293,7 +307,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// in-flight change.
   Future<void> _pollOrder() async {
     if (!mounted) return;
-    if (_saving || _actionLoading || _itemBusy.isNotEmpty) return;
+    if (_saving || _actionLoading || _itemBusy.isNotEmpty || _pickBusy.isNotEmpty) return;
     // _handingOver: a GET already in flight when the POST commits returns the
     // PRE-write snapshot, so `_order = fresh` rolls the status back seconds
     // after the green success toast and the button flips to its previous label.
@@ -316,11 +330,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
     try {
       final repo = context.read<OrdersRepository>();
+      final pollStartedAt = DateTime.now();
       final fresh = await repo.getOrderById(
         storeId: storeState.storeId,
         orderId: _order.id,
       );
       if (fresh == null || !mounted) return;
+
+      // Stale-response guard. See _lastLocalWriteAt: a write that committed
+      // after this GET went out means this snapshot predates it, and applying
+      // it would undo work the operator watched succeed.
+      final lastWrite = _lastLocalWriteAt;
+      if (lastWrite != null && lastWrite.isAfter(pollStartedAt)) return;
       // Re-checked AFTER the await, not only before it. The entry guard at the
       // top runs when this tick STARTS; a poll that was already sitting in this
       // GET when the manager tapped «Выдать» would otherwise apply its
@@ -342,6 +363,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           _saving ||
           _actionLoading ||
           _itemBusy.isNotEmpty ||
+          _pickBusy.isNotEmpty ||
           _substituteSheetOpen ||
           _confirmOpen) {
         return;
@@ -765,6 +787,56 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     );
   }
 
+  /// How long this bag is still being held, and what to do once it is not.
+  ///
+  /// Deliberately NOT a blocker. Kiril confirmed the store's process on
+  /// 2026-08-17: at hour 25 the старший кассир phones the customer and only
+  /// cancels if they cannot be reached or decline. So an expired hold is a
+  /// prompt to call, not an invalid order, and «Выдать заказ» stays live
+  /// underneath this. Graying the button out here would strand a customer who
+  /// turned up on hour 25 with the cashier unable to hand over their own bag.
+  ///
+  /// Only ever renders on a ready-for-collection самовывоз order, because that
+  /// is the only case where order-service sends the deadline at all.
+  List<Widget> _pickupHoldNotice(BuildContext context) {
+    final until = _order.pickupHoldUntil;
+    if (until == null) return const [];
+
+    final when = DateFormat('HH:mm, d MMM', 'ru').format(until.toLocal());
+    final overdue = _order.isPickupOverdue;
+    final color = overdue ? Colors.red : Colors.blueGrey;
+
+    return [
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.45)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(overdue ? Icons.phone_in_talk : Icons.schedule,
+                size: 18, color: color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                overdue
+                    ? 'Срок хранения истёк $when. Позвоните клиенту и уточните, '
+                        'будет ли он забирать заказ.'
+                    : 'Храним заказ до $when.',
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+    ];
+  }
+
   /// The самовывоз handover control, or an empty list when it does not
   /// apply. Returned as a list so the caller can spread it into a Column.
   List<Widget> _pickupHandoverBlock(BuildContext context) {
@@ -790,6 +862,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         const SizedBox(height: 16),
         const Divider(),
         const SizedBox(height: 12),
+        // The hold notice belongs here too, not only on the unblocked path.
+        // An unanswered replacement is one of the likeliest REASONS a bag sits
+        // past its hold, so this is exactly the combination where the manager
+        // needs both facts: the deadline tells them whether to phone now, and
+        // the substitution notice tells them why the handover is frozen.
+        // Without this the list row goes red while the order screen shows no
+        // deadline at all.
+        ..._pickupHoldNotice(context),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(12),
@@ -820,6 +900,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       const SizedBox(height: 16),
       const Divider(),
       const SizedBox(height: 12),
+      ..._pickupHoldNotice(context),
       SizedBox(
         height: 52,
         child: ElevatedButton.icon(
@@ -973,7 +1054,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
-      _showErrorWithRetry(e.message, _cancelOrder);
+      _showMoneyPathError(e, _cancelOrder, 'Не удалось отменить заказ');
     } catch (_) {
       if (!mounted) return;
       _showErrorWithRetry('Не удалось отменить заказ', _cancelOrder);
@@ -1383,7 +1464,89 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // Don't race a packaging save — both recompute the order total server-side,
     // and interleaving them can leave a stale total on screen until the poll.
     if (_saving) return;
+
+    // This stepper MOVES MONEY and used to do it silently.
+    //
+    // order-service refunds on any decrease ("Only a DECREASE refunds", clamped
+    // to remaining refundable, its own idempotency key). The button that fired
+    // it was a 36pt «−» with no confirm, no amount and no acknowledgement: the
+    // operator saw a spinner, then a smaller number. Meanwhile the manual
+    // «Возврат» two sections up demands an amount, a reason, a confirm and the
+    // words «нельзя отменить». Same money, two completely different levels of
+    // ceremony, and the one with no ceremony is the one a picker uses on every
+    // out-of-stock line.
+    //
+    // Items are only editable on «Оплачен» and «В обработке», both post-payment,
+    // so on a decrease the money has always been taken and always comes back.
+    final oldQty = item.qty;
+    final unit = num.tryParse(item.price) ?? 0;
+    final delta = oldQty - newQty;
+
+    if (delta > 0) {
+      final refundText = formatTenge(unit * delta);
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Уменьшить количество?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.product.name ?? 'Товар ${item.productId}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              Text('Было $oldQty шт, станет $newQty шт'),
+              const SizedBox(height: 12),
+              Text(
+                'Покупателю вернём $refundText на карту. '
+                'Обычно приходит за 1 до 3 дней. Отменить это нельзя.',
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('Назад'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: Text('Уменьшить и вернуть $refundText'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    } else if (newQty > oldQty) {
+      // An increase charges the customer NOTHING, so the extra units are given
+      // away. Worth one tap of friction so it is a decision, not a fat finger.
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Увеличить количество?'),
+          content: Text(
+            '${item.product.name ?? 'Товар ${item.productId}'}\n'
+            'Было $oldQty шт, станет $newQty шт.\n\n'
+            'Покупатель за добавленный товар не платил, доплату мы не берём.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('Назад'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('Увеличить'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+
     setState(() => _itemBusy.add(item.id));
+    _lastLocalWriteAt = DateTime.now();
     try {
       final repo = context.read<OrdersRepository>();
       final res = await repo.updateItemQty(
@@ -1409,6 +1572,24 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         );
       });
       _timelineKey.currentState?.refresh();
+      if (mounted && delta > 0) {
+        // Describes the ACTION, not the money.
+        //
+        // This used to say «Вернули X ₸ покупателю» using the app's own
+        // arithmetic, which is a claim the app cannot support. Three ways it
+        // diverges from what actually happens: OrderItemEditResult carries no
+        // refund amount at all; the backend clamps the refund to the order
+        // total, which a promo can put below the line value; and the ledger
+        // row is written and published before the gateway is even attempted,
+        // so payment-service can still refuse it without anything walking the
+        // status back. Staff repeat these sentences to a customer standing in
+        // front of them, so it must not assert money that may not move.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Количество изменено, возврат отправлен на обработку'),
+          ),
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1569,19 +1750,46 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       return;
     }
 
+    // The dialog has to say that MONEY MOVES.
+    //
+    // Removing a paid-for item always refunds its full line value server-side,
+    // and items are only removable on «Оплачен» and «В обработке», both of
+    // which are post-payment. The old body was just the product name, so the
+    // operator was told nothing about a refund landing on a customer card. The
+    // cancel dialog two sections up was deliberately rewritten to name the
+    // money; the two most similar actions on this screen told the operator two
+    // different stories.
+    final refundText = formatTenge(item.total);
     final confirm = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('Удалить товар?'),
-        content: Text(item.product.name ?? 'Товар ${item.productId}'),
+        title: const Text('Убрать товар из заказа?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              item.product.name ?? 'Товар ${item.productId}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            Text('${item.qty} шт'),
+            const SizedBox(height: 12),
+            Text(
+              'Покупателю вернём $refundText на карту. '
+              'Обычно приходит за 1 до 3 дней. '
+              'Вернуть товар обратно в заказ будет нельзя.',
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(c).pop(false),
-            child: const Text('Нет'),
+            child: const Text('Назад'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('Удалить'),
+            child: Text('Убрать и вернуть $refundText'),
           ),
         ],
       ),
@@ -1590,6 +1798,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     if (!mounted) return;
 
     setState(() => _itemBusy.add(item.id));
+    _lastLocalWriteAt = DateTime.now();
     try {
       final repo = context.read<OrdersRepository>();
       final res = await repo.removeItem(
@@ -1608,6 +1817,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         );
       });
       _timelineKey.currentState?.refresh();
+      if (mounted) {
+        // Same reasoning as the quantity toast: state the action, not the
+        // amount. The confirm dialog above still names the figure, because
+        // there it is what the operator is agreeing to rather than a result.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Убрали товар, возврат отправлен на обработку'),
+          ),
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1621,6 +1840,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   Future<void> _setItemPicked(OrderItem item, bool picked) async {
     if (_pickBusy.contains(item.id)) return;
     setState(() => _pickBusy.add(item.id));
+    _lastLocalWriteAt = DateTime.now();
     try {
       final repo = context.read<OrdersRepository>();
       final res = await repo.setItemPicked(
@@ -1645,6 +1865,37 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } finally {
       if (mounted) setState(() => _pickBusy.remove(item.id));
+    }
+  }
+
+
+  /// Show a MONEY-path failure without leaking backend text, and without
+  /// offering a retry the server has already refused.
+  ///
+  /// operatorSafeDetail existed and was wired at exactly one call site
+  /// (_pickupAdvance). Refund and cancel, the two paths where staff read the
+  /// message aloud to a customer standing in front of them, passed e.message
+  /// straight through. That surfaced things like
+  ///   "Refund 9000.00 exceeds remaining refundable 4000.00 (order total ...)"
+  /// in English, above a «Повторить» button that replays the identical
+  /// rejected request with the same idempotency key and fails identically,
+  /// forever.
+  ///
+  /// A 409/404/400 is a decision, not a glitch: usually a colleague on another
+  /// iPad got there first. The honest response is to refresh, not to retry.
+  void _showMoneyPathError(
+    OrdersApiException e,
+    Future<void> Function() retry,
+    String fallback,
+  ) {
+    final detail = operatorSafeDetail(e.message, e.statusCode);
+    final code = e.statusCode;
+    if (detail != null) {
+      _showErrorWithRetry(detail, retry);
+    } else if (code == 409 || code == 404 || code == 400) {
+      _showError('Заказ уже изменился. Обновите экран.');
+    } else {
+      _showErrorWithRetry(fallback, retry);
     }
   }
 
@@ -1696,13 +1947,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
-      _showErrorWithRetry(
-        e.message,
+      _showMoneyPathError(
+        e,
         () => _refundOrder(
           amount: amount,
           reason: reason,
           idempotencyKey: idempotencyKey,
         ),
+        'Не удалось оформить возврат',
       );
     } catch (_) {
       if (!mounted) return;
