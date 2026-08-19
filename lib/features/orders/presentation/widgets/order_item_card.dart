@@ -205,9 +205,11 @@ class _QtyStepper extends StatelessWidget {
             icon: const Icon(Icons.remove),
             iconSize: 18,
             visualDensity: VisualDensity.compact,
+            // 44 is the platform minimum. These are used one-handed, standing,
+            // pushing a trolley, and the left one moves money.
             constraints: const BoxConstraints(
-              minWidth: 36,
-              minHeight: 36,
+              minWidth: 44,
+              minHeight: 44,
             ),
             padding: EdgeInsets.zero,
           ),
@@ -233,9 +235,11 @@ class _QtyStepper extends StatelessWidget {
             icon: const Icon(Icons.add),
             iconSize: 18,
             visualDensity: VisualDensity.compact,
+            // 44 is the platform minimum. These are used one-handed, standing,
+            // pushing a trolley, and the left one moves money.
             constraints: const BoxConstraints(
-              minWidth: 36,
-              minHeight: 36,
+              minWidth: 44,
+              minHeight: 44,
             ),
             padding: EdgeInsets.zero,
           ),
