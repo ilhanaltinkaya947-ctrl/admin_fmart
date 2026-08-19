@@ -70,6 +70,10 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   late final NewOrderCounter _newOrderCounter;
   OrderWatcher? _watcher;
 
+  /// Which store [_watcher] was built for. A watcher only carries valid
+  /// dedupe state for the store it was created against.
+  int? _watcherStoreId;
+
   // A notification tap that arrived before the app was ready to navigate
   // (cold start: SDK click event fires before the navigator + auth exist).
   // Replayed once the app reaches Authenticated. Latest-tap-wins.
@@ -265,8 +269,33 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     final storeId = await _prefsStorage.getSelectedStoreId();
     if (storeId == null) return;
 
-    // Stop the previous watcher before creating a new one to prevent timer leak.
+    // REUSE the watcher when the store has not changed.
+    //
+    // This is called on every resume, and it used to stop and RECONSTRUCT,
+    // which threw away the watcher's memory of what it had already alarmed
+    // for. On an iPad that is locked and unlocked dozens of times a shift,
+    // an order still sitting in `paid` re-alarmed on every single unlock:
+    // looping siren plus a full-screen, non-dismissible dialog, again and
+    // again, until somebody moved the order out of `paid`. The server
+    // legitimately keeps returning it, so nothing downstream can save us;
+    // the dedupe list is the only thing that does, and it lived on the
+    // instance being destroyed.
+    //
+    // That is worse than an annoyance. This is the one alert channel the
+    // store has to trust, and an alarm that cries wolf on every unlock
+    // teaches staff to mute it, which is exactly when a real order is missed.
+    //
+    // start() is safe on a live watcher: it cancels and restarts the timer
+    // and ticks immediately, but leaves the dedupe list and the cursor alone.
+    if (_watcher != null && _watcherStoreId == storeId) {
+      _watcher!.start(interval: const Duration(seconds: 10));
+      return;
+    }
+
+    // Store actually changed (or first start). Now a fresh watcher is correct:
+    // the dedupe list refers to another store's orders.
     await _watcher?.stop();
+    _watcherStoreId = storeId;
 
     _watcher = OrderWatcher(
       prefsStorage: _prefsStorage,
@@ -285,6 +314,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   Future<void> _stopWatcher() async {
     await _watcher?.stop();
     _watcher = null;
+    _watcherStoreId = null;
   }
 
   @override
