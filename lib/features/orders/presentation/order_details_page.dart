@@ -1054,7 +1054,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
-      _showErrorWithRetry(e.message, _cancelOrder);
+      _showMoneyPathError(e, _cancelOrder, 'Не удалось отменить заказ');
     } catch (_) {
       if (!mounted) return;
       _showErrorWithRetry('Не удалось отменить заказ', _cancelOrder);
@@ -1573,9 +1573,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       });
       _timelineKey.currentState?.refresh();
       if (mounted && delta > 0) {
+        // Describes the ACTION, not the money.
+        //
+        // This used to say «Вернули X ₸ покупателю» using the app's own
+        // arithmetic, which is a claim the app cannot support. Three ways it
+        // diverges from what actually happens: OrderItemEditResult carries no
+        // refund amount at all; the backend clamps the refund to the order
+        // total, which a promo can put below the line value; and the ledger
+        // row is written and published before the gateway is even attempted,
+        // so payment-service can still refuse it without anything walking the
+        // status back. Staff repeat these sentences to a customer standing in
+        // front of them, so it must not assert money that may not move.
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Вернули ${formatTenge(unit * delta)} покупателю'),
+          const SnackBar(
+            content: Text('Количество изменено, возврат отправлен на обработку'),
           ),
         );
       }
@@ -1807,8 +1818,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       });
       _timelineKey.currentState?.refresh();
       if (mounted) {
+        // Same reasoning as the quantity toast: state the action, not the
+        // amount. The confirm dialog above still names the figure, because
+        // there it is what the operator is agreeing to rather than a result.
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Убрали товар, вернули $refundText покупателю')),
+          const SnackBar(
+            content: Text('Убрали товар, возврат отправлен на обработку'),
+          ),
         );
       }
     } catch (_) {
@@ -1849,6 +1865,37 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } finally {
       if (mounted) setState(() => _pickBusy.remove(item.id));
+    }
+  }
+
+
+  /// Show a MONEY-path failure without leaking backend text, and without
+  /// offering a retry the server has already refused.
+  ///
+  /// operatorSafeDetail existed and was wired at exactly one call site
+  /// (_pickupAdvance). Refund and cancel, the two paths where staff read the
+  /// message aloud to a customer standing in front of them, passed e.message
+  /// straight through. That surfaced things like
+  ///   "Refund 9000.00 exceeds remaining refundable 4000.00 (order total ...)"
+  /// in English, above a «Повторить» button that replays the identical
+  /// rejected request with the same idempotency key and fails identically,
+  /// forever.
+  ///
+  /// A 409/404/400 is a decision, not a glitch: usually a colleague on another
+  /// iPad got there first. The honest response is to refresh, not to retry.
+  void _showMoneyPathError(
+    OrdersApiException e,
+    Future<void> Function() retry,
+    String fallback,
+  ) {
+    final detail = operatorSafeDetail(e.message, e.statusCode);
+    final code = e.statusCode;
+    if (detail != null) {
+      _showErrorWithRetry(detail, retry);
+    } else if (code == 409 || code == 404 || code == 400) {
+      _showError('Заказ уже изменился. Обновите экран.');
+    } else {
+      _showErrorWithRetry(fallback, retry);
     }
   }
 
@@ -1900,13 +1947,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
-      _showErrorWithRetry(
-        e.message,
+      _showMoneyPathError(
+        e,
         () => _refundOrder(
           amount: amount,
           reason: reason,
           idempotencyKey: idempotencyKey,
         ),
+        'Не удалось оформить возврат',
       );
     } catch (_) {
       if (!mounted) return;
