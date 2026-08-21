@@ -11,6 +11,7 @@ import '../../../core/format/address.dart';
 import '../../../core/format/money.dart';
 import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
+import '../models/refundable.dart';
 import 'substitution_sheets.dart';
 import '_sub_tokens.dart';
 import '../models/order_models.dart';
@@ -654,20 +655,44 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     if (_refundSheetOpen || _actionLoading) return;
     setState(() => _refundSheetOpen = true);
 
-    final total = _parseMoney(_order.totalAmount);
-
-    // On a partially-refunded order the modal must validate + pre-fill
-    // against the REMAINING balance, not the full order total — otherwise a
-    // manager can accidentally re-refund the whole order. _refunds is the
-    // client-side refund history (loaded whenever the order was ever
-    // refunded); summing its amounts gives what's already been returned.
+    // The ceiling is what we CHARGED, not what the order is worth now.
+    //
+    // totalAmount is mutable: a substitution or an item edit runs
+    // recalculate_order_totals on the backend and rewrites it, so on a
+    // partially-refunded order it is ALREADY net of that refund. Subtracting
+    // the refund history from it removes the same money twice — and the figure
+    // below is both shown to the manager AND prefilled into the amount field,
+    // so the short refund gets confirmed with nothing on screen to reveal it.
+    // Measured in production: orders 392 and 424 were hand-refunded from this
+    // screen and landed 20 ₸ and 55 ₸ light, each time by exactly the size of
+    // the earlier substitution refund.
+    //
+    // capturedAmount is frozen at capture and never moves. Fall back to
+    // totalAmount when the backend did not send it (older backend, or an order
+    // captured before the column existed): that reproduces the previous
+    // behaviour instead of offering no refund at all.
+    // _refunds is the client-side refund history (loaded whenever the order was
+    // ever refunded); summing its amounts gives what has already been returned.
     // The backend still enforces the true ceiling server-side (the dedupe +
-    // over-refund guard), so this is a UX guard, not the source of truth.
-    // NOTE: a backend `refunded_total` field on the order would be a cleaner
-    // single source than summing history rows — worth adding server-side.
+    // over-refund guard, now judged against this same captured figure), so this
+    // stays a UX guard, not the source of truth.
     final alreadyRefunded = _refunds.fold<double>(0.0, (s, r) => s + r.amount);
-    final remainingRaw = total - alreadyRefunded;
-    final remaining = remainingRaw < 0 ? 0.0 : remainingRaw;
+
+    // The rule itself lives in refundable.dart, pure and unit-tested against
+    // the five production orders it got wrong. Money arithmetic buried in a
+    // widget cannot be tested, and this one was wrong for months.
+    final ceiling = refundCeiling(
+      capturedAmount: _order.capturedAmount,
+      totalAmount: _order.totalAmount,
+      alreadyRefunded: alreadyRefunded,
+    );
+    final remaining = ceiling.remaining;
+    // The header sum must be the SAME basis the remaining figure is measured
+    // against, or the three numbers on screen do not reconcile: order 396 would
+    // read «Сумма заказа 2785» / «Возвращено 2785» / «Осталось вернуть 230»,
+    // which adds up to nothing a manager can check. On the captured basis it
+    // reads 3015 / 2785 / 230 and the arithmetic is visible.
+    final total = ceiling.basis;
 
     final amountCtrl =
         TextEditingController(text: remaining.toStringAsFixed(2));
@@ -1241,11 +1266,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
       if (!mounted) return;
       if (res.success) {
-        final orderTotal = _parseMoney(_order.totalAmount);
+        // Against the CAPTURED amount, for the same reason the sheet sizes the
+        // refund against it: totalAmount has already been shrunk by any earlier
+        // substitution refund, so a close-out compared against it looks like it
+        // overshot and the order was labelled 'partially-refunded' when it was
+        // fully refunded. Matches what the backend now writes.
+        final orderTotal = refundCeiling(
+          capturedAmount: _order.capturedAmount,
+          totalAmount: _order.totalAmount,
+          alreadyRefunded: 0.0,
+        ).basis;
         // Compare the CUMULATIVE refunded amount (prior history + this one)
-        // against the order total — a second partial refund that closes out
-        // the order must flip it to 'refunded', not leave it stuck in
-        // 'partially-refunded'. (Optimistic; the 8s poll reconciles anyway.)
+        // against it — a second partial refund that closes out the order must
+        // flip it to 'refunded', not leave it stuck in 'partially-refunded'.
+        // (Optimistic; the 8s poll reconciles anyway.)
         final priorRefunded =
             _refunds.fold<double>(0.0, (s, r) => s + r.amount);
         final newStatus = (priorRefunded + amount + 0.0001 >= orderTotal)
