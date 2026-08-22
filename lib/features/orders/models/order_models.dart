@@ -51,6 +51,20 @@ class Order {
   final int customerId;
   final String status;
   final String totalAmount;
+
+  /// What was actually CHARGED, frozen by the backend at capture.
+  ///
+  /// [totalAmount] is NOT this. A substitution or an item edit rewrites
+  /// totalAmount, so on a partially-refunded order it is already net of that
+  /// refund — sizing "Осталось вернуть" as `totalAmount - alreadyRefunded`
+  /// subtracts the same money twice and prefills the refund field short by
+  /// exactly the earlier refund. That is how orders 392 and 424 were
+  /// hand-refunded 20 ₸ and 55 ₸ light from this very screen.
+  ///
+  /// Null on orders captured before the backend column existed. Callers must
+  /// fall back to [totalAmount], never treat null as zero.
+  final String? capturedAmount;
+
   final String deliverySum;
 
   final double shippingLat;
@@ -111,6 +125,7 @@ class Order {
     required this.customerId,
     required this.status,
     required this.totalAmount,
+    this.capturedAmount,
     required this.deliverySum,
     required this.shippingLat,
     required this.shippingLng,
@@ -217,6 +232,9 @@ class Order {
     customerId: j['customer_id'] as int? ?? 0,
     status: j['status'] as String? ?? '',
     totalAmount: j['total_amount']?.toString() ?? '0',
+    // Absent on older backends and null on orders that were never captured —
+    // both stay null here so the refund sheet can fall back to totalAmount.
+    capturedAmount: j['captured_amount']?.toString(),
     deliverySum: j['delivery_sum']?.toString() ?? '0',
     shippingLat: _toDouble(j['shipping_lat']),
     shippingLng: _toDouble(j['shipping_lng']),
@@ -279,6 +297,10 @@ class Order {
         customerId: customerId,
         status: status ?? this.status,
         totalAmount: totalAmount ?? this.totalAmount,
+        // Deliberately NOT overridable. The captured amount is immutable by
+        // definition; an item edit that returns a new totalAmount must never
+        // be able to move it, or the refund ceiling drifts with the order.
+        capturedAmount: capturedAmount,
         deliverySum: deliverySum,
         shippingLat: shippingLat,
         shippingLng: shippingLng,
