@@ -1526,7 +1526,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               const SizedBox(height: 12),
               Text(
                 'Покупателю вернём $refundText на карту. '
-                'Обычно приходит за 1 до 3 дней. Отменить это нельзя.',
+                'Обычно от 1 до 3 рабочих дней. Отменить это нельзя.',
               ),
             ],
           ),
@@ -1802,7 +1802,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             const SizedBox(height: 12),
             Text(
               'Покупателю вернём $refundText на карту. '
-              'Обычно приходит за 1 до 3 дней. '
+              'Обычно от 1 до 3 рабочих дней. '
               'Вернуть товар обратно в заказ будет нельзя.',
             ),
           ],
