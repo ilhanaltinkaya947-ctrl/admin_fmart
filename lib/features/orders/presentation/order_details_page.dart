@@ -13,6 +13,7 @@ import '../../../core/format/address.dart';
 import '../../../core/format/money.dart';
 import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
+import '../models/payment_method_label.dart';
 import '../models/refundable.dart';
 import 'substitution_sheets.dart';
 import '_sub_tokens.dart';
@@ -2149,6 +2150,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             const Text('Самовывоз, доставки нет')
           else
             Text('Доставка: ${formatTenge(_parseMoney(_order.deliverySum))}'),
+          // Which rail took the money. Deliberately AFTER the Сумма/Доставка
+          // pair — the comment above spells out why those two must stay
+          // adjacent, so this does not go between them.
+          //
+          // `payment_method` has carried `epay` since the Halyk rail went live
+          // and the model parsed it all along, but nothing rendered it, so an
+          // ePay order and a card order were indistinguishable here. The two
+          // rails fail in different ways and a manager chasing a stuck refund
+          // has to know which gateway to ask about.
+          if (paymentMethodLabel(_order.paymentMethod) != null) ...[
+            const SizedBox(height: 4),
+            _PaymentMethodRow(method: _order.paymentMethod),
+          ],
           // Customer-picked delivery slot or off-hours scheduled time.
           // Picker needs this to plan their day — when a customer chose
           // «к 17:00» from the in-app slot picker, the assembler must
@@ -3065,6 +3079,48 @@ class _StepperBtn extends StatelessWidget {
 }
 
 /// «К доставке: 17:00 (Сегодня)» row. Shown on order details whenever
+/// «Оплата: Halyk ePay» — which rail actually took the money.
+///
+/// An unrecognised token is echoed verbatim and styled as unknown rather than
+/// guessed at. Inventing «Карта» for a value we do not recognise reads as fact
+/// and would send a manager to the wrong gateway during a refund.
+class _PaymentMethodRow extends StatelessWidget {
+  final String method;
+
+  const _PaymentMethodRow({required this.method});
+
+  @override
+  Widget build(BuildContext context) {
+    final label = paymentMethodLabel(method);
+    if (label == null) return const SizedBox.shrink();
+    final known = isKnownPaymentMethod(method);
+
+    return Row(
+      children: [
+        const Text('Оплата: '),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: known ? Colors.blue.shade50 : Colors.grey.shade200,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: known ? Colors.blue.shade200 : Colors.grey.shade400,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: known ? Colors.blue.shade900 : Colors.grey.shade800,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// the customer picked a specific delivery slot OR the order was
 /// auto-scheduled for off-hours. Picker needs this front-and-center to
 /// plan their batch order — the orders list shows it conditionally,
