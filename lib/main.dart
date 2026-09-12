@@ -83,12 +83,16 @@ Future<void> main() async {
     (options) {
       options.dsn = _sentryDsn;
       options.environment = _sentryEnv;
-      // Tagged so releases can be filtered in Sentry. Passed via
-      // --dart-define=SENTRY_RELEASE=admin@1.0.0+14 at build time.
-      options.release = const String.fromEnvironment(
-        'SENTRY_RELEASE',
-        defaultValue: 'unknown',
-      );
+      // Release tag. Only override when a real value is passed at build time;
+      // otherwise leave it unset so sentry_flutter auto-detects it from package
+      // info (bundleId@version+build) — always correct. The old hand-maintained
+      // SENTRY_RELEASE was stuck at 1.0.0+18 while the app shipped 1.1.x, so
+      // every crash was mislabeled under an ancient build (fixed 2026-08-02).
+      const sentryRelease =
+          String.fromEnvironment('SENTRY_RELEASE', defaultValue: '');
+      if (sentryRelease.isNotEmpty && sentryRelease != 'unknown') {
+        options.release = sentryRelease;
+      }
       options.tracesSampleRate = 0.1;
       options.attachScreenshot = false;
       options.attachViewHierarchy = false;
