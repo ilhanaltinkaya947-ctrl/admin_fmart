@@ -1,14 +1,38 @@
 #include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
 #include "Generated.xcconfig"
 
-// Dart-defines baked into release archives so Xcode Product → Archive
-// works without needing CLI flags. Base64 of comma-joined KEY=VALUE pairs:
-//   SENTRY_DSN=https://8734faaad83a8d8794a350af206a6e20@…/4511363319922768
+// Dart-defines baked into release archives so Xcode Product → Archive works
+// without needing CLI flags.
+//
+// 🔴 FORMAT — base64 EACH PAIR SEPARATELY, then join with commas. It is NOT
+// one base64 of a comma-joined string. Flutter splits on ',' FIRST and only
+// then base64-decodes each item:
+//   flutter_tools/lib/src/build_info.dart  decodeDartDefines()
+//     value.split(',').map(base64.decoder.fuse(utf8.decoder).convert)
+//
+// Getting this backwards does not fail loudly. One base64 blob is a single
+// item, so Dart received ONE define whose key was SENTRY_DSN and whose value
+// was the entire rest of the string:
+//   SENTRY_DSN=https://…/4511363319922768,SENTRY_ENVIRONMENT=production
+// Dsn.parse() does not throw on that — pathSegments is non-empty, so projectId
+// became "4511363319922768,SENTRY_ENVIRONMENT=production" and every event was
+// POSTed to
+//   https://…/api/4511363319922768,SENTRY_ENVIRONMENT=production/envelope/
+// and dropped. SENTRY_ENVIRONMENT was never defined at all. The app ran
+// perfectly and reported nothing. main.dart's release guard did not catch it
+// because it checks that the DSN is non-EMPTY, not that it is VALID.
+// Found 2026-09-12 from build 1.1.10+52. See test/sentry_dart_defines_test.dart.
+//
+// Pairs baked here:
+//   SENTRY_DSN=https://…@o4510984328249344.ingest.de.sentry.io/4511363319922768
 //   SENTRY_ENVIRONMENT=production
-// SENTRY_RELEASE is intentionally NOT baked here — sentry_flutter auto-detects
-// the release from package info (bundleId@version+build), so it's always
-// correct without a manual bump. (The old hand-maintained tag went stale at
-// admin@1.0.0+18 while the app shipped 1.1.x — 2026-08-02.)
-// Rebuild this string only on a DSN rotation:
-//   printf "%s" "SENTRY_DSN=...,SENTRY_ENVIRONMENT=production" | base64
-DART_DEFINES=U0VOVFJZX0RTTj1odHRwczovLzg3MzRmYWFhZDgzYThkODc5NGEzNTBhZjIwNmE2ZTIwQG80NTEwOTg0MzI4MjQ5MzQ0LmluZ2VzdC5kZS5zZW50cnkuaW8vNDUxMTM2MzMxOTkyMjc2OCxTRU5UUllfRU5WSVJPTk1FTlQ9cHJvZHVjdGlvbg==
+//
+// SENTRY_RELEASE is intentionally NOT baked — sentry_flutter auto-detects it
+// from package info (bundleId@version+build), so it can never go stale. The old
+// hand-maintained tag sat at admin@1.0.0+18 while the app shipped 1.1.x.
+//
+// Rebuild only on a DSN rotation — note the two separate base64 calls:
+//   printf "%s" "SENTRY_DSN=https://…" | base64
+//   printf "%s" "SENTRY_ENVIRONMENT=production" | base64
+//   DART_DEFINES=<first>,<second>
+DART_DEFINES=U0VOVFJZX0RTTj1odHRwczovLzg3MzRmYWFhZDgzYThkODc5NGEzNTBhZjIwNmE2ZTIwQG80NTEwOTg0MzI4MjQ5MzQ0LmluZ2VzdC5kZS5zZW50cnkuaW8vNDUxMTM2MzMxOTkyMjc2OA==,U0VOVFJZX0VOVklST05NRU5UPXByb2R1Y3Rpb24=
