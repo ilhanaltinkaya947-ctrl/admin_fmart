@@ -1,21 +1,21 @@
-/// DART_DEFINES in Release.xcconfig must be encoded the way Flutter decodes it.
-///
-/// Build 1.1.10+52 shipped with crash reporting silently dead. The value was
-/// ONE base64 blob of a comma-joined string, but Flutter splits on ',' FIRST
-/// and only then base64-decodes each item:
-///
-///   flutter_tools/lib/src/build_info.dart  decodeDartDefines()
-///     value.split(',').map(base64.decoder.fuse(utf8.decoder).convert)
-///
-/// So Dart received a single define — key SENTRY_DSN, value the whole rest of
-/// the string. `Dsn.parse()` does not throw on that (pathSegments is non-empty),
-/// so projectId became "4511363319922768,SENTRY_ENVIRONMENT=production" and
-/// every envelope was POSTed to a URL that does not exist. SENTRY_ENVIRONMENT
-/// was never defined. The app ran perfectly and reported nothing for six weeks.
-///
-/// main.dart's release guard did not catch it: it checks the DSN is non-EMPTY,
-/// not that it is VALID. This file is the missing validity check, moved to a
-/// place that runs before a build instead of after one.
+// DART_DEFINES in Release.xcconfig must be encoded the way Flutter decodes it.
+//
+// Build 1.1.10+52 shipped with crash reporting silently dead. The value was
+// ONE base64 blob of a comma-joined string, but Flutter splits on ',' FIRST
+// and only then base64-decodes each item:
+//
+//   flutter_tools/lib/src/build_info.dart  decodeDartDefines()
+//     value.split(',').map(base64.decoder.fuse(utf8.decoder).convert)
+//
+// So Dart received a single define — key SENTRY_DSN, value the whole rest of
+// the string. `Dsn.parse()` does not throw on that (pathSegments is non-empty),
+// so projectId became "4511363319922768,SENTRY_ENVIRONMENT=production" and
+// every envelope was POSTed to a URL that does not exist. SENTRY_ENVIRONMENT
+// was never defined. The app ran perfectly and reported nothing for six weeks.
+//
+// main.dart's release guard did not catch it: it checks the DSN is non-EMPTY,
+// not that it is VALID. This file is the missing validity check, moved to a
+// place that runs before a build instead of after one.
 import 'dart:convert';
 import 'dart:io';
 
