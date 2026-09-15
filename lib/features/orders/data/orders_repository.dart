@@ -46,6 +46,13 @@ String refundRefusalMessage(String? providerReason) {
     case 'provider_refund_failed':
       return 'Банк не выполнил возврат, деньги остались списанными. '
           'Попробуйте ещё раз.';
+    case 'no_provider_payment_id':
+      // ePay only. The payment went through but Halyk's callback never gave us
+      // the payment id, so we hold a placeholder and there is nothing to send
+      // a refund against. Retrying cannot help; someone has to backfill the id
+      // from provider_payload first.
+      return 'Оплата по заказу не подтвердилась до конца, поэтому возврат '
+          'не выполнен. Передайте номер заказа в поддержку.';
     default:
       return 'Возврат не выполнен, деньги не вернулись клиенту.';
   }

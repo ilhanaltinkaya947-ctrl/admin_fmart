@@ -74,6 +74,7 @@ void main() {
         'no_captured_tx',
         'exceeds_captured',
         'provider_refund_failed',
+        'no_provider_payment_id',
         null,
       ];
       for (final r in reasons) {
@@ -94,9 +95,10 @@ void main() {
         refundRefusalMessage('no_captured_tx'),
         refundRefusalMessage('exceeds_captured'),
         refundRefusalMessage('provider_refund_failed'),
+        refundRefusalMessage('no_provider_payment_id'),
         refundRefusalMessage(null),
       };
-      expect(distinct.length, 4);
+      expect(distinct.length, 5);
     });
 
     test('an unrecognised reason still produces something safe', () {
