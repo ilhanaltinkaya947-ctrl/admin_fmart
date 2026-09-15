@@ -12,11 +12,90 @@ import '../models/order_models.dart';
 class OrdersApiException implements Exception {
   final String message;
   final int? statusCode;
-  OrdersApiException(this.message, {this.statusCode});
+
+  /// Set only when order-service returned `code: "refund_refused"`. It is the
+  /// payment side's own vocabulary — `no_captured_tx`, `exceeds_captured`,
+  /// `provider_refund_failed` — and the operator has to act differently on
+  /// each, so it is kept separate from [message]. See [refundRefusalMessage].
+  final String? providerReason;
+
+  OrdersApiException(this.message, {this.statusCode, this.providerReason});
 
   @override
   String toString() => message;
 }
+
+/// What to put in front of the operator when a refund was refused.
+///
+/// The backend's own message is English and phrased for a log. These say what
+/// happened and what to do next, because the person reading it is standing in
+/// a store with a customer in front of them.
+///
+/// Every one of them states that the money did not move. That is the sentence
+/// the operator needs: before this existed a refusal looked identical to a
+/// success, so the only safe assumption was that something had happened and
+/// nobody could say what.
+String refundRefusalMessage(String? providerReason) {
+  switch (providerReason) {
+    case 'no_captured_tx':
+      return 'По этому заказу оплата не проходила, возвращать нечего. '
+          'Если заказ нужно закрыть, отмените его.';
+    case 'exceeds_captured':
+      return 'Сумма больше того, что было списано по заказу. '
+          'Проверьте историю возвратов и повторите с меньшей суммой.';
+    case 'provider_refund_failed':
+      return 'Банк не выполнил возврат, деньги остались списанными. '
+          'Попробуйте ещё раз.';
+    case 'no_provider_payment_id':
+      // ePay only. The payment went through but Halyk's callback never gave us
+      // the payment id, so we hold a placeholder and there is nothing to send
+      // a refund against. Retrying cannot help; someone has to backfill the id
+      // from provider_payload first.
+      return 'Оплата по заказу не подтвердилась до конца, поэтому возврат '
+          'не выполнен. Передайте номер заказа в поддержку.';
+    default:
+      return 'Возврат не выполнен, деньги не вернулись клиенту.';
+  }
+}
+
+/// What to tell the operator after a refund that did NOT fail.
+///
+/// order-service answers with `refund_performed` when the bank has already
+/// returned the money, and `refund_queued` when we could not get an answer in
+/// time and the refund is waiting in the queue instead. Those are genuinely
+/// different things to say to someone with a customer in front of them, and
+/// saying the stronger one when we do not know is how «возврат оформлен»
+/// stopped meaning anything.
+///
+/// Anything else, including an empty message from an order-service that
+/// predates this, falls back to the wording used before — so an app running
+/// against an older backend is no worse off than it was.
+String refundOutcomeMessage(SimpleActionResponse res) {
+  final human = _isMachineToken(res.message) ? '' : res.message;
+  if (!res.success) {
+    return human.isNotEmpty ? human : 'Не удалось оформить возврат';
+  }
+  switch (res.message) {
+    case 'refund_performed':
+      return 'Возврат выполнен, банк вернул деньги';
+    case 'refund_queued':
+      return 'Возврат принят, банк ещё не подтвердил. '
+          'Проверьте историю возвратов через несколько минут.';
+    default:
+      return human.isNotEmpty ? human : 'Возврат оформлен';
+  }
+}
+
+/// True for backend vocabulary like `refund_queued` or `no_captured_tx`.
+///
+/// Deliberately a shape test rather than a list. This field is free text from
+/// another service and new codes will be added there without anyone thinking
+/// about this SnackBar, so the rule is "anything that looks like an
+/// identifier is not something to show a human" — that holds for codes nobody
+/// has written yet. No real operator message is bare lowercase ASCII with
+/// underscores and no spaces.
+bool _isMachineToken(String s) =>
+    s.isNotEmpty && RegExp(r'^[a-z0-9]+(_[a-z0-9]+)+$').hasMatch(s);
 
 /// Walks the response payload of a failed admin call and returns the
 /// most specific human-readable message we can find. Backend services
@@ -222,9 +301,21 @@ class OrdersRepository {
       );
       return SimpleActionResponse.fromJson(asJsonMap(resp.data));
     } on DioException catch (e) {
+      // A refusal now arrives as 409 `refund_refused` and carries the payment
+      // side's reason. Prefer our own wording over the backend's English
+      // detail, and keep the raw reason on the exception so the caller can
+      // decide whether offering «Повторить» makes any sense: retrying a
+      // refund for an order that was never charged never will.
+      final data = e.response?.data;
+      final providerReason =
+          data is Map ? data['provider_reason'] as String? : null;
+      final isRefusal = data is Map && data['code'] == 'refund_refused';
       throw OrdersApiException(
-        _extractApiErrorMessage(e) ?? 'Не удалось оформить возврат',
+        isRefusal
+            ? refundRefusalMessage(providerReason)
+            : (_extractApiErrorMessage(e) ?? 'Не удалось оформить возврат'),
         statusCode: e.response?.statusCode,
+        providerReason: providerReason,
       );
     }
   }

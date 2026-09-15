@@ -1978,10 +1978,21 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         _loadRefunds();
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Возврат оформлен' : 'Не удалось оформить возврат'))),
+        SnackBar(content: Text(refundOutcomeMessage(res))),
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
+      // Nothing was ever charged for this order, so a retry refuses again —
+      // every time, forever. Offering «Повторить» here trains the operator to
+      // tap it on refusals that DO deserve a retry without reading them.
+      // Same for an ePay order whose payment id never arrived: without it
+      // there is nothing to send a refund against, and no number of taps
+      // changes that. It needs a backfill, not a retry.
+      if (e.providerReason == 'no_captured_tx' ||
+          e.providerReason == 'no_provider_payment_id') {
+        _showError(e.message);
+        return;
+      }
       _showMoneyPathError(
         e,
         () => _refundOrder(
