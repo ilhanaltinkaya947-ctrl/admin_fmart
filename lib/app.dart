@@ -35,6 +35,7 @@ import 'features/stores/state/store_cubit.dart';
 
 import 'features/orders/data/orders_repository.dart';
 import 'features/stock/data/held_products_repository.dart';
+import 'features/stores/data/pickup_stores_repository.dart';
 import 'features/orders/presentation/order_details_page.dart';
 import 'features/orders/state/orders_cubit.dart';
 
@@ -60,6 +61,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   late final StoresRepository _storesRepo;
   late final OrdersRepository _ordersRepo;
   late final HeldProductsRepository _heldProductsRepo;
+  late final PickupStoresRepository _pickupStoresRepo;
   late final DeliveryRepository _deliveryRepo;
   late final CustomersRepository _customersRepo;
   late final UsersRepository _usersRepo;
@@ -109,6 +111,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     _storesRepo = StoresRepository(api: _api);
     _ordersRepo = OrdersRepository(api: _api);
     _heldProductsRepo = HeldProductsRepository(api: _api);
+    _pickupStoresRepo = PickupStoresRepository(api: _api);
     _customersRepo = CustomersRepository(api: _api);
     _usersRepo = UsersRepository(api: _api);
     _bannersRepo = BannersRepository(api: _api);
@@ -359,6 +362,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
         RepositoryProvider.value(value: _storesRepo),
         RepositoryProvider.value(value: _ordersRepo),
         RepositoryProvider.value(value: _heldProductsRepo),
+        RepositoryProvider.value(value: _pickupStoresRepo),
         RepositoryProvider.value(value: _customersRepo),
         RepositoryProvider.value(value: _usersRepo),
         RepositoryProvider.value(value: _prefsStorage),

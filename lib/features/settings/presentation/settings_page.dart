@@ -4,6 +4,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../../core/api/api_config.dart';
 import '../../auth/state/auth_cubit.dart';
+import '../../stores/data/pickup_stores_repository.dart';
+import '../../stores/presentation/pickup_stores_page.dart';
 import '../../stores/state/store_cubit.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -124,6 +126,26 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => context.read<StoreCubit>().clearStore(),
           ),
+          // Admin only, matching the endpoint behind it. A manager who taps
+          // through would reach a screen that can only answer 403, and
+          // switching collection on commits the company to staffing a counter
+          // at that branch — the same reason the server gate is narrower here
+          // than the one on out-of-stock holds.
+          if (auth is Authenticated && auth.user.isAdmin)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.shopping_bag_outlined),
+              title: const Text('Самовывоз'),
+              subtitle: const Text('Где можно забрать заказ'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => PickupStoresPage(
+                    repo: context.read<PickupStoresRepository>(),
+                  ),
+                ),
+              ),
+            ),
           const SizedBox(height: 16),
           _SectionHeader('Приложение'),
           _InfoCard(
