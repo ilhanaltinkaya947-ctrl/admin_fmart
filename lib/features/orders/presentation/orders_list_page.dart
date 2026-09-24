@@ -106,13 +106,29 @@ class _OrdersListPageState extends State<OrdersListPage> {
             tooltip: 'Экспорт CSV',
           ),
           PopupMenuButton<String>(
-            onSelected: (v) async {
-              if (v == 'change_store') {
-                await context.read<StoreCubit>().clearStore();
-              }
-              if (v == 'logout') {
-                await context.read<AuthCubit>().logout();
-              }
+            // Both actions rebuild the app AWAY from this page. Doing that
+            // straight from onSelected tore the page down while the popup
+            // route was still dismissing and laying out, so this button's
+            // State was disposed mid-layout and PopupMenuButtonState.
+            // _positionBuilder then hit `State.context` (which is `_element!`)
+            // on a dead State — "Null check operator used on a null value",
+            // 13 crashes in one frame burst (Sentry fmart-admin 149148227,
+            // 2026-09-24, 1.1.13+56 on iPad).
+            //
+            // Read the cubits synchronously — that is safe, the State is
+            // still mounted here — then defer the teardown past this frame so
+            // the menu route finishes dismissing against a live State first.
+            onSelected: (v) {
+              final store = context.read<StoreCubit>();
+              final auth = context.read<AuthCubit>();
+              WidgetsBinding.instance.addPostFrameCallback((_) async {
+                if (v == 'change_store') {
+                  await store.clearStore();
+                }
+                if (v == 'logout') {
+                  await auth.logout();
+                }
+              });
             },
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'change_store', child: Text('Сменить магазин')),
