@@ -14,6 +14,12 @@ import '../models/order_models.dart';
 import 'order_details_page.dart';
 import 'widgets/order_filter_bar.dart';
 
+/// How long to let the AppBar popup menu finish leaving the screen before we
+/// tear this page down. Flutter's `_PopupMenuRoute.transitionDuration` is
+/// `_kMenuDuration` = 300 ms (private, popup_menu.dart), so we wait a little
+/// past it. See the note on [PopupMenuButton.onSelected] below.
+const Duration _menuExitGrace = Duration(milliseconds: 350);
+
 class OrdersListPage extends StatefulWidget {
   final int storeId;
   final String storeName;
@@ -106,22 +112,28 @@ class _OrdersListPageState extends State<OrdersListPage> {
             tooltip: 'Экспорт CSV',
           ),
           PopupMenuButton<String>(
-            // Both actions rebuild the app AWAY from this page. Doing that
-            // straight from onSelected tore the page down while the popup
-            // route was still dismissing and laying out, so this button's
-            // State was disposed mid-layout and PopupMenuButtonState.
-            // _positionBuilder then hit `State.context` (which is `_element!`)
-            // on a dead State — "Null check operator used on a null value",
-            // 13 crashes in one frame burst (Sentry fmart-admin 149148227,
-            // 2026-09-24, 1.1.13+56 on iPad).
+            // Both actions rebuild the app AWAY from this page, which disposes
+            // this PopupMenuButton's State — but the menu is still on screen
+            // when onSelected runs. `Route.didPop` resolves the `showMenu`
+            // future immediately ("routes should not wait for their exit
+            // animation to complete before doing so", navigator.dart), while
+            // _PopupMenuRoute keeps laying out for its full 300 ms exit
+            // transition. Every one of those layout passes calls
+            // `positionBuilder` (popup_menu.dart:972) →
+            // PopupMenuButtonState._positionBuilder, which reads
+            // `State.context` — i.e. `_element!`, null once the State is gone.
+            // That is the 13-crash single-frame burst in Sentry fmart-admin
+            // 149148227 (1.1.13+56, iPad).
             //
-            // Read the cubits synchronously — that is safe, the State is
-            // still mounted here — then defer the teardown past this frame so
-            // the menu route finishes dismissing against a live State first.
+            // So the teardown has to outlast the exit transition, not just the
+            // current frame — a lone addPostFrameCallback buys ~16 ms of a
+            // 300 ms window and merely narrows the race. Read the cubits
+            // synchronously while the State is still mounted (so no `context`
+            // is touched after the gap), then act once the menu is really gone.
             onSelected: (v) {
               final store = context.read<StoreCubit>();
               final auth = context.read<AuthCubit>();
-              WidgetsBinding.instance.addPostFrameCallback((_) async {
+              Future<void>.delayed(_menuExitGrace, () async {
                 if (v == 'change_store') {
                   await store.clearStore();
                 }
