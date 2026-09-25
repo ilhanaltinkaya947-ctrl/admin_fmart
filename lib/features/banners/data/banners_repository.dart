@@ -88,15 +88,16 @@ class BannersRepository {
     if (linkUrl != null) form['link_url'] = linkUrl;
     if (sortOrder != null) form['sort_order'] = sortOrder;
     if (active != null) form['active'] = active;
-    // A null date is indistinguishable from "field not sent" over multipart,
-    // so clearing is an explicit empty string. See _parse_dt on the backend.
+    // FastAPI coerces an empty form value to None, so "" is indistinguishable
+    // from "field not sent" and cannot mean clear. The backend accepts the
+    // literal token `null` as the clear signal instead.
     if (clearStartsAt == true) {
-      form['starts_at'] = '';
+      form['starts_at'] = 'null';
     } else if (startsAt != null) {
       form['starts_at'] = _encodeDate(startsAt);
     }
     if (clearEndsAt == true) {
-      form['ends_at'] = '';
+      form['ends_at'] = 'null';
     } else if (endsAt != null) {
       form['ends_at'] = _encodeDate(endsAt);
     }
