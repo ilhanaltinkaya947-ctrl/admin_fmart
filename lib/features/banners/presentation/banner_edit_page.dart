@@ -27,9 +27,17 @@ class BannerEditPage extends StatefulWidget {
 class _BannerEditPageState extends State<BannerEditPage> {
   final _titleCtrl = TextEditingController();
   final _linkCtrl = TextEditingController();
+  final _positionCtrl = TextEditingController();
   bool _active = true;
   File? _pickedImage;
   bool _saving = false;
+  DateTime? _startsAt;
+  DateTime? _endsAt;
+  // Tracked separately from the value so "clear an existing date" is
+  // expressible: null + touched means delete it, null + untouched means
+  // "was never set, send nothing".
+  bool _startsCleared = false;
+  bool _endsCleared = false;
 
   @override
   void initState() {
@@ -38,7 +46,10 @@ class _BannerEditPageState extends State<BannerEditPage> {
     if (b != null) {
       _titleCtrl.text = b.title ?? '';
       _linkCtrl.text = b.linkUrl ?? '';
+      _positionCtrl.text = '${b.sortOrder}';
       _active = b.active;
+      _startsAt = b.startsAt;
+      _endsAt = b.endsAt;
     }
   }
 
@@ -46,8 +57,53 @@ class _BannerEditPageState extends State<BannerEditPage> {
   void dispose() {
     _titleCtrl.dispose();
     _linkCtrl.dispose();
+    _positionCtrl.dispose();
     super.dispose();
   }
+
+  Future<void> _pickDateTime({required bool isStart}) async {
+    final current = isStart ? _startsAt : _endsAt;
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: current ?? now,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 3),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(current ?? now),
+    );
+    if (!mounted) return;
+    final picked = DateTime(
+      date.year, date.month, date.day,
+      time?.hour ?? 0, time?.minute ?? 0,
+    );
+    setState(() {
+      if (isStart) {
+        _startsAt = picked;
+        _startsCleared = false;
+      } else {
+        _endsAt = picked;
+        _endsCleared = false;
+      }
+    });
+  }
+
+  /// Reject an impossible window before the round-trip. The backend enforces
+  /// the same rule and returns 400, but catching it here keeps the operator's
+  /// input on screen instead of bouncing them out of the form.
+  String? _windowError() {
+    if (_startsAt != null && _endsAt != null && !_endsAt!.isAfter(_startsAt!)) {
+      return 'Дата окончания должна быть позже даты начала';
+    }
+    return null;
+  }
+
+  String _fmt(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year} '
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
   Future<void> _pick() async {
     // Two sources because iOS image_picker only reaches the Photos library —
@@ -135,6 +191,29 @@ class _BannerEditPageState extends State<BannerEditPage> {
       normalisedLink = l;
     }
 
+    final windowErr = _windowError();
+    if (windowErr != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(windowErr), backgroundColor: const Color(0xFFD32F2F)),
+      );
+      return;
+    }
+
+    // Blank means "let the backend append it"; only an explicit number pins a
+    // position. Guard against nonsense like -5 or "abc".
+    final rawPosition = _positionCtrl.text.trim();
+    int? position;
+    if (rawPosition.isNotEmpty) {
+      final parsed = int.tryParse(rawPosition);
+      if (parsed == null || parsed < 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Позиция должна быть целым числом от 0')),
+        );
+        return;
+      }
+      position = parsed;
+    }
+
     setState(() => _saving = true);
     try {
       final cubit = context.read<BannersCubit>();
@@ -143,7 +222,10 @@ class _BannerEditPageState extends State<BannerEditPage> {
           imageFile: _pickedImage!,
           title: _titleCtrl.text.trim(),
           linkUrl: normalisedLink ?? '',
+          sortOrder: position,
           active: _active,
+          startsAt: _startsAt,
+          endsAt: _endsAt,
         );
       } else {
         await cubit.update(
@@ -151,7 +233,12 @@ class _BannerEditPageState extends State<BannerEditPage> {
           imageFile: _pickedImage,
           title: _titleCtrl.text.trim(),
           linkUrl: normalisedLink ?? '',
+          sortOrder: position,
           active: _active,
+          startsAt: _startsAt,
+          clearStartsAt: _startsCleared,
+          endsAt: _endsAt,
+          clearEndsAt: _endsCleared,
         );
       }
       if (!mounted) return;
@@ -232,6 +319,57 @@ class _BannerEditPageState extends State<BannerEditPage> {
             title: const Text('Показывать на главной'),
             contentPadding: EdgeInsets.zero,
           ),
+          TextField(
+            controller: _positionCtrl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Позиция (0 — самый первый)',
+              helperText: 'Оставьте пустым, чтобы баннер встал в конец',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'Показ по расписанию',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Необязательно. Без дат баннер показывается пока включён '
+            'переключатель выше.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+          ),
+          const SizedBox(height: 8),
+          _ScheduleRow(
+            label: 'Начало показа',
+            value: _startsAt == null ? null : _fmt(_startsAt!),
+            onPick: () => _pickDateTime(isStart: true),
+            onClear: _startsAt == null && !_startsCleared
+                ? null
+                : () => setState(() {
+                      _startsAt = null;
+                      _startsCleared = true;
+                    }),
+          ),
+          const SizedBox(height: 8),
+          _ScheduleRow(
+            label: 'Конец показа',
+            value: _endsAt == null ? null : _fmt(_endsAt!),
+            onPick: () => _pickDateTime(isStart: false),
+            onClear: _endsAt == null && !_endsCleared
+                ? null
+                : () => setState(() {
+                      _endsAt = null;
+                      _endsCleared = true;
+                    }),
+          ),
+          if (_windowError() != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _windowError()!,
+              style: const TextStyle(color: Color(0xFFD32F2F), fontSize: 12),
+            ),
+          ],
           const SizedBox(height: 24),
           SizedBox(
             height: 50,
@@ -343,6 +481,68 @@ class _ChangeBadge extends StatelessWidget {
           SizedBox(width: 4),
           Text('Изменить', style: TextStyle(color: Colors.white, fontSize: 12)),
         ],
+      ),
+    );
+  }
+}
+
+/// One row of the publish-window editor: a label, the chosen timestamp (or a
+/// placeholder), a pick button, and a clear button that only appears once
+/// there is something to clear.
+class _ScheduleRow extends StatelessWidget {
+  final String label;
+  final String? value;
+  final VoidCallback onPick;
+  final VoidCallback? onClear;
+
+  const _ScheduleRow({
+    required this.label,
+    required this.value,
+    required this.onPick,
+    this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onPick,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.grey.shade400),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value ?? 'Не задано',
+                    style: TextStyle(
+                      fontWeight: value == null ? FontWeight.normal : FontWeight.w600,
+                      color: value == null ? Colors.grey.shade600 : null,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (onClear != null)
+              IconButton(
+                tooltip: 'Очистить',
+                icon: const Icon(Icons.clear, size: 20),
+                onPressed: onClear,
+              ),
+            const Icon(Icons.calendar_month_outlined, size: 20),
+          ],
+        ),
       ),
     );
   }

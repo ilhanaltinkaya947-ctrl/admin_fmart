@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
@@ -37,8 +36,10 @@ class BannersRepository {
     required File imageFile,
     String? title,
     String? linkUrl,
-    int sortOrder = 0,
+    int? sortOrder,
     bool active = true,
+    DateTime? startsAt,
+    DateTime? endsAt,
   }) async {
     final formData = FormData.fromMap({
       'image': await MultipartFile.fromFile(
@@ -47,8 +48,13 @@ class BannersRepository {
       ),
       if (title != null && title.isNotEmpty) 'title': title,
       if (linkUrl != null && linkUrl.isNotEmpty) 'link_url': linkUrl,
-      'sort_order': sortOrder,
+      // Omitted entirely when null: the backend then appends at the end of
+      // the carousel. Sending 0 here is what used to shove every new banner
+      // to the front.
+      if (sortOrder != null) 'sort_order': sortOrder,
       'active': active,
+      'starts_at': _encodeDate(startsAt),
+      'ends_at': _encodeDate(endsAt),
     });
 
     try {
@@ -66,6 +72,10 @@ class BannersRepository {
     String? linkUrl,
     int? sortOrder,
     bool? active,
+    DateTime? startsAt,
+    bool? clearStartsAt,
+    DateTime? endsAt,
+    bool? clearEndsAt,
   }) async {
     final form = <String, dynamic>{};
     if (imageFile != null) {
@@ -78,6 +88,18 @@ class BannersRepository {
     if (linkUrl != null) form['link_url'] = linkUrl;
     if (sortOrder != null) form['sort_order'] = sortOrder;
     if (active != null) form['active'] = active;
+    // A null date is indistinguishable from "field not sent" over multipart,
+    // so clearing is an explicit empty string. See _parse_dt on the backend.
+    if (clearStartsAt == true) {
+      form['starts_at'] = '';
+    } else if (startsAt != null) {
+      form['starts_at'] = _encodeDate(startsAt);
+    }
+    if (clearEndsAt == true) {
+      form['ends_at'] = '';
+    } else if (endsAt != null) {
+      form['ends_at'] = _encodeDate(endsAt);
+    }
 
     try {
       final resp = await api.dio.patch('$_adminPath/$id', data: FormData.fromMap(form));
@@ -86,6 +108,9 @@ class BannersRepository {
       throw _mapValidationError(e);
     }
   }
+
+  static String _encodeDate(DateTime? d) =>
+      d == null ? '' : d.toUtc().toIso8601String();
 
   Future<void> delete(int id) async {
     await api.dio.delete('$_adminPath/$id');

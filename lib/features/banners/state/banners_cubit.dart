@@ -53,8 +53,10 @@ class BannersCubit extends Cubit<BannersState> {
     required File imageFile,
     String? title,
     String? linkUrl,
-    int sortOrder = 0,
+    int? sortOrder,
     bool active = true,
+    DateTime? startsAt,
+    DateTime? endsAt,
   }) async {
     final created = await repo.create(
       imageFile: imageFile,
@@ -62,6 +64,8 @@ class BannersCubit extends Cubit<BannersState> {
       linkUrl: linkUrl,
       sortOrder: sortOrder,
       active: active,
+      startsAt: startsAt,
+      endsAt: endsAt,
     );
     await load();
     return created;
@@ -74,6 +78,10 @@ class BannersCubit extends Cubit<BannersState> {
     String? linkUrl,
     int? sortOrder,
     bool? active,
+    DateTime? startsAt,
+    bool? clearStartsAt,
+    DateTime? endsAt,
+    bool? clearEndsAt,
   }) async {
     final updated = await repo.update(
       id: id,
@@ -82,6 +90,10 @@ class BannersCubit extends Cubit<BannersState> {
       linkUrl: linkUrl,
       sortOrder: sortOrder,
       active: active,
+      startsAt: startsAt,
+      clearStartsAt: clearStartsAt,
+      endsAt: endsAt,
+      clearEndsAt: clearEndsAt,
     );
     await load();
     return updated;

@@ -248,7 +248,33 @@ class _BannersListPageState extends State<BannersListPage> {
               },
             );
           }
-          return const SizedBox.shrink();
+          // Reached only for a state this page does not know about. It used
+          // to be SizedBox.shrink() — a silent blank screen with no spinner,
+          // no message and no way to retry, which is exactly the "list of
+          // banners does not display" report from the field. Never render
+          // nothing: say so and offer the reload.
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.help_outline, size: 48, color: Colors.orange),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Не удалось показать список баннеров (${state.runtimeType})',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: () => context.read<BannersCubit>().load(),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Обновить'),
+                  ),
+                ],
+              ),
+            ),
+          );
         },
       ),
     );
@@ -311,7 +337,31 @@ class _BannerTile extends StatelessWidget {
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(height: 4),
-                      _StatusChip(active: banner.active),
+                      Row(
+                        children: [
+                          _StatusChip(state: banner.publishState),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Позиция ${index + 1}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (_windowLabel(banner) != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          _windowLabel(banner)!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                       if ((banner.linkUrl ?? '').isNotEmpty) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -355,24 +405,45 @@ class _BannerTile extends StatelessWidget {
   }
 }
 
+/// "01.10 — 15.10" style summary of the publish window, or null when the
+/// banner has no dates at all (the common case for existing rows).
+String? _windowLabel(BannerItem b) {
+  String fmt(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}';
+  final s = b.startsAt;
+  final e = b.endsAt;
+  if (s == null && e == null) return null;
+  if (s != null && e != null) return 'Показ: ${fmt(s)} — ${fmt(e)}';
+  if (s != null) return 'Показ с ${fmt(s)}';
+  return 'Показ до ${fmt(e!)}';
+}
+
 class _StatusChip extends StatelessWidget {
-  final bool active;
-  const _StatusChip({required this.active});
+  final BannerPublishState state;
+  const _StatusChip({required this.state});
 
   @override
   Widget build(BuildContext context) {
+    // Colour carries the same meaning the chip text does, so a manager can
+    // scan the list without reading every label.
+    final (Color bg, Color fg) = switch (state) {
+      BannerPublishState.live => (const Color(0xFFE8F5E9), const Color(0xFF2E7D32)),
+      BannerPublishState.scheduled => (const Color(0xFFE3F2FD), const Color(0xFF1565C0)),
+      BannerPublishState.expired => (const Color(0xFFF3E5F5), const Color(0xFF6A1B9A)),
+      BannerPublishState.disabled => (const Color(0xFFFFEBEE), const Color(0xFFC62828)),
+    };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: active ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
+        color: bg,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
-        active ? 'Активен' : 'Отключён',
+        state.label,
         style: TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.w600,
-          color: active ? const Color(0xFF2E7D32) : const Color(0xFFC62828),
+          color: fg,
         ),
       ),
     );
