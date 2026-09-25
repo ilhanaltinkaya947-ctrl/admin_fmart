@@ -311,7 +311,12 @@ class _BannerTile extends StatelessWidget {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: AspectRatio(
-                    aspectRatio: 13 / 8,
+                    // Must match the customer carousel (_SliderCarousel in
+                    // home_page.dart), which is 16/8 with BoxFit.cover. At
+                    // 13/8 this thumbnail showed ~19% more image height than
+                    // the phone renders, so a banner looked fine here and
+                    // came out cropped in the app.
+                    aspectRatio: 16 / 8,
                     child: SizedBox(
                       width: 120,
                       child: CachedNetworkImage(
@@ -342,7 +347,10 @@ class _BannerTile extends StatelessWidget {
                           _StatusChip(state: banner.publishState),
                           const SizedBox(width: 8),
                           Text(
-                            'Позиция ${index + 1}',
+                            // Derived from sort_order, not the list index: with historical
+                            // gaps (0,3,4,5…) a rank would disagree with the number
+                            // the edit field shows for the same banner.
+                            'Позиция ${banner.sortOrder + 1}',
                             style: TextStyle(
                               fontSize: 11,
                               color: Theme.of(context).colorScheme.onSurfaceVariant,

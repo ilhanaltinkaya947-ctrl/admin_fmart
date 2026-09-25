@@ -46,7 +46,8 @@ class _BannerEditPageState extends State<BannerEditPage> {
     if (b != null) {
       _titleCtrl.text = b.title ?? '';
       _linkCtrl.text = b.linkUrl ?? '';
-      _positionCtrl.text = '${b.sortOrder}';
+      // Shown 1-based to match the list row. Stored 0-based.
+      _positionCtrl.text = '${b.sortOrder + 1}';
       _active = b.active;
       _startsAt = b.startsAt;
       _endsAt = b.endsAt;
@@ -205,13 +206,14 @@ class _BannerEditPageState extends State<BannerEditPage> {
     int? position;
     if (rawPosition.isNotEmpty) {
       final parsed = int.tryParse(rawPosition);
-      if (parsed == null || parsed < 0) {
+      if (parsed == null || parsed < 1) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Позиция должна быть целым числом от 0')),
+          const SnackBar(content: Text('Позиция должна быть целым числом от 1')),
         );
         return;
       }
-      position = parsed;
+      // The field is 1-based for the operator; sort_order is 0-based.
+      position = parsed - 1;
     }
 
     setState(() => _saving = true);
@@ -323,7 +325,7 @@ class _BannerEditPageState extends State<BannerEditPage> {
             controller: _positionCtrl,
             keyboardType: TextInputType.number,
             decoration: const InputDecoration(
-              labelText: 'Позиция (0 — самый первый)',
+              labelText: 'Позиция (1 — самый первый)',
               helperText: 'Оставьте пустым, чтобы баннер встал в конец',
               border: OutlineInputBorder(),
             ),
@@ -405,7 +407,11 @@ class _ImagePickerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AspectRatio(
-      aspectRatio: 13 / 8,
+      // Must match the customer carousel (_SliderCarousel in home_page.dart),
+      // which is 16/8 with BoxFit.cover. At 13/8 the preview showed ~19% more
+      // image height than the phone actually renders, so anything an operator
+      // centred vertically got cropped in the app.
+      aspectRatio: 16 / 8,
       child: Material(
         color: Colors.grey.shade100,
         borderRadius: BorderRadius.circular(12),
