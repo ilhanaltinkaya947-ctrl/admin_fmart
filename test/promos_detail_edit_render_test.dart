@@ -4,6 +4,7 @@ import 'package:admin_fmart/features/promos/data/promo_models.dart';
 import 'package:admin_fmart/features/promos/data/promo_repository.dart';
 import 'package:admin_fmart/features/promos/presentation/promo_detail_page.dart';
 import 'package:admin_fmart/features/promos/presentation/promo_edit_page.dart';
+import 'package:admin_fmart/features/promos/presentation/promos_list_page.dart';
 import 'package:admin_fmart/features/promos/state/promos_cubit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -25,12 +26,13 @@ import '_harness.dart';
 ///   edit    -> server sent no types (create is impossible, must SAY so)
 ///              vs the test-only type (must carry its warning)
 class _StubPromoRepo implements PromoRepository {
-  _StubPromoRepo({this.redemptionRows = const []});
+  _StubPromoRepo({this.redemptionRows = const [], this.items = const []});
 
   final List<PromoRedemption> redemptionRows;
+  final List<AdminPromo> items;
 
   @override
-  Future<List<AdminPromo>> list() async => const [];
+  Future<List<AdminPromo>> list() async => items;
 
   @override
   Future<List<String>> types() async => const ['FREE_DELIVERY_FIRST_ORDER'];
@@ -98,6 +100,18 @@ PromoRedemption redemption(
 ///
 /// The detail page reads the cubit for its freshest copy of the code, and
 /// fetches its redemption history with `context.read<PromoRepository>()` —
+/// The one phrase all three screens must use for the test-only type.
+///
+/// They were written at different times and drifted into three wordings; the
+/// detail page still carried the weak «для реальной кампании не подходит»,
+/// which does not tell a manager whether customers are refused or merely
+/// discouraged. Pinned here so the wording cannot drift apart again.
+const String _testWarningPhrase = 'не для кампаний';
+
+/// A page plus the providers the real navigation supplies.
+///
+/// The detail page reads the cubit for its freshest copy of the code, and
+/// fetches its redemption history with `context.read<PromoRepository>()` —
 /// NOT through the cubit. Providing only the cubit leaves that read
 /// unsatisfied, the history never loads, and every assertion about rows
 /// silently fails against a page stuck on its spinner. So both are provided.
@@ -116,6 +130,16 @@ Widget editScreen(PromoRepository repo, List<String> types) =>
       child: BlocProvider(
         create: (_) => PromosCubit(repo: repo),
         child: PromoEditPage(availableTypes: types),
+      ),
+    );
+
+/// The list page, for the cross-screen wording check.
+Widget listScreen(PromoRepository repo) =>
+    RepositoryProvider<PromoRepository>.value(
+      value: repo,
+      child: BlocProvider(
+        create: (_) => PromosCubit(repo: repo)..load(),
+        child: const PromosListPage(),
       ),
     );
 
@@ -390,12 +414,11 @@ void main() {
       );
       expect(err, isNull, reason: err ?? '');
       expect(
-        find.textContaining('ТЕСТОВЫЙ ТИП'),
+        find.textContaining('Тестовый тип — не для кампаний'),
         findsOneWidget,
         reason: 'creating this code is the mistake this warning exists to stop',
       );
-      expect(find.textContaining('не подходит'), findsNothing,
-          reason: 'the wording now names the consequence instead of "не подходит"');
+      expect(find.textContaining('белого списка'), findsOneWidget);
     });
 
     testWidgets('an unknown type falls back to its raw value, never blank',
@@ -481,8 +504,8 @@ void main() {
       expect(err, isNull, reason: err ?? '');
       // The consequence, not the mechanism: an operator must learn that the
       // code they are creating will be refused by everyone they care about.
-      expect(find.textContaining('НЕ ДЛЯ КАМПАНИЙ'), findsOneWidget);
-      expect(find.textContaining('реальные клиенты'), findsOneWidget);
+      expect(find.textContaining('не для кампаний'), findsOneWidget);
+      expect(find.textContaining('откажет в этом коде'), findsOneWidget);
       expect(
         find.textContaining('Бесплатная доставка (первый заказ)'),
         findsOneWidget,
@@ -496,14 +519,76 @@ void main() {
         editScreen(_StubPromoRepo(), const ['FREE_DELIVERY_FIRST_ORDER']),
       );
       expect(err, isNull, reason: err ?? '');
+      // The limit is NOT just "no pickup". Delivery is already free from
+      // 7 000 ₸, which covers most delivery orders (measured: 187 of 261 in
+      // the last 30 days, 71.6%). So the code only does anything for a
+      // DELIVERY order BELOW 7 000 ₸ — marketing must know that before
+      // planning a campaign around it.
       expect(
-        find.textContaining('самовывоз'),
+        find.textContaining('7 000 ₸'),
         findsOneWidget,
-        reason: 'cart-service silently drops the code at pickup because there '
-            'is no delivery fee to discount; the operator must be told, or the '
-            'customer hits a code that appears to do nothing',
+        reason: 'the free-delivery threshold is the limit that actually '
+            'matters: without it the operator thinks the code helps every '
+            'delivery order, when it helps only the sub-threshold ones',
       );
-      expect(find.textContaining('первый заказ'), findsWidgets);
+      expect(find.textContaining('самовывоз'), findsOneWidget,
+          reason: 'pickup is also excluded — no delivery fee to discount');
+      expect(
+        find.textContaining('до 7 000 ₸ с доставкой'),
+        findsOneWidget,
+        reason: 'state the eligible set plainly, not just the exclusions',
+      );
+    });
+
+    testWidgets('the same test-type warning appears on the CREATE screen',
+        (t) async {
+      // Three places state this fact: the create picker, the list row, and the
+      // detail header. They were written at different times and drifted into
+      // three different wordings — the detail page still said the weak «для
+      // реальной кампании не подходит», which does not tell a manager whether
+      // customers are refused or merely discouraged. One phrase, everywhere.
+      //
+      // ONE SCREEN PER TEST on purpose: pumping three pages through one tester
+      // leaves the earlier state alive, and the third assertion then runs
+      // against a tree that was never rebuilt (the reused-tester trap).
+      final err = await probe(
+        t,
+        editScreen(_StubPromoRepo(), const ['FREE_DELIVERY_TEST_UNLIMITED']),
+      );
+      expect(err, isNull, reason: err ?? '');
+      expect(find.textContaining(_testWarningPhrase), findsOneWidget);
+    });
+
+    testWidgets('the same test-type warning appears on the DETAIL screen',
+        (t) async {
+      final err = await probe(
+        t,
+        detailScreen(
+          _StubPromoRepo(),
+          promo(code: 'TESTFREE', type: 'FREE_DELIVERY_TEST_UNLIMITED'),
+        ),
+      );
+      expect(err, isNull, reason: err ?? '');
+      expect(
+        find.textContaining(_testWarningPhrase),
+        findsOneWidget,
+        reason: 'a manager reading only this page must reach the same '
+            'conclusion as one reading the create screen',
+      );
+    });
+
+    testWidgets('the same test-type warning appears on the LIST screen',
+        (t) async {
+      final err = await probe(
+        t,
+        listScreen(
+          _StubPromoRepo(
+            items: [promo(code: 'TESTFREE', type: 'FREE_DELIVERY_TEST_UNLIMITED')],
+          ),
+        ),
+      );
+      expect(err, isNull, reason: err ?? '');
+      expect(find.textContaining(_testWarningPhrase), findsOneWidget);
     });
 
     testWidgets('every reachable state paints content in the body', (t) async {
