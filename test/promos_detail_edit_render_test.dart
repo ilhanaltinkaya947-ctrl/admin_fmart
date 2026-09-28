@@ -390,11 +390,12 @@ void main() {
       );
       expect(err, isNull, reason: err ?? '');
       expect(
-        find.textContaining('тестовый тип'),
+        find.textContaining('ТЕСТОВЫЙ ТИП'),
         findsOneWidget,
         reason: 'creating this code is the mistake this warning exists to stop',
       );
-      expect(find.textContaining('не подходит'), findsOneWidget);
+      expect(find.textContaining('не подходит'), findsNothing,
+          reason: 'the wording now names the consequence instead of "не подходит"');
     });
 
     testWidgets('an unknown type falls back to its raw value, never blank',
@@ -429,6 +430,80 @@ void main() {
         );
         expect(err, isNull, reason: 'width $w overflowed: ${err ?? ""}');
       }
+    });
+
+    testWidgets('opens on the REAL campaign type, not the test type', (t) async {
+      final err = await probe(
+        t,
+        editScreen(_StubPromoRepo(), const [
+          // Deliberately the order the SERVER could return tomorrow: test type
+          // first. `availableTypes.first` would open the screen on a code that
+          // is dead for every real customer.
+          'FREE_DELIVERY_TEST_UNLIMITED',
+          'FREE_DELIVERY_FIRST_ORDER',
+        ]),
+      );
+      expect(err, isNull, reason: err ?? '');
+      expect(
+        find.textContaining('ТЕСТОВЫЙ ТИП'),
+        findsNothing,
+        reason: 'opening on the test type would tell a manager their campaign '
+            'is a QA code before they have chosen anything',
+      );
+      expect(
+        find.textContaining('Бесплатная доставка для первого заказа'),
+        findsWidgets,
+        reason: 'the safe default is the real campaign type, regardless of '
+            'the order the server happens to send',
+      );
+    });
+
+    testWidgets('an unknown-only type list still selects something', (t) async {
+      final err = await probe(
+        t,
+        editScreen(_StubPromoRepo(), const ['SOME_FUTURE_TYPE']),
+      );
+      expect(err, isNull, reason: err ?? '');
+      expect(
+        find.text('SOME_FUTURE_TYPE'),
+        findsWidgets,
+        reason: 'a type added to the engine ahead of an app release must be '
+            'selectable rather than leaving an empty picker',
+      );
+    });
+
+    testWidgets('the test type says it is refused by real customers',
+        (t) async {
+      final err = await probe(
+        t,
+        editScreen(_StubPromoRepo(), const ['FREE_DELIVERY_TEST_UNLIMITED']),
+      );
+      expect(err, isNull, reason: err ?? '');
+      // The consequence, not the mechanism: an operator must learn that the
+      // code they are creating will be refused by everyone they care about.
+      expect(find.textContaining('НЕ ДЛЯ КАМПАНИЙ'), findsOneWidget);
+      expect(find.textContaining('реальные клиенты'), findsOneWidget);
+      expect(
+        find.textContaining('Бесплатная доставка (первый заказ)'),
+        findsOneWidget,
+        reason: 'a warning that does not say what to do instead is only noise',
+      );
+    });
+
+    testWidgets('the real type states the delivery-only limit', (t) async {
+      final err = await probe(
+        t,
+        editScreen(_StubPromoRepo(), const ['FREE_DELIVERY_FIRST_ORDER']),
+      );
+      expect(err, isNull, reason: err ?? '');
+      expect(
+        find.textContaining('самовывоз'),
+        findsOneWidget,
+        reason: 'cart-service silently drops the code at pickup because there '
+            'is no delivery fee to discount; the operator must be told, or the '
+            'customer hits a code that appears to do nothing',
+      );
+      expect(find.textContaining('первый заказ'), findsWidgets);
     });
 
     testWidgets('every reachable state paints content in the body', (t) async {

@@ -29,7 +29,28 @@ class _PromoEditPageState extends State<PromoEditPage> {
   @override
   void initState() {
     super.initState();
-    _type = widget.availableTypes.isNotEmpty ? widget.availableTypes.first : null;
+    _type = _defaultType(widget.availableTypes);
+  }
+
+  /// The type this screen opens on.
+  ///
+  /// Deliberately NOT `availableTypes.first`. That reads the server's array
+  /// order, so it only happens to open on the real campaign type — today
+  /// `/admin/promos/types` returns FIRST_ORDER first. If the engine ever
+  /// reorders that list, every new code would silently default to the TEST
+  /// type: dead for all real customers, and the manager would have to notice
+  /// the warning to realise. Picking it explicitly makes the safe choice
+  /// independent of wire order.
+  ///
+  /// Falls back to the first entry so a type the app has never heard of (a new
+  /// engine type, ahead of an app release) is still selectable rather than
+  /// leaving the picker empty.
+  static String? _defaultType(List<String> types) {
+    if (types.isEmpty) return null;
+    if (types.contains('FREE_DELIVERY_FIRST_ORDER')) {
+      return 'FREE_DELIVERY_FIRST_ORDER';
+    }
+    return types.first;
   }
 
   @override
@@ -189,17 +210,26 @@ class _PromoEditPageState extends State<PromoEditPage> {
             ),
           ),
           const SizedBox(height: 8),
-          // Say plainly what this type does, using the engine's real semantics.
+          // Say plainly what this type will do, in the engine's real semantics.
+          // Both branches state the CONSEQUENCE, not the mechanism: an operator
+          // choosing a campaign needs to know who will be refused, not which
+          // Python constant is involved.
           if (_type == 'FREE_DELIVERY_FIRST_ORDER')
             const _Info(
               text: 'Бесплатная доставка для первого заказа. Клиент может '
-                  'применить код один раз — повторная попытка вернёт «уже использован».',
+                  'применить код один раз — повторная попытка вернёт «уже '
+                  'использован».\n\n'
+                  'Важно: скидка — это стоимость доставки. При самовывозе '
+                  'доставки нет, поэтому код не сработает.',
             )
           else if (_type == 'FREE_DELIVERY_TEST_UNLIMITED')
             const _Warning(
-              text: 'ВНИМАНИЕ: тестовый тип. Работает только для аккаунтов из '
-                  'белого списка на сервере. Обычные клиенты получат отказ — '
-                  'для кампании этот тип не подходит.',
+              text: 'ТЕСТОВЫЙ ТИП — НЕ ДЛЯ КАМПАНИЙ.\n\n'
+                  'Работает только для аккаунтов из белого списка на сервере. '
+                  'Все реальные клиенты получат отказ «код недействителен» — '
+                  'со стороны это выглядит как неработающий промокод.\n\n'
+                  'Для настоящей кампании выберите «Бесплатная доставка '
+                  '(первый заказ)».',
             ),
         ],
       ),
