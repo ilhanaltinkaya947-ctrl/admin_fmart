@@ -20,6 +20,8 @@ import 'features/auth/presentation/login_page.dart';
 import 'features/auth/state/auth_cubit.dart';
 import 'features/banners/data/banners_repository.dart';
 import 'features/banners/state/banners_cubit.dart';
+import 'features/promos/data/promo_repository.dart';
+import 'features/promos/state/promos_cubit.dart';
 import 'features/broadcast/data/broadcast_repository.dart';
 
 import 'features/customers/data/customers_repository.dart';
@@ -66,6 +68,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   late final CustomersRepository _customersRepo;
   late final UsersRepository _usersRepo;
   late final BannersRepository _bannersRepo;
+  late final PromoRepository _promoRepo;
   late final BroadcastRepository _broadcastRepo;
   late final DeliverySlotsRepository _slotsRepo;
 
@@ -115,6 +118,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     _customersRepo = CustomersRepository(api: _api);
     _usersRepo = UsersRepository(api: _api);
     _bannersRepo = BannersRepository(api: _api);
+    _promoRepo = PromoRepository(api: _api);
     _broadcastRepo = BroadcastRepository(api: _api);
     _slotsRepo = DeliverySlotsRepository(api: _api);
 
@@ -399,6 +403,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
           ),
           BlocProvider(create: (_) => DeliveryCubit(repo: _deliveryRepo)),
           BlocProvider(create: (_) => BannersCubit(repo: _bannersRepo)),
+          BlocProvider(create: (_) => PromosCubit(repo: _promoRepo)),
           BlocProvider(create: (_) => SlotTemplatesCubit(repo: _slotsRepo)),
         ],
         child: MaterialApp(
@@ -448,6 +453,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
                 ctx.read<CustomersCubit>().reset();
                 ctx.read<UsersCubit>().reset();
                 ctx.read<BannersCubit>().reset();
+                ctx.read<PromosCubit>().reset();
                 ctx.read<DeliveryCubit>().reset();
                 ctx.read<SlotTemplatesCubit>().reset();
               }

@@ -7,6 +7,7 @@ import '../../auth/state/auth_cubit.dart';
 import '../../stock/presentation/held_products_page.dart';
 import '../../orders/data/orders_repository.dart';
 import '../../banners/presentation/banners_list_page.dart';
+import '../../promos/presentation/promos_list_page.dart';
 import '../../delivery_slots/presentation/slot_templates_list_page.dart';
 import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
@@ -36,6 +37,10 @@ enum _Section {
   reviews,
   users,
   banners,
+  // Promo codes. Marketing has had no way to create or retire a code since the
+  // promo engine shipped in May — every campaign went through engineering.
+  // Admin-only: a code list is the list of strings that give away free delivery.
+  promos,
   // Editor for delivery time slots — per-store template list with start/
   // end window, slot duration, capacity cap. Customer app reads
   // /delivery/slots and renders these as the checkout slot picker.
@@ -122,6 +127,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.reviews:
       case _Section.users:
       case _Section.banners:
+      case _Section.promos:
       case _Section.deliverySlots:
       case _Section.heldProducts:
       case _Section.broadcast:
@@ -195,6 +201,12 @@ class _HomeShellState extends State<HomeShell> {
           selectedIcon: Icon(Icons.image),
           label: 'Баннеры',
         );
+      case _Section.promos:
+        return const NavigationDestination(
+          icon: Icon(Icons.local_offer_outlined),
+          selectedIcon: Icon(Icons.local_offer),
+          label: 'Промокоды',
+        );
       case _Section.heldProducts:
         return const NavigationDestination(
           icon: Icon(Icons.visibility_off_outlined),
@@ -253,6 +265,8 @@ class _HomeShellState extends State<HomeShell> {
         return const UsersListPage();
       case _Section.banners:
         return const BannersListPage();
+      case _Section.promos:
+        return const PromosListPage();
       case _Section.heldProducts:
         return HeldProductsPage(
           storeId: widget.storeId,
@@ -315,6 +329,7 @@ class _HomeShellState extends State<HomeShell> {
           // lands on an "admin only" banner.
           if (isAdmin) _Section.users,
           if (isAdmin) _Section.banners,
+          if (isAdmin) _Section.promos,
           // Slot config is per-store; managers run their store day-to-day,
           // so they can tune their own caps. Admin gets it too.
           _Section.deliverySlots,
