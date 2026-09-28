@@ -139,12 +139,23 @@ class _PromoEditPageState extends State<PromoEditPage> {
           else
             DropdownButtonFormField<String>(
               value: _type,
+              // isExpanded is REQUIRED here, not cosmetic. Without it the
+              // dropdown lays the selected label out in a Row that takes its
+              // intrinsic width, so the real Russian labels ("Бесплатная
+              // доставка (первый заказ)") overflow every phone: 254px on a
+              // 375pt screen, 199px on a 430pt one. It only fits an iPad.
+              // That is the yellow-and-black overflow stripe on the screen a
+              // manager uses to create a campaign.
+              isExpanded: true,
               decoration: const InputDecoration(
                 labelText: 'Тип промокода',
                 border: OutlineInputBorder(),
               ),
               items: types
-                  .map((t) => DropdownMenuItem(value: t, child: Text(_label(t))))
+                  .map((t) => DropdownMenuItem(
+                        value: t,
+                        child: Text(_label(t), overflow: TextOverflow.ellipsis),
+                      ))
                   .toList(),
               onChanged: (v) => setState(() => _type = v),
             ),
