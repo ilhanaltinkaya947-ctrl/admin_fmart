@@ -43,7 +43,13 @@ class BannersCubit extends Cubit<BannersState> {
     emit(const BannersLoading());
     try {
       final items = await repo.listAll();
-      emit(BannersLoaded(items));
+      // Sort defensively. The admin endpoint has no ORDER BY of its own for
+      // this set, and prod holds duplicated sort_order values, so the raw
+      // order can vary between loads — tiles would shuffle, and a drag would
+      // be computed against an order the server does not use. Mirrors the
+      // server's own `sort_order ASC, id ASC`.
+      final ordered = [...items]..sort(BannersRepository.compare);
+      emit(BannersLoaded(ordered));
     } catch (e) {
       emit(BannersFailure(describeApiError(e, subject: 'баннеры')));
     }
@@ -113,7 +119,15 @@ class BannersCubit extends Cubit<BannersState> {
     }
     try {
       await repo.reorder(orderedIds);
-    } catch (_) {
+    } on Exception catch (e) {
+      // Every other method in the repository maps validation failures to
+      // BannerValidationException, but reorder() was the one call with no
+      // catch here — so a rejection escaped as an unhandled async error and
+      // the optimistic emit above stayed on screen as if it had saved. The
+      // failure was invisible; the list just lied. Surface it and reload so
+      // the tiles snap back to what the server actually holds.
+      if (isClosed) return;
+      emit(BannersFailure(describeApiError(e, subject: 'порядок баннеров')));
       await load();
     }
   }

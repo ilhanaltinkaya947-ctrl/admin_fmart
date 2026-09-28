@@ -189,45 +189,64 @@ class _BannersListPageState extends State<BannersListPage> {
               ),
             );
           }
-          if (state is BannersLoaded) {
-            if (state.items.isEmpty) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.image_outlined, size: 56, color: Colors.grey.shade400),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Пока нет баннеров',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Загрузите первый баннер для главной страницы',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey.shade600),
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: () => _openEdit(),
-                        icon: const Icon(Icons.add),
-                        label: const Text('Загрузить'),
-                      ),
-                    ],
-                  ),
+          if (state is BannersLoaded && state.items.isEmpty) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.image_outlined, size: 56, color: Colors.grey.shade400),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Пока нет баннеров',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Загрузите первый баннер для главной страницы',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey.shade600),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: () => _openEdit(),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Загрузить'),
+                    ),
+                  ],
                 ),
-              );
-            }
+              ),
+            );
+          }
+          if (state is BannersLoaded && state.items.isNotEmpty) {
+            // NOTE: every return below this point must render something. The
+            // field report — «не отображается список баннеров», a blank body
+            // under a normal AppBar — comes from a state that reached a return
+            // painting nothing. ReorderableListView.builder with itemCount 0
+            // paints nothing and offers no empty state or retry, so it must
+            // never be reachable with an empty list; the isNotEmpty guard above
+            // is what prevents that, and the empty case has its own branch.
             return ReorderableListView.builder(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
               itemCount: state.items.length,
               onReorder: (oldIdx, newIdx) {
-                if (newIdx > oldIdx) newIdx -= 1;
-                final ids = state.items.map((b) => b.id).toList();
-                final moved = ids.removeAt(oldIdx);
-                ids.insert(newIdx, moved);
+                final ids = BannersRepository.movedOrder(state.items, oldIdx, newIdx);
+                if (ids == null) {
+                  // We cannot express this move to the server without also
+                  // renumbering banners this screen is not showing. Refuse it
+                  // loudly instead of writing a position that pulls inactive
+                  // or scheduled rows into the storefront's ordering.
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Такой порядок нельзя сохранить: рядом есть баннеры, '
+                        'которых нет в этом списке. Сначала уберите совпадающие позиции.',
+                      ),
+                    ),
+                  );
+                  return;
+                }
                 context.read<BannersCubit>().reorder(ids);
               },
               itemBuilder: (_, i) {
@@ -310,15 +329,25 @@ class _BannerTile extends StatelessWidget {
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: AspectRatio(
-                    // Must match the customer carousel (_SliderCarousel in
-                    // home_page.dart), which is 16/8 with BoxFit.cover. At
-                    // 13/8 this thumbnail showed ~19% more image height than
-                    // the phone renders, so a banner looked fine here and
-                    // came out cropped in the app.
-                    aspectRatio: 16 / 8,
-                    child: SizedBox(
-                      width: 120,
+                  // The width must be OUTSIDE the AspectRatio. The tile is a
+                  // Row, whose children get unbounded width and (here) an
+                  // arrival-time unbounded height, so an AspectRatio asked to
+                  // size itself from its ratio alone throws
+                  // «RenderAspectRatio has unbounded constraints» during
+                  // performLayout — and a layout exception blanks the entire
+                  // route body while the AppBar and FAB still paint. That is
+                  // the reported «не отображается список баннеров»: an empty
+                  // panel under a normal header. Size the width first, then let
+                  // AspectRatio derive the height from it.
+                  child: SizedBox(
+                    width: 120,
+                    child: AspectRatio(
+                      // Must match the customer carousel (_SliderCarousel in
+                      // home_page.dart), which is 16/8 with BoxFit.cover. At
+                      // 13/8 this thumbnail showed ~19% more image height than
+                      // the phone renders, so a banner looked fine here and
+                      // came out cropped in the app.
+                      aspectRatio: 16 / 8,
                       child: CachedNetworkImage(
                         imageUrl: banner.imageUrl,
                         fit: BoxFit.cover,

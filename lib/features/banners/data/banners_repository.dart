@@ -27,6 +27,74 @@ class BannersRepository {
     return asJsonList(resp.data).map(BannerItem.fromJson).toList();
   }
 
+  /// A total order over the admin list: publish position, then id.
+  ///
+  /// This is the client-side mirror of the server's
+  /// `ORDER BY sort_order ASC, id ASC` (BannerRepository.list_all). It exists
+  /// because 35 rows in prod share duplicated `sort_order` values with
+  /// inactive-placeholder rows (5 is at 3 alongside 31, 6 at 4 alongside 32,
+  /// …), and the admin endpoint returns them in whatever order the planner
+  /// chose. Without a total order the tiles would shuffle between loads, and
+  /// the drag would be computed against an order the server does not use.
+  static int compare(BannerItem a, BannerItem b) {
+    final bySort = a.sortOrder.compareTo(b.sortOrder);
+    return bySort != 0 ? bySort : a.id.compareTo(b.id);
+  }
+
+  /// The ids to send to `POST /admin/banners/reorder` for [ordered], or null
+  /// when that order cannot be expressed without disturbing rows the caller
+  /// does not control.
+  ///
+  /// The server numbers each id by its index in the list it receives
+  /// (`for position, bid in enumerate(ordered_ids)`) and orders the table with
+  /// a flat `ORDER BY sort_order ASC, id ASC`. Rows left out of the payload
+  /// keep their existing numbers.
+  ///
+  /// That write is only faithful when the banners in [ordered] already occupy
+  /// the first n positions of the table — i.e. their `sort_order` values are a
+  /// PERMUTATION of 0..n-1. Then renumbering them 0..n-1 moves the same set of
+  /// banners among the same set of slots and nothing outside is disturbed.
+  /// [ordered] is the new visible sequence, so its values will generally be out
+  /// of ascending order; that is expected and fine. What must not happen is a
+  /// value ≥ n (a row from further down the table dragged up, which would
+  /// displace rows not in the payload) or a duplicate (two rows claiming one
+  /// slot, which the server would tiebreak by id and silently reorder).
+  static List<int>? reorderPayload(List<BannerItem> ordered) {
+    if (ordered.isEmpty) return null;
+
+    final claimed = <int>{};
+    for (final b in ordered) {
+      final slot = b.sortOrder;
+      if (slot < 0 || slot >= ordered.length) return null;
+      if (!claimed.add(slot)) return null; // duplicate -> not a permutation
+    }
+
+    return ordered.map((b) => b.id).toList();
+  }
+
+  /// Move the tile at [oldIndex] to [newIndex] within [items] and return the
+  /// reorder payload, or null when the move cannot be persisted safely.
+  ///
+  /// The payload is the ids in their new visible order. That is safe only when
+  /// the set being reordered already occupies 0..n-1 — see [reorderPayload].
+  /// A move that would place a banner in front of a row this screen is not
+  /// showing is refused rather than persisted wrong.
+  static List<int>? movedOrder(
+    List<BannerItem> items,
+    int oldIndex,
+    int newIndex,
+  ) {
+    if (oldIndex < 0 || oldIndex >= items.length) return null;
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (newIndex < 0 || newIndex >= items.length) return null;
+
+    final ordered = [...items];
+    final moved = ordered.removeAt(oldIndex);
+    ordered.insert(newIndex, moved);
+
+    return reorderPayload(ordered);
+  }
+
   Future<List<BannerItem>> listPublic() async {
     final resp = await api.dio.get(_publicPath);
     return asJsonList(resp.data).map(BannerItem.fromJson).toList();
