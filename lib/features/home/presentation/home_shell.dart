@@ -6,18 +6,14 @@ import '../../../core/services/new_order_counter.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../../stock/presentation/held_products_page.dart';
 import '../../orders/data/orders_repository.dart';
-import '../../banners/presentation/banners_list_page.dart';
-import '../../promos/presentation/promos_list_page.dart';
 import '../../delivery_slots/presentation/slot_templates_list_page.dart';
 import '../../customers/presentation/customers_list_page.dart';
 import '../../orders/presentation/orders_list_page.dart';
 import '../../orders/state/orders_cubit.dart';
-import '../../broadcast/presentation/broadcast_page.dart';
 import '../../reports/presentation/reports_page.dart';
 import '../../reviews/presentation/reviews_page.dart';
 import '../../settings/presentation/settings_page.dart';
 import '../../stores/state/store_cubit.dart';
-import '../../users/presentation/users_list_page.dart';
 import 'dashboard_page.dart';
 
 /// Width above which we switch from bottom NavigationBar to side
@@ -35,12 +31,6 @@ enum _Section {
   customers,
   reports,
   reviews,
-  users,
-  banners,
-  // Promo codes. Marketing has had no way to create or retire a code since the
-  // promo engine shipped in May — every campaign went through engineering.
-  // Admin-only: a code list is the list of strings that give away free delivery.
-  promos,
   // Editor for delivery time slots — per-store template list with start/
   // end window, slot duration, capacity cap. Customer app reads
   // /delivery/slots and renders these as the checkout slot picker.
@@ -49,7 +39,6 @@ enum _Section {
   // Placed and lifted automatically; this tab exists so "why has this stopped
   // selling?" has an answer, and so a wrong hold can be undone.
   heldProducts,
-  broadcast,
   settings,
 }
 
@@ -125,12 +114,8 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.customers:
       case _Section.reports:
       case _Section.reviews:
-      case _Section.users:
-      case _Section.banners:
-      case _Section.promos:
       case _Section.deliverySlots:
       case _Section.heldProducts:
-      case _Section.broadcast:
       case _Section.settings:
         break;
     }
@@ -189,24 +174,6 @@ class _HomeShellState extends State<HomeShell> {
           selectedIcon: Icon(Icons.star),
           label: 'Отзывы',
         );
-      case _Section.users:
-        return const NavigationDestination(
-          icon: Icon(Icons.admin_panel_settings_outlined),
-          selectedIcon: Icon(Icons.admin_panel_settings),
-          label: 'Юзеры',
-        );
-      case _Section.banners:
-        return const NavigationDestination(
-          icon: Icon(Icons.image_outlined),
-          selectedIcon: Icon(Icons.image),
-          label: 'Баннеры',
-        );
-      case _Section.promos:
-        return const NavigationDestination(
-          icon: Icon(Icons.local_offer_outlined),
-          selectedIcon: Icon(Icons.local_offer),
-          label: 'Промокоды',
-        );
       case _Section.heldProducts:
         return const NavigationDestination(
           icon: Icon(Icons.visibility_off_outlined),
@@ -218,12 +185,6 @@ class _HomeShellState extends State<HomeShell> {
           icon: Icon(Icons.access_time_outlined),
           selectedIcon: Icon(Icons.access_time_filled),
           label: 'Слоты',
-        );
-      case _Section.broadcast:
-        return const NavigationDestination(
-          icon: Icon(Icons.campaign_outlined),
-          selectedIcon: Icon(Icons.campaign),
-          label: 'Рассылка',
         );
       case _Section.settings:
         return const NavigationDestination(
@@ -261,12 +222,6 @@ class _HomeShellState extends State<HomeShell> {
           storeId: widget.storeId,
           storeName: widget.storeName,
         );
-      case _Section.users:
-        return const UsersListPage();
-      case _Section.banners:
-        return const BannersListPage();
-      case _Section.promos:
-        return const PromosListPage();
       case _Section.heldProducts:
         return HeldProductsPage(
           storeId: widget.storeId,
@@ -277,8 +232,6 @@ class _HomeShellState extends State<HomeShell> {
           storeId: widget.storeId,
           storeName: widget.storeName,
         );
-      case _Section.broadcast:
-        return const BroadcastPage();
       case _Section.settings:
         return const SettingsPage();
     }
@@ -307,14 +260,11 @@ class _HomeShellState extends State<HomeShell> {
           );
         }
 
-        // Phone bottom nav. The `_Section` enum may have more values than
-        // we want to show on phone (e.g. Banners, admin-only). We compute
-        // the visible-section list per role and map index↔section through
-        // it so NavigationBar's selectedIndex never falls outside its
-        // destinations and we don't show non-applicable items to managers.
-        final auth = context.watch<AuthCubit>().state;
-        final isAdmin = auth is Authenticated && auth.user.isAdmin;
-
+        // Phone bottom nav. The visible list is now the same for every role —
+        // the four admin-only screens moved into Настройки rather than being
+        // conditionally inserted here. Index↔section is still mapped through
+        // this list so NavigationBar's selectedIndex can never fall outside
+        // its destinations.
         final visibleSections = <_Section>[
           _Section.dashboard,
           _Section.newOrders,
@@ -323,20 +273,26 @@ class _HomeShellState extends State<HomeShell> {
           _Section.customers,
           _Section.reports,
           _Section.reviews,
-          // Users (staff management) and Banners are admin-only. The
-          // pages self-gate their bodies, but the nav entries must be
-          // gated too — otherwise a manager sees the tab, taps it, and
-          // lands on an "admin only" banner.
-          if (isAdmin) _Section.users,
-          if (isAdmin) _Section.banners,
-          if (isAdmin) _Section.promos,
+          // Users / Banners / Promos / Broadcast are NOT in the phone bar.
+          //
+          // A Material NavigationBar is designed for 3-5 destinations and does
+          // NOT scroll: it divides the width. With the admin entries included
+          // this list reached 12, i.e. 32.5px per destination on a 390pt phone
+          // — labels unreadable and tap targets too small to hit. Measured, not
+          // estimated. Промокоды sat 9th of 12 and was effectively invisible,
+          // which is exactly how it was reported.
+          //
+          // They also do not belong there on merit: they are configuration
+          // screens visited occasionally, not daily operations. They now live
+          // in Настройки (see settings_page.dart), which is where an operator
+          // already expects to go and deliberately change something.
+          //
           // Slot config is per-store; managers run their store day-to-day,
-          // so they can tune their own caps. Admin gets it too.
+          // so they keep it.
           _Section.deliverySlots,
           // Staff, not admin-only: the manager standing in the shop is the one
           // who knows the shelf was restocked. Matches the server's gate.
           _Section.heldProducts,
-          if (isAdmin) _Section.broadcast,
           _Section.settings,
         ];
 
@@ -455,34 +411,10 @@ class _SideRail extends StatelessWidget {
                 isSelected: selected == _Section.reviews,
                 onTap: () => onSelected(_Section.reviews),
               ),
-              // Users (staff management) — admin role only. Manager
-              // doesn't see this entry (the page self-gates too, but the
-              // nav entry must match).
-              Builder(builder: (ctx) {
-                final auth = ctx.watch<AuthCubit>().state;
-                final isAdmin = auth is Authenticated && auth.user.isAdmin;
-                if (!isAdmin) return const SizedBox.shrink();
-                return _RailItem(
-                  icon: Icons.admin_panel_settings_outlined,
-                  selectedIcon: Icons.admin_panel_settings,
-                  label: 'Пользователи',
-                  isSelected: selected == _Section.users,
-                  onTap: () => onSelected(_Section.users),
-                );
-              }),
-              // Banners — admin role only. Manager doesn't see this entry.
-              Builder(builder: (ctx) {
-                final auth = ctx.watch<AuthCubit>().state;
-                final isAdmin = auth is Authenticated && auth.user.isAdmin;
-                if (!isAdmin) return const SizedBox.shrink();
-                return _RailItem(
-                  icon: Icons.image_outlined,
-                  selectedIcon: Icons.image,
-                  label: 'Баннеры',
-                  isSelected: selected == _Section.banners,
-                  onTap: () => onSelected(_Section.banners),
-                );
-              }),
+              // Users / Banners / Promos / Broadcast deliberately have NO rail
+              // entry: they moved into Настройки, the same as on phone. The
+              // rail and the bar must agree, or the app has two different
+              // ideas about where a screen lives.
               // Delivery slots — staff (admin + manager).
               Builder(builder: (ctx) {
                 final auth = ctx.watch<AuthCubit>().state;
@@ -496,20 +428,8 @@ class _SideRail extends StatelessWidget {
                   onTap: () => onSelected(_Section.deliverySlots),
                 );
               }),
-              // Broadcast — admin role only. Sends a push to ALL customers,
-              // so we keep it behind the same gate as Banners.
-              Builder(builder: (ctx) {
-                final auth = ctx.watch<AuthCubit>().state;
-                final isAdmin = auth is Authenticated && auth.user.isAdmin;
-                if (!isAdmin) return const SizedBox.shrink();
-                return _RailItem(
-                  icon: Icons.campaign_outlined,
-                  selectedIcon: Icons.campaign,
-                  label: 'Рассылка',
-                  isSelected: selected == _Section.broadcast,
-                  onTap: () => onSelected(_Section.broadcast),
-                );
-              }),
+              // Broadcast deliberately has no rail entry — it lives in
+              // Настройки with the other admin configuration screens.
               _RailItem(
                 icon: Icons.settings_outlined,
                 selectedIcon: Icons.settings,

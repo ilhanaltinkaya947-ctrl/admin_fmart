@@ -4,9 +4,13 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../../core/api/api_config.dart';
 import '../../auth/state/auth_cubit.dart';
+import '../../banners/presentation/banners_list_page.dart';
+import '../../broadcast/presentation/broadcast_page.dart';
+import '../../promos/presentation/promos_list_page.dart';
 import '../../stores/data/pickup_stores_repository.dart';
 import '../../stores/presentation/pickup_stores_page.dart';
 import '../../stores/state/store_cubit.dart';
+import '../../users/presentation/users_list_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -147,6 +151,47 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           const SizedBox(height: 16),
+          // ── Управление (admin only) ─────────────────────────────────────
+          //
+          // These four screens used to be tabs in the bottom bar. They were
+          // moved here because the bar does not scroll — Material's
+          // NavigationBar divides the width — and at 12 destinations on a
+          // 390pt phone that is 32.5px each: labels unreadable, targets too
+          // small to hit. «Промокоды» sat 9th of 12 and was reported as
+          // simply "not visible", which is exactly what it was.
+          //
+          // Settings is also the honest home for them. They are configuration
+          // an operator visits occasionally, not part of the daily loop —
+          // putting them beside Заказы and Клиенты claimed they were equally
+          // frequent, and that was never true.
+          if (auth is Authenticated && auth.user.isAdmin) ...[
+            _SectionHeader('Управление'),
+            _AdminEntry(
+              icon: Icons.local_offer_outlined,
+              title: 'Промокоды',
+              subtitle: 'Коды скидок: применение, клиенты, история',
+              onTap: () => _push(context, const PromosListPage()),
+            ),
+            _AdminEntry(
+              icon: Icons.image_outlined,
+              title: 'Баннеры',
+              subtitle: 'Картинки и расписание на главной',
+              onTap: () => _push(context, const BannersListPage()),
+            ),
+            _AdminEntry(
+              icon: Icons.admin_panel_settings_outlined,
+              title: 'Пользователи',
+              subtitle: 'Сотрудники и доступ к магазинам',
+              onTap: () => _push(context, const UsersListPage()),
+            ),
+            _AdminEntry(
+              icon: Icons.campaign_outlined,
+              title: 'Рассылка',
+              subtitle: 'Пуш-сообщение всем клиентам',
+              onTap: () => _push(context, const BroadcastPage()),
+            ),
+            const SizedBox(height: 16),
+          ],
           _SectionHeader('Приложение'),
           _InfoCard(
             children: [
@@ -178,6 +223,16 @@ class _SettingsPageState extends State<SettingsPage> {
         .replaceAll(RegExp(r'/$'), '');
   }
 
+  /// Push one of the admin configuration screens.
+  ///
+  /// These used to be nav tabs with their own `_Section`, so they were swapped
+  /// in as the shell's body. From Settings they are ordinary pushed routes —
+  /// which is also better: the operator gets a back arrow to where they came
+  /// from, instead of the shell silently replacing the page under them.
+  void _push(BuildContext context, Widget page) {
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
+  }
+
   Future<void> _confirmLogout(BuildContext context) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -203,6 +258,33 @@ class _SettingsPageState extends State<SettingsPage> {
     if (ok == true && context.mounted) {
       await context.read<AuthCubit>().logout();
     }
+  }
+}
+
+/// One admin configuration entry in Настройки.
+class _AdminEntry extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _AdminEntry({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: onTap,
+    );
   }
 }
 
