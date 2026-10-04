@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../../../core/api/api_client.dart';
+import '../../../core/api/api_errors.dart';
 import '../../../core/api/safe_response.dart';
 import '../models/order_models.dart';
 
@@ -25,7 +26,16 @@ class OrdersApiException implements Exception {
 /// inside `{"error": {"message": "..."}}`, and some endpoints return
 /// plain strings. We try each shape in turn and fall back to null so
 /// the caller can use a generic message.
+///
+/// The SAFETY rules — Russian only, 4xx only, never 401/403, never a bare
+/// English code — live in [backendDetail], which this defers to first. The
+/// extra shapes below are the ones that helper deliberately does not handle
+/// (a nested proxy reason, a plain-string body), and they are reached only
+/// when it has already declined.
 String? _extractApiErrorMessage(DioException e) {
+  final canonical = backendDetail(e);
+  if (canonical != null) return canonical;
+
   final data = e.response?.data;
   if (data == null) return null;
   if (data is String) {
@@ -35,23 +45,9 @@ String? _extractApiErrorMessage(DioException e) {
   if (data is Map) {
     final detail = data['detail'];
     if (detail is String && detail.trim().isNotEmpty) return detail.trim();
-    // FastAPI's detail is often a STRUCTURED object on the newer endpoints,
-    // e.g. weight lines: {"code": "weight_missing", "message": "Укажите вес…"}.
-    // Without this branch those errors fell through to a generic fallback and
-    // the operator never saw the real reason — exactly the case the weight
-    // picker depends on (409 weight_missing lists unweighed lines).
     if (detail is Map) {
       final msg = detail['message'];
       if (msg is String && msg.trim().isNotEmpty) return msg.trim();
-      final code = detail['code'];
-      if (code is String && code.trim().isNotEmpty) return code.trim();
-    }
-    if (detail is List && detail.isNotEmpty) {
-      final first = detail.first;
-      if (first is Map && first['msg'] is String) {
-        final s = (first['msg'] as String).trim();
-        if (s.isNotEmpty) return s;
-      }
     }
     for (final key in const ['message', 'error_message', 'reason']) {
       final v = data[key];
@@ -65,21 +61,6 @@ String? _extractApiErrorMessage(DioException e) {
       if (reason is String && reason.trim().isNotEmpty) return reason.trim();
     }
     if (err is String && err.trim().isNotEmpty) return err.trim();
-  }
-  return null;
-}
-
-/// The structured `detail` object of a failed admin call, when there is one.
-///
-/// Several order endpoints return `{"detail": {...,"code": "..."}}` rather than
-/// a plain string, and the caller sometimes needs the code or a sibling field
-/// (weight_missing carries the ids of the unweighed lines). The message goes
-/// through [_extractApiErrorMessage]; this exposes the rest.
-Map<String, dynamic>? extractApiErrorDetail(DioException e) {
-  final data = e.response?.data;
-  if (data is Map) {
-    final detail = data['detail'];
-    if (detail is Map) return detail.cast<String, dynamic>();
   }
   return null;
 }

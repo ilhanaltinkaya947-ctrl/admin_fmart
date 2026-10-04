@@ -2193,8 +2193,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       _showSettleOutcome(res);
     } on OrdersApiException catch (e) {
       if (!mounted) return;
-      // 409 weight_missing means a line still has no weight — the detail names
-      // them. Refresh so the picker sees the current truth, then say the reason.
+      // A 409 weight_missing means a line still has no weight. Refresh so the
+      // picker sees the current truth, then say the server's reason.
       if (e.statusCode == 409) {
         await _refetchOrderNow();
         if (!mounted) return;

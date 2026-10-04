@@ -68,6 +68,16 @@ final RegExp _cyrillic = RegExp(r'[Ѐ-ӿ]');
 /// FastAPI also returns `detail` as a LIST for 422 validation errors. That
 /// shape is written for developers, never for an operator, so it's skipped.
 ///
+/// Some newer endpoints return `detail` as an OBJECT carrying the same Russian
+/// message under a `message` key, with a machine-readable `code` beside it —
+/// the weight endpoints do this
+/// (`{"code":"weight_missing","message":"Укажите вес или уберите позицию"}`).
+/// The message is written for the operator, so it is read here; the code is
+/// left to the caller, which uses it to branch (a 409 weight_missing should
+/// make the screen name the unweighed lines). Only `message` is read — never
+/// `code` — because a code is an English identifier and must not reach an
+/// operator as if it were a reason.
+///
 /// Why this exists: the courier dispatch gate answers with a 409 explaining
 /// that the order was never paid or hasn't been released yet, and the
 /// manager was shown a flat «Не удалось создать заявку» instead — no way to
@@ -80,10 +90,35 @@ String? backendDetail(Object e) {
   final data = e.response?.data;
   if (data is! Map) return null;
   final detail = data['detail'];
-  if (detail is! String) return null;
-  final text = detail.trim();
-  if (text.isEmpty) return null;
+  final String? text;
+  if (detail is String) {
+    text = detail.trim();
+  } else if (detail is Map) {
+    final msg = detail['message'];
+    text = msg is String ? msg.trim() : null;
+  } else {
+    text = null;
+  }
+  if (text == null || text.isEmpty) return null;
   return _cyrillic.hasMatch(text) ? text : null;
+}
+
+/// The machine-readable `detail.code` of a failed call, when there is one.
+///
+/// The counterpart to [backendDetail]: the message is what the operator reads,
+/// this is what the code branches on. Returns null unless the response is a 4xx
+/// carrying a structured detail, so a caller cannot accidentally treat a
+/// missing code as a decision.
+String? backendErrorCode(Object e) {
+  if (e is! DioException) return null;
+  final status = e.response?.statusCode;
+  if (status == null || status < 400 || status >= 500) return null;
+  final data = e.response?.data;
+  if (data is! Map) return null;
+  final detail = data['detail'];
+  if (detail is! Map) return null;
+  final code = detail['code'];
+  return code is String && code.trim().isNotEmpty ? code.trim() : null;
 }
 
 /// Same rule as [backendDetail], but for a message that has ALREADY been
