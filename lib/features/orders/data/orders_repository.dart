@@ -35,6 +35,17 @@ String? _extractApiErrorMessage(DioException e) {
   if (data is Map) {
     final detail = data['detail'];
     if (detail is String && detail.trim().isNotEmpty) return detail.trim();
+    // FastAPI's detail is often a STRUCTURED object on the newer endpoints,
+    // e.g. weight lines: {"code": "weight_missing", "message": "Укажите вес…"}.
+    // Without this branch those errors fell through to a generic fallback and
+    // the operator never saw the real reason — exactly the case the weight
+    // picker depends on (409 weight_missing lists unweighed lines).
+    if (detail is Map) {
+      final msg = detail['message'];
+      if (msg is String && msg.trim().isNotEmpty) return msg.trim();
+      final code = detail['code'];
+      if (code is String && code.trim().isNotEmpty) return code.trim();
+    }
     if (detail is List && detail.isNotEmpty) {
       final first = detail.first;
       if (first is Map && first['msg'] is String) {
@@ -54,6 +65,21 @@ String? _extractApiErrorMessage(DioException e) {
       if (reason is String && reason.trim().isNotEmpty) return reason.trim();
     }
     if (err is String && err.trim().isNotEmpty) return err.trim();
+  }
+  return null;
+}
+
+/// The structured `detail` object of a failed admin call, when there is one.
+///
+/// Several order endpoints return `{"detail": {...,"code": "..."}}` rather than
+/// a plain string, and the caller sometimes needs the code or a sibling field
+/// (weight_missing carries the ids of the unweighed lines). The message goes
+/// through [_extractApiErrorMessage]; this exposes the rest.
+Map<String, dynamic>? extractApiErrorDetail(DioException e) {
+  final data = e.response?.data;
+  if (data is Map) {
+    final detail = data['detail'];
+    if (detail is Map) return detail.cast<String, dynamic>();
   }
   return null;
 }
@@ -319,6 +345,50 @@ class OrdersRepository {
       data: {'qty': qty},
     );
     return OrderItemEditResult.fromJson(asJsonMap(resp.data));
+  }
+
+  /// The picker's scale reading for one weight line, in grams.
+  ///
+  /// Moves NO money — the refund happens once per order in [settleOrderWeight].
+  /// 422 `weight_out_of_range` carries `max_g`; the caller surfaces that so the
+  /// operator is told the real ceiling rather than a bare rejection.
+  Future<OrderItemWeightResult> setItemWeight({
+    required int orderId,
+    required int itemId,
+    required int actualG,
+  }) async {
+    try {
+      final resp = await api.dio.put(
+        '/gw/order/admin/orders/$orderId/items/$itemId/weight',
+        data: {'actual_g': actualG},
+      );
+      return OrderItemWeightResult.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось сохранить вес',
+        statusCode: e.response?.statusCode,
+      );
+    }
+  }
+
+  /// «Сборка завершена»: ONE refund for every weight line on the order.
+  ///
+  /// Idempotent — a repeat call refunds nothing new and reports the previous
+  /// figure in `already_settled`. 409 `weight_missing` lists the lines that
+  /// still have no weight; the caller must show which ones rather than a
+  /// generic failure, because the operator's next action depends on it.
+  Future<WeightSettleResult> settleOrderWeight({required int orderId}) async {
+    try {
+      final resp = await api.dio.post(
+        '/gw/order/admin/orders/$orderId/weight-settle',
+      );
+      return WeightSettleResult.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось рассчитать вес',
+        statusCode: e.response?.statusCode,
+      );
+    }
   }
 
   /// Manager override for auto-assigned bag counts. Used when the

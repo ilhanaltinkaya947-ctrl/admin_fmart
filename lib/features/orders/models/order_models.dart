@@ -455,6 +455,18 @@ class OrderItem {
   final ProductInfo product;
   final DateTime? pickedAt;
 
+  // ── Weight-step snapshot (spec §14.1). Null on every piece line and on
+  // every line written before the feature shipped, so an existing reader sees
+  // only new nulls. Money arrives as strings, like price/total.
+  final int? unitG;
+  final String? pricePerKg;
+  final int? orderedG;
+  final String? bufferAmount;
+  final int? chargedGCap;
+  final int? actualG;
+  final DateTime? weighedAt;
+  final String? uom;
+
   OrderItem({
     required this.id,
     required this.productId,
@@ -463,9 +475,40 @@ class OrderItem {
     required this.total,
     required this.product,
     this.pickedAt,
+    this.unitG,
+    this.pricePerKg,
+    this.orderedG,
+    this.bufferAmount,
+    this.chargedGCap,
+    this.actualG,
+    this.weighedAt,
+    this.uom,
   });
 
   bool get isPicked => pickedAt != null;
+
+  /// A step-weight line, decided by the snapshot being COMPLETE.
+  ///
+  /// This mirrors `is_weight_line` in order-service (`weight_settle.py:88`)
+  /// exactly, and the parallel is load-bearing: the server decides which lines
+  /// are weighed and refunded, so if the app disagreed, a picker could be shown
+  /// a «Факт, г» box for a line the server refuses to weigh — or worse, be
+  /// denied one for a line the server WILL refuse to settle without.
+  ///
+  /// The four fields are the whole test, and notably NOT `uom`: Fresh lines
+  /// carry «кг» too and are sold in fixed half-kilo units with no buffer and no
+  /// settlement, so keying on the unit string would offer a weight box for
+  /// ordinary produce. A partial snapshot cannot occur (create_order validates
+  /// all-or-nothing); if one ever appears it is treated as a piece line, which
+  /// moves no money — the safe direction.
+  bool get isWeightLine =>
+      unitG != null &&
+      pricePerKg != null &&
+      orderedG != null &&
+      chargedGCap != null;
+
+  /// The scale reading, once entered. Null until the picker weighs it.
+  bool get isWeighed => actualG != null;
 
   factory OrderItem.fromJson(Map<String, dynamic> j) => OrderItem(
     id: j['id'] as int? ?? 0,
@@ -479,6 +522,19 @@ class OrderItem {
     pickedAt: j['picked_at'] == null
         ? null
         : DateTime.tryParse(j['picked_at'].toString()),
+    // Tolerant: a missing key, a JSON number, or a numeric string all read as
+    // the same value. The server sends ints and money-as-strings today, but a
+    // parse failure here must never blank a line or crash the screen.
+    unitG: _asInt(j['unit_g']),
+    pricePerKg: _moneyAsString(j['price_per_kg']),
+    orderedG: _asInt(j['ordered_g']),
+    bufferAmount: _moneyAsString(j['buffer_amount']),
+    chargedGCap: _asInt(j['charged_g_cap']),
+    actualG: _asInt(j['actual_g']),
+    weighedAt: j['weighed_at'] == null
+        ? null
+        : DateTime.tryParse(j['weighed_at'].toString()),
+    uom: j['uom']?.toString(),
   );
 
   OrderItem copyWith({
@@ -486,6 +542,8 @@ class OrderItem {
     String? total,
     DateTime? pickedAt,
     bool clearPickedAt = false,
+    int? actualG,
+    DateTime? weighedAt,
   }) =>
       OrderItem(
         id: id,
@@ -495,7 +553,35 @@ class OrderItem {
         total: total ?? this.total,
         product: product,
         pickedAt: clearPickedAt ? null : (pickedAt ?? this.pickedAt),
+        // Carried through deliberately: dropping these would make a re-priced
+        // or re-quantified weight line silently stop being a weight line, and
+        // its «Факт, г» box would vanish mid-pick.
+        unitG: unitG,
+        pricePerKg: pricePerKg,
+        orderedG: orderedG,
+        bufferAmount: bufferAmount,
+        chargedGCap: chargedGCap,
+        actualG: actualG ?? this.actualG,
+        weighedAt: weighedAt ?? this.weighedAt,
+        uom: uom,
       );
+}
+
+/// `int` from an int, a JSON double, or a numeric string. Null when absent or
+/// unparseable — never a silent 0, which would read as a real weight.
+int? _asInt(Object? v) {
+  if (v == null) return null;
+  if (v is int) return v;
+  if (v is num) return v.round();
+  return int.tryParse(v.toString().trim());
+}
+
+/// Money as a string, the way price/total already arrive, so nothing here
+/// introduces a float rounding difference against the server's figures.
+String? _moneyAsString(Object? v) {
+  if (v == null) return null;
+  final s = v.toString().trim();
+  return s.isEmpty ? null : s;
 }
 
 class ProductInfo {
@@ -1367,3 +1453,130 @@ class RefundHistoryEntry {
       );
 }
 
+
+/// Result of PUT .../items/{item_id}/weight — the picker's scale reading.
+///
+/// Response of `set_item_weight` (order-service `order_service.py:3248`). It
+/// moves NO money; the refund happens once per order at settlement. The echoes
+/// exist so the UI can render the line and the live hint without re-fetching.
+class OrderItemWeightResult {
+  final int orderId;
+  final int itemId;
+  final int actualG;
+  final int orderedG;
+  final int chargedGCap;
+  final DateTime? weighedAt;
+
+  /// What THIS line alone would return at settlement — the number behind the
+  /// live «Вернём клиенту N ₸» hint.
+  ///
+  /// Deliberately NOT the final refund: the order-level ceiling and any earlier
+  /// refunds are applied only at settlement. The server says so in as many
+  /// words, so the UI must present this as an estimate, never as a promise.
+  final double refundPreview;
+
+  OrderItemWeightResult({
+    required this.orderId,
+    required this.itemId,
+    required this.actualG,
+    required this.orderedG,
+    required this.chargedGCap,
+    required this.weighedAt,
+    required this.refundPreview,
+  });
+
+  factory OrderItemWeightResult.fromJson(Map<String, dynamic> j) =>
+      OrderItemWeightResult(
+        orderId: j['order_id'] as int? ?? 0,
+        itemId: j['item_id'] as int? ?? 0,
+        actualG: (j['actual_g'] as num?)?.toInt() ?? 0,
+        orderedG: (j['ordered_g'] as num?)?.toInt() ?? 0,
+        chargedGCap: (j['charged_g_cap'] as num?)?.toInt() ?? 0,
+        weighedAt: j['weighed_at'] == null
+            ? null
+            : DateTime.tryParse(j['weighed_at'].toString()),
+        refundPreview: (j['refund_preview'] as num?)?.toDouble() ?? 0,
+      );
+}
+
+/// Result of POST .../weight-settle — «Сборка завершена».
+///
+/// Response of `settle_weight` (order-service `order_service.py:3404`).
+/// Idempotent by design: a repeat call refunds nothing new, and the server
+/// reports the already-refunded figure rather than pretending to send again.
+class WeightSettleResult {
+  final int orderId;
+  final int weightLines;
+
+  /// The total the weighing owes, per the server's own netting.
+  final double due;
+
+  /// What a PREVIOUS settlement already returned. Non-zero means this call was
+  /// a repeat and nothing new was paid — the UI must say so rather than show
+  /// the same refund twice.
+  final double alreadySettled;
+
+  /// What was actually sent back in this call (0 when nothing was published).
+  final double refundAmount;
+
+  /// False when the ledger refused the row because it already holds this key.
+  final bool refundPublished;
+
+  /// Per-line breakdown from the server, for the summary.
+  final List<WeightSettleLine> lines;
+
+  WeightSettleResult({
+    required this.orderId,
+    required this.weightLines,
+    required this.due,
+    required this.alreadySettled,
+    required this.refundAmount,
+    required this.refundPublished,
+    required this.lines,
+  });
+
+  /// True when a previous settlement had already returned the money.
+  bool get wasAlreadySettled => alreadySettled > 0.005;
+
+  factory WeightSettleResult.fromJson(Map<String, dynamic> j) =>
+      WeightSettleResult(
+        orderId: j['order_id'] as int? ?? 0,
+        weightLines: (j['weight_lines'] as num?)?.toInt() ?? 0,
+        due: (j['due'] as num?)?.toDouble() ?? 0,
+        alreadySettled: (j['already_settled'] as num?)?.toDouble() ?? 0,
+        refundAmount: (j['refund_amount'] as num?)?.toDouble() ?? 0,
+        refundPublished: j['refund_published'] == true,
+        lines: ((j['lines'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(WeightSettleLine.fromJson)
+            .toList(),
+      );
+}
+
+/// One line of a settlement breakdown.
+class WeightSettleLine {
+  final int itemId;
+  final int productId;
+  final int orderedG;
+  final int actualG;
+  final int chargedGCap;
+  final double refund;
+
+  WeightSettleLine({
+    required this.itemId,
+    required this.productId,
+    required this.orderedG,
+    required this.actualG,
+    required this.chargedGCap,
+    required this.refund,
+  });
+
+  factory WeightSettleLine.fromJson(Map<String, dynamic> j) => WeightSettleLine(
+        itemId: (j['item_id'] as num?)?.toInt() ?? 0,
+        productId: (j['product_id'] as num?)?.toInt() ?? 0,
+        orderedG: (j['ordered_g'] as num?)?.toInt() ?? 0,
+        actualG: (j['actual_g'] as num?)?.toInt() ?? 0,
+        chargedGCap: (j['charged_g_cap'] as num?)?.toInt() ?? 0,
+        refund: (j['refund'] as num?)?.toDouble() ?? 0,
+      );
+}
