@@ -22,6 +22,8 @@ import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
 import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
+import '../../auth/state/auth_cubit.dart';
+import '../models/refund_button.dart';
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -101,15 +103,21 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // Refund needs money to refund: only after payment landed and before
   // fully refunded. partially-refunded still allows further refund up
   // to the remaining amount (backend will reject over-refund).
-  bool get _canRefund {
-    return const {
-      'paid',
-      'processing',
-      'ready-for-delivery',
-      'delivering',
-      'completed',
-      'partially-refunded',
-    }.contains(_order.status.toLowerCase());
+  //
+  // A COMPLETED order is admin-only (Кирилл 2026-10-07: «закрыть доступы к
+  // возвратам на закрытом заказе у сотрудников, оставить только у админов»).
+  // This hides the button from managers; order-service enforces the same rule
+  // with a 403, which is the gate that actually counts — a hidden button is
+  // cosmetic, and the two must agree or a manager sees a control that fails.
+  bool get _canRefund =>
+      canRefund(status: _order.status, isAdmin: _isAdmin);
+
+  /// The signed-in user's role. Defaults to NOT admin, so a state we cannot
+  /// read (still loading, unauthenticated) hides the restricted control rather
+  /// than showing one that the server would refuse.
+  bool get _isAdmin {
+    final auth = context.read<AuthCubit>().state;
+    return auth is Authenticated && auth.user.isAdmin;
   }
 
   bool get _itemsEditable {
