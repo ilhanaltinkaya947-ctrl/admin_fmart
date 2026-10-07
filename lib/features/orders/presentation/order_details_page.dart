@@ -3657,15 +3657,20 @@ class _WeightSettleBar extends StatelessWidget {
           const SizedBox(height: 8),
           // The two rules the picker needs while standing at the counter with
           // the knife. Both came from Кирилл 2026-10-07, and both were being
-          // discovered only AFTER a wrong cut — the first as a server 422, the
-          // second as a refund nobody expected. They belong here, above the one
-          // button that settles the weight, because this is the moment they
-          // apply.
+          // discovered only AFTER a wrong cut — the first as a refund nobody
+          // expected, the second as a phone call nobody made. They belong here,
+          // above the one button that settles the weight, because this is the
+          // moment they apply.
+          //
+          // ONLY while unsettled (`!settled`): once the weight is calculated the
+          // cut is already made, so the instruction cannot change anything and
+          // just adds noise to a delivered order.
           //
           // Deliberately plain and permanent (a hint, not a validation error):
           // the field itself cannot enforce «не меньше заказа» — the app cannot
           // stop a hand — and a rule that only appears once violated is a rule
           // the picker learns by getting it wrong.
+          if (!settled) ...[
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -3697,6 +3702,7 @@ class _WeightSettleBar extends StatelessWidget {
               ),
             ],
           ),
+          ],
           const SizedBox(height: 10),
           FilledButton(
             onPressed: canSettle ? onSettle : null,

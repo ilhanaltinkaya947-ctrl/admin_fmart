@@ -87,4 +87,26 @@ void main() {
       expect(around.contains('_weightError'), isFalse);
     });
   });
+
+
+  group('the hints disappear once the weight is settled', () {
+    test('they are gated on !settled', () {
+      // Once the weight is calculated the cut is made; the instruction cannot
+      // change anything and is noise on a delivered order.
+      final cutHint = page.indexOf('Отрежьте не меньше заказа');
+      final gating = page.lastIndexOf('if (!settled)', cutHint);
+      expect(gating, greaterThan(-1),
+          reason: 'the hints must be inside an `if (!settled)` block');
+      // and the gate must be close above them, not somewhere unrelated
+      expect(cutHint - gating, lessThan(600));
+    });
+
+    test('the gate closes before the settle button', () {
+      final cutHint = page.indexOf('Отрежьте не меньше заказа');
+      final button = page.indexOf("'Сборка завершена'");
+      // the `]` closing the spread must sit between the hints and the button
+      final closer = page.lastIndexOf('],', button);
+      expect(closer, greaterThan(cutHint));
+    });
+  });
 }
