@@ -86,6 +86,14 @@ class Order {
   final String customerComment;
   final String paymentMethod;
   final bool isPromo;
+
+  /// The order WAS EVER completed (server-derived from the status history).
+  ///
+  /// NOT `status == 'completed'`: after a partial refund a completed order
+  /// reads `partially-refunded`. This is what keeps «Возврат» hidden from a
+  /// manager on a delivered order whose status no longer says "completed".
+  /// False when the backend does not send the key.
+  final bool closed;
   final DateTime createdAt;
   final DateTime updatedAt;
   // Set only when status == 'scheduled'. ISO UTC string of the next
@@ -136,6 +144,7 @@ class Order {
     required this.customerComment,
     required this.paymentMethod,
     required this.isPromo,
+    this.closed = false,
     required this.createdAt,
     required this.updatedAt,
     this.scheduledForAt,
@@ -255,6 +264,12 @@ class Order {
     customerComment: j['customer_comment'] as String? ?? '',
     paymentMethod: j['payment_method'] as String? ?? '',
     isPromo: j['is_promo'] as bool? ?? false,
+    // Server-derived: the order WAS EVER completed. Defaults to false when the
+    // key is absent (older order-service), which is the SAFE default here — a
+    // missing flag must not hide the refund button from a manager on a live
+    // order. The server still refuses a closed-order refund with a 403, so a
+    // wrong "false" costs a failed tap, never a wrong refund.
+    closed: j['closed'] as bool? ?? false,
     createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ?? DateTime.now(),
     updatedAt: DateTime.tryParse(j['updated_at']?.toString() ?? '') ?? DateTime.now(),
     pickupHoldUntil: j['pickup_hold_until'] != null
@@ -322,6 +337,11 @@ class Order {
         customerComment: customerComment,
         paymentMethod: paymentMethod,
         isPromo: isPromo,
+        // Deliberately NOT overridable, same reasoning as capturedAmount: it is
+        // derived from the status HISTORY, which no client mutation can change.
+        // An optimistic `copyWith(status: ...)` would otherwise reset it to
+        // false and re-offer «Возврат» to a manager on a closed order.
+        closed: closed,
         createdAt: createdAt,
         updatedAt: updatedAt,
         scheduledForAt: scheduledForAt,

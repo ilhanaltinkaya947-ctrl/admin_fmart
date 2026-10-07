@@ -89,4 +89,59 @@ void main() {
       }
     });
   });
+
+
+  group('a CLOSED order is admin-only whatever its current status', () {
+    // Round 4b: after an admin partial refund a completed order reads
+    // `partially-refunded`. A status-only rule re-offered «Возврат» to a
+    // manager on a DELIVERED order, and the API allowed it.
+    test('a manager gets nothing on a closed order still reading partially-refunded', () {
+      expect(
+        canRefund(status: 'partially-refunded', isAdmin: false, closed: true),
+        isFalse,
+        reason: 'the rest of a delivered order must not be a manager\'s to refund',
+      );
+    });
+
+    test('an admin still does', () {
+      expect(
+        canRefund(status: 'partially-refunded', isAdmin: true, closed: true),
+        isTrue,
+      );
+    });
+
+    test('closed wins over every live-looking status, for a manager', () {
+      for (final s in const [
+        'paid', 'processing', 'ready-for-delivery', 'delivering',
+        'partially-refunded', 'completed',
+      ]) {
+        expect(canRefund(status: s, isAdmin: false, closed: true), isFalse,
+            reason: 'closed order must not offer refund on $s to a manager');
+      }
+    });
+
+    test('closed does NOT hide it from an admin', () {
+      for (final s in const [
+        'partially-refunded', 'refunded', 'canceled',
+      ]) {
+        // refunded/canceled are never offered (nothing left to refund), even to
+        // an admin — assert the closed flag does not override that.
+        final expected = s == 'partially-refunded';
+        expect(canRefund(status: s, isAdmin: true, closed: true), expected,
+            reason: 'closed + $s for an admin');
+      }
+    });
+
+    test('an OPEN order is unaffected by the flag being false', () {
+      expect(canRefund(status: 'partially-refunded', isAdmin: false, closed: false),
+          isTrue);
+    });
+  });
+
+  group('the flag defaults to false, so an old backend hides nothing', () {
+    test('omitting closed leaves the live-order behaviour intact', () {
+      expect(canRefund(status: 'paid', isAdmin: false), isTrue);
+      expect(canRefund(status: 'completed', isAdmin: false), isFalse);
+    });
+  });
 }

@@ -109,8 +109,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // This hides the button from managers; order-service enforces the same rule
   // with a 403, which is the gate that actually counts — a hidden button is
   // cosmetic, and the two must agree or a manager sees a control that fails.
-  bool get _canRefund =>
-      canRefund(status: _order.status, isAdmin: _isAdmin);
+  bool get _canRefund => canRefund(
+        status: _order.status,
+        isAdmin: _isAdmin,
+        closed: _order.closed,
+      );
 
   /// The signed-in user's role. Defaults to NOT admin, so a state we cannot
   /// read (still loading, unauthenticated) hides the restricted control rather
@@ -2079,6 +2082,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     final code = e.statusCode;
     if (detail != null) {
       _showErrorWithRetry(detail, retry);
+    } else if (code == 403) {
+      // A refusal, not a failure. «Повторить» here can never succeed — the
+      // server will answer 403 every time, because the rule is about the
+      // operator's ROLE or the order being closed, and neither changes by
+      // retrying. Offering it teaches staff to distrust the button (they tap,
+      // it fails, they tap again). Say what is actually true and offer nothing
+      // to retry. Kirill's rule: a closed order's money is the admin's.
+      _showError(
+        'Возврат по закрытому заказу делает только администратор.',
+      );
     } else if (code == 409 || code == 404 || code == 400) {
       _showError('Заказ уже изменился. Обновите экран.');
     } else {
