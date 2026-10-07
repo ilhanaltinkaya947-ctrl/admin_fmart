@@ -12,6 +12,8 @@
 // completed-order-manager cases below go red. Remove the completed branch
 // entirely and the same two go red. Both directions are covered.
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:admin_fmart/features/orders/models/refund_button.dart';
 
@@ -142,6 +144,49 @@ void main() {
     test('omitting closed leaves the live-order behaviour intact', () {
       expect(canRefund(status: 'paid', isAdmin: false), isTrue);
       expect(canRefund(status: 'completed', isAdmin: false), isFalse);
+    });
+  });
+
+
+  group('the 403 text comes from the SERVER, not a constant here', () {
+    // Round 5, LOW. `_showMoneyPathError` serves the refund, the cancel AND the
+    // weight-difference paths. A hardcoded refund sentence showed on all three,
+    // so a manager whose CANCEL was refused read refund wording. The server's
+    // `detail` is already specific per action; the app must show it.
+    final page = File(
+      'lib/features/orders/presentation/order_details_page.dart',
+    ).readAsStringSync();
+
+    test('the 403 branch raises the message from the exception', () {
+      final i = page.indexOf('} else if (code == 403) {');
+      expect(i, greaterThan(-1));
+      final j = page.indexOf('} else if (code == 409', i);
+      final branch = page.substring(i, j > i ? j : i + 1400);
+      expect(branch.contains('e.message'), isTrue,
+          reason: 'the 403 copy must come from the server response');
+    });
+
+    test('no hardcoded refund sentence is shown for every 403', () {
+      final i = page.indexOf('} else if (code == 403) {');
+      final j = page.indexOf('} else if (code == 409', i);
+      final branch = page.substring(i, j > i ? j : i + 1400);
+      expect(branch.contains('Возврат по закрытому заказу'),
+          isFalse,
+          reason: 'a refund-specific sentence must not be used for cancel '
+              'and weight-difference refusals too');
+    });
+
+    test('it still offers NO retry (a 403 can never succeed on retry)', () {
+      // Bound the window to the 403 branch ITSELF, ending at the next `else if`.
+      // A fixed-length window ran past the branch and picked up the
+      // `_showErrorWithRetry` from the 409/5xx arms below, so the assertion
+      // failed on a clean tree — a bad window, not a real defect.
+      final i = page.indexOf('} else if (code == 403) {');
+      final j = page.indexOf('} else if (code == 409', i);
+      expect(j, greaterThan(i), reason: 'could not find the end of the 403 arm');
+      final branch = page.substring(i, j);
+      expect(branch.contains('_showErrorWithRetry'), isFalse,
+          reason: 'a 403 must not offer a retry control');
     });
   });
 }

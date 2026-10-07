@@ -2084,13 +2084,25 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       _showErrorWithRetry(detail, retry);
     } else if (code == 403) {
       // A refusal, not a failure. «Повторить» here can never succeed — the
-      // server will answer 403 every time, because the rule is about the
-      // operator's ROLE or the order being closed, and neither changes by
-      // retrying. Offering it teaches staff to distrust the button (they tap,
-      // it fails, they tap again). Say what is actually true and offer nothing
-      // to retry. Kirill's rule: a closed order's money is the admin's.
+      // server answers 403 every time, because the rule is about the operator's
+      // ROLE or the order being closed, and neither changes by retrying.
+      // Offering it teaches staff to distrust the button (they tap, it fails,
+      // they tap again).
+      //
+      // The TEXT comes from the server, not from a constant here. This one
+      // method serves the refund, the cancel and the weight-difference paths,
+      // and the server's `detail` is already specific to each («Возврат по
+      // закрытому заказу…» vs «Заказ уже закрыт: вес не меняется.»). A
+      // hardcoded refund sentence showed on all three — telling a manager their
+      // CANCEL was refused "по закрытому заказу" with refund wording.
+      //
+      // Only when the server said nothing usable do we fall back, and then to a
+      // reason that is true for every caller here: it is the admin's action now.
+      final serverReason = (e.message).trim();
       _showError(
-        'Возврат по закрытому заказу делает только администратор.',
+        serverReason.isNotEmpty
+            ? serverReason
+            : 'Действие доступно только администратору.',
       );
     } else if (code == 409 || code == 404 || code == 400) {
       _showError('Заказ уже изменился. Обновите экран.');
