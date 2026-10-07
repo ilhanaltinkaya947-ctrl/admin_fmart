@@ -3654,6 +3654,49 @@ class _WeightSettleBar extends StatelessWidget {
             subtitle,
             style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
           ),
+          const SizedBox(height: 8),
+          // The two rules the picker needs while standing at the counter with
+          // the knife. Both came from Кирилл 2026-10-07, and both were being
+          // discovered only AFTER a wrong cut — the first as a server 422, the
+          // second as a refund nobody expected. They belong here, above the one
+          // button that settles the weight, because this is the moment they
+          // apply.
+          //
+          // Deliberately plain and permanent (a hint, not a validation error):
+          // the field itself cannot enforce «не меньше заказа» — the app cannot
+          // stop a hand — and a rule that only appears once violated is a rule
+          // the picker learns by getting it wrong.
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.content_cut_outlined,
+                  size: 15, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Отрежьте не меньше заказа и не больше чем на 5% сверху',
+                  style: TextStyle(
+                      fontSize: 12.5, color: scheme.onSurfaceVariant),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.call_outlined,
+                  size: 15, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Меньше 80% заказа: позвоните покупателю',
+                  style: TextStyle(
+                      fontSize: 12.5, color: scheme.onSurfaceVariant),
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 10),
           FilledButton(
             onPressed: canSettle ? onSettle : null,
