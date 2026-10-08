@@ -14,9 +14,9 @@ void main() {
   group('Order.fromJson weight fields', () {
     test('present', () {
       final o = Order.fromJson(
-          weighedOrderJson(weightSettled: true, weightRefundAmount: '98.00'));
+          weighedOrderJson(weightSettled: true, weightRefundAmount: '138.00'));
       expect(o.weightSettled, isTrue);
-      expect(o.weightRefundAmount, '98.00');
+      expect(o.weightRefundAmount, '138.00');
     });
 
     test('absent key is UNKNOWN (null), not false', () {
@@ -32,15 +32,15 @@ void main() {
 
     test('copyWith keeps both', () {
       final o = Order.fromJson(
-              weighedOrderJson(weightSettled: true, weightRefundAmount: '98.00'))
+              weighedOrderJson(weightSettled: true, weightRefundAmount: '138.00'))
           .copyWith(status: 'ready-for-delivery');
       expect(o.weightSettled, isTrue);
-      expect(o.weightRefundAmount, '98.00');
+      expect(o.weightRefundAmount, '138.00');
     });
   });
 
   test('settledBarText', () {
-    expect(settledBarText('98.00'), 'Расчёт выполнен · Возврат 98 ₸');
+    expect(settledBarText('138.00'), 'Расчёт выполнен · Возврат 138 ₸');
     expect(settledBarText('1250.50'),
         'Расчёт выполнен · Возврат ${formatTenge('1250.50')}');
     expect(settledBarText('0.00'), 'Расчёт выполнен');
@@ -52,12 +52,12 @@ void main() {
     final repo = fakeRepo(weighedOrderJson(
       actualG: 270,
       weightSettled: true,
-      weightRefundAmount: '98.00',
+      weightRefundAmount: '138.00',
     ));
     await pumpOrderPage(t, repo);
     await scrollTo(t, find.byKey(const ValueKey('weight-settle-subtitle')));
 
-    expect(find.text('Расчёт выполнен · Возврат 98 ₸'), findsOneWidget);
+    expect(find.text('Расчёт выполнен · Возврат 138 ₸'), findsOneWidget);
     expect(find.widgetWithText(TextField, 'Факт, г'), findsNothing);
     expect(find.text('Сборка завершена'), findsNothing);
     expect(find.widgetWithText(FilledButton, 'Расчёт выполнен'), findsNothing);
@@ -82,7 +82,7 @@ void main() {
     await pumpOrderPage(t, repo);
     await scrollTo(t, find.text('Сборка завершена'));
     expect(find.widgetWithText(TextField, 'Факт, г'), findsOneWidget);
-    expect(find.textContaining('Возврат 98'), findsNothing);
+    expect(find.textContaining('Возврат 138'), findsNothing);
     await disposePage(t);
   });
 
@@ -94,11 +94,11 @@ void main() {
 
     // Another iPad settles; the next 8 s poll brings the server's truth.
     repo.detail = weighedOrderJson(
-        actualG: 270, weightSettled: true, weightRefundAmount: '98.00');
+        actualG: 270, weightSettled: true, weightRefundAmount: '138.00');
     await t.pump(const Duration(seconds: 9));
     await settle(t);
     expect(find.widgetWithText(TextField, 'Факт, г'), findsNothing);
-    expect(find.text('Расчёт выполнен · Возврат 98 ₸'), findsOneWidget);
+    expect(find.text('Расчёт выполнен · Возврат 138 ₸'), findsOneWidget);
     await disposePage(t);
   });
 }

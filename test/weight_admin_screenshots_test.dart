@@ -154,7 +154,7 @@ void main() {
       final repo = fakeRepo(weighedOrderJson(
         actualG: 270,
         weightSettled: true,
-        weightRefundAmount: '98.00',
+        weightRefundAmount: '138.00',
       ));
       await pumpOrderPage(t, repo, size: size);
       await _toWeightCard(t);
@@ -168,7 +168,7 @@ void main() {
         closed: true,
         actualG: 270,
         weightSettled: true,
-        weightRefundAmount: '98.00',
+        weightRefundAmount: '138.00',
       ));
       await pumpOrderPage(t, repo, size: size);
       await scrollTo(t, find.text('Возврат по закрытому заказу делает администратор'));

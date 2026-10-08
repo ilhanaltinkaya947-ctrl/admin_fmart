@@ -2291,6 +2291,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     );
     if (ok != true || !mounted || _settleBusy) return;
 
+    // What the capture could still return BEFORE this settle, for the
+    // outcome text (a zero means «nothing left», not «lost refund»).
+    final remainingBefore = refundCeiling(
+      capturedAmount: _order.capturedAmount,
+      totalAmount: _order.totalAmount,
+      alreadyRefunded: _refunds.fold<double>(0.0, (s, r) => s + r.amount),
+    ).remaining;
+
     setState(() => _settleBusy = true);
     _lastLocalWriteAt = DateTime.now();
     try {
@@ -2301,7 +2309,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       setState(() => _settleResult = res);
       await _refetchOrderNow();
       if (!mounted) return;
-      _showSettleOutcome(res);
+      _showSettleOutcome(res, remainingBefore);
     } on OrdersApiException catch (e) {
       if (!mounted) return;
       if (isWeightAlreadySettledRefusal(e.statusCode, e.message)) {
@@ -2330,23 +2338,12 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     }
   }
 
-  void _showSettleOutcome(WeightSettleResult res) {
-    final String text;
-    if (res.wasAlreadySettled && res.refundAmount <= 0.005) {
-      // A repeat: do NOT present it as money sent now.
-      text = 'Расчёт по весу уже сделан ранее: '
-          '${formatTenge(res.alreadySettled.toStringAsFixed(2))}';
-    } else if (res.refundAmount > 0.005 && res.refundPublished) {
-      text = 'Вернём клиенту ${formatTenge(res.refundAmount.toStringAsFixed(2))}';
-    } else if (res.due > 0.005 && !res.refundPublished) {
-      // The ledger refused the row. The server logs this as money the customer
-      // is owed, so the operator is told rather than shown a silent success.
-      text = 'Возврат не отправлен. Передайте в поддержку: '
-          '${formatTenge(res.due.toStringAsFixed(2))}';
-    } else {
-      text = 'Расчёт по весу готов, возврат не требуется';
-    }
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void _showSettleOutcome(WeightSettleResult res, double remainingCapture) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(
+        settleOutcomeText(res, remainingCapture: remainingCapture),
+      ),
+    ));
   }
 
   /// Show a MONEY-path failure without leaking backend text, and without

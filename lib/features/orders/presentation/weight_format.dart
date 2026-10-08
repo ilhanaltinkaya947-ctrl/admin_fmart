@@ -84,19 +84,54 @@ double estimateWeightRefund(
       sum += preview < 0 ? 0 : preview;
       continue;
     }
-    final price = double.tryParse(it.price) ?? 0;
-    final buffer = double.tryParse(it.bufferAmount ?? '') ?? 0;
-    final perKg = double.tryParse(it.pricePerKg ?? '') ?? 0;
-    final paid = price * it.qty + buffer;
-    final billable =
-        it.actualG! < it.chargedGCap! ? it.actualG! : it.chargedGCap!;
-    final fin = (perKg * billable / 1000).floorToDouble();
-    final line = paid - fin;
-    if (line > 0) sum += line;
+    sum += weightLineRefund(it, it.actualG!) ?? 0;
   }
   sum -= alreadyRefunded;
   if (sum < 0) sum = 0;
   return (sum * 100).roundToDouble() / 100;
+}
+
+/// What settling one weight line at [actualG] would refund, by order-service's
+/// formula: max(0, price × qty + buffer − floor(price_per_kg × min(actual,
+/// cap) / 1000)). Null for a line that is not a weight line.
+double? weightLineRefund(OrderItem it, int actualG) {
+  if (!it.isWeightLine) return null;
+  final price = double.tryParse(it.price) ?? 0;
+  final buffer = double.tryParse(it.bufferAmount ?? '') ?? 0;
+  final perKg = double.tryParse(it.pricePerKg ?? '') ?? 0;
+  final paid = price * it.qty + buffer;
+  final billable = actualG < it.chargedGCap! ? actualG : it.chargedGCap!;
+  final fin = (perKg * billable / 1000).floorToDouble();
+  final line = paid - fin;
+  return line > 0 ? (line * 100).roundToDouble() / 100 : 0;
+}
+
+/// The snackbar after «Сборка завершена».
+///
+/// [remainingCapture] is what the order could still refund before this
+/// settle. When it is zero the server refunds nothing although `due` > 0:
+/// that is not a lost refund, everything was already returned, so the text
+/// says no refund is needed instead of sending the picker to support.
+String settleOutcomeText(WeightSettleResult res, {double? remainingCapture}) {
+  if (res.wasAlreadySettled && res.refundAmount <= 0.005) {
+    // A repeat: do NOT present it as money sent now.
+    return 'Расчёт по весу уже сделан ранее: '
+        '${formatTenge(res.alreadySettled.toStringAsFixed(2))}';
+  }
+  if (res.refundAmount > 0.005 && res.refundPublished) {
+    return 'Вернём клиенту ${formatTenge(res.refundAmount.toStringAsFixed(2))}';
+  }
+  if (res.due > 0.005 && !res.refundPublished) {
+    if (remainingCapture != null && remainingCapture <= 0.005) {
+      return 'Расчёт по весу готов. Возврат не нужен: '
+          'по заказу уже всё возвращено';
+    }
+    // The ledger refused the row. The server logs this as money the customer
+    // is owed, so the operator is told rather than shown a silent success.
+    return 'Возврат не отправлен. Передайте в поддержку: '
+        '${formatTenge(res.due.toStringAsFixed(2))}';
+  }
+  return 'Расчёт по весу готов, возврат не требуется';
 }
 
 /// The body of the settle confirm.
@@ -311,7 +346,13 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
     // and red warnings below say so, and this hint stays out of their way.
     if (shown < ordered) return null;
 
-    final preview = widget.refundPreview;
+    // The server's preview is for the SAVED reading. While a different
+    // figure is being typed, the hint follows the typed one (settle formula),
+    // or it would quote the old weight's refund next to the new weight.
+    final typingNew = typed != null && typed != widget.item.actualG;
+    final preview = typingNew
+        ? weightLineRefund(widget.item, typed)
+        : widget.refundPreview;
     if (preview == null) return null;
     if (preview <= 0.005) return null;
 
