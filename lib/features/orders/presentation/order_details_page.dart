@@ -22,6 +22,8 @@ import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
 import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
+import '../../auth/state/auth_cubit.dart';
+import '../models/refund_button.dart';
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -122,15 +124,24 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // Refund needs money to refund: only after payment landed and before
   // fully refunded. partially-refunded still allows further refund up
   // to the remaining amount (backend will reject over-refund).
-  bool get _canRefund {
-    return const {
-      'paid',
-      'processing',
-      'ready-for-delivery',
-      'delivering',
-      'completed',
-      'partially-refunded',
-    }.contains(_order.status.toLowerCase());
+  //
+  // A COMPLETED order is admin-only (Кирилл 2026-10-07: «закрыть доступы к
+  // возвратам на закрытом заказе у сотрудников, оставить только у админов»).
+  // This hides the button from managers; order-service enforces the same rule
+  // with a 403, which is the gate that actually counts — a hidden button is
+  // cosmetic, and the two must agree or a manager sees a control that fails.
+  bool get _canRefund => canRefund(
+        status: _order.status,
+        isAdmin: _isAdmin,
+        closed: _order.closed,
+      );
+
+  /// The signed-in user's role. Defaults to NOT admin, so a state we cannot
+  /// read (still loading, unauthenticated) hides the restricted control rather
+  /// than showing one that the server would refuse.
+  bool get _isAdmin {
+    final auth = context.read<AuthCubit>().state;
+    return auth is Authenticated && auth.user.isAdmin;
   }
 
   bool get _itemsEditable {
@@ -2254,12 +2265,55 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     final code = e.statusCode;
     if (detail != null) {
       _showErrorWithRetry(detail, retry);
+    } else if (code == 403) {
+      // A refusal, not a failure. «Повторить» here can never succeed — the
+      // server answers 403 every time, because the rule is about the operator's
+      // ROLE or the order being closed, and neither changes by retrying.
+      // Offering it teaches staff to distrust the button (they tap, it fails,
+      // they tap again).
+      //
+      // The TEXT comes from the server, but ONLY when it is Russian. This one
+      // method serves the refund, the cancel and the weight-difference paths and
+      // the server's `detail` is already specific to each («Возврат по закрытому
+      // заказу…» vs «Заказ уже закрыт: вес не меняется.») — but the server can
+      // also answer 403 with English text ("Admin only"), and raw English must
+      // never reach an operator. Anything without Cyrillic is replaced.
+      //
+      // Falls back to a sentence that is true for every caller here: it is the
+      // admin's action now.
+      final serverReason = (e.message).trim();
+      _showError(
+        _hasCyrillic(serverReason)
+            ? serverReason
+            : 'Действие доступно только администратору.',
+      );
     } else if (code == 409 || code == 404 || code == 400) {
-      _showError('Заказ уже изменился. Обновите экран.');
+      // One 409 has its own wording: the server refuses a weight change or a
+      // weight settle on a closed order with «Заказ уже закрыт: вес не
+      // меняется.». Showing «Заказ уже изменился. Обновите экран.» told the
+      // operator to reload, which cannot help — the rule is about the order
+      // being closed, not about stale screen state.
+      final msg = e.message.trim();
+      _showError(
+        msg.contains('вес не меняется')
+            ? msg
+            : 'Заказ уже изменился. Обновите экран.',
+      );
     } else {
       _showErrorWithRetry(fallback, retry);
     }
   }
+
+  /// True when the text contains Cyrillic, so it is safe to show an operator.
+  ///
+  /// A RANGE test, matching `operatorSafeDetail`'s own gate in api_errors.dart,
+  /// not a word list: the server's copy is Russian («доступен только
+  /// администратору»), but it can also answer 403 with English ("Admin only"),
+  /// and raw English must never reach a store manager. Only the presence of
+  /// Cyrillic is assumed; nothing else about the text is.
+  static final RegExp _cyrillicRange = RegExp(r'[\u0400-\u04FF\u0500-\u052F]');
+
+  static bool _hasCyrillic(String text) => _cyrillicRange.hasMatch(text);
 
   Future<void> _refundOrder({
     required double amount,
