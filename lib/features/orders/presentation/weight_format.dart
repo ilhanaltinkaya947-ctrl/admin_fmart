@@ -193,7 +193,7 @@ String weightLineSummary(OrderItem item) {
 /// The picker's scale reading for one weight line, with the live refund hint.
 ///
 /// The hint has three states, and the distinction between them is the whole
-/// point of the +10% buffer:
+/// point of the +5% buffer:
 ///
 ///   * below the ordered weight → the customer is owed money:
 ///     «Вернём клиенту 120 ₸»

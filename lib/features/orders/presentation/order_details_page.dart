@@ -137,6 +137,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         closed: _order.closed,
       );
 
+  /// «Возврат» is hidden from THIS user only because the order is closed and
+  /// closed-order refunds are the admin's (Кирилл 07.10). Then a muted line
+  /// stands where the button was, so a manager on the phone with an upset
+  /// customer knows whom to ask (UX review B10). Derived from the same
+  /// canRefund rule, so the two can never disagree.
+  bool get _refundIsAdminOnly =>
+      !_canRefund &&
+      canRefund(status: _order.status, isAdmin: true, closed: _order.closed);
+
   /// The signed-in user's role. Defaults to NOT admin, so a state we cannot
   /// read (still loading, unauthenticated) hides the restricted control rather
   /// than showing one that the server would refuse.
@@ -2685,7 +2694,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           // for the current status (e.g. canceled / refunded / payment-failed).
           // Previously the buttons showed on every order — tapping Отменить
           // on a refunded order returned a backend error.
-          if (_canCancel || _canRefund) ...[
+          if (_canCancel || _canRefund || _refundIsAdminOnly) ...[
             const SizedBox(height: 16),
             const Divider(),
             const SizedBox(height: 12),
@@ -2742,6 +2751,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                         backgroundColor: Colors.orange.shade700,
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
+                  ),
+                if (_refundIsAdminOnly)
+                  Expanded(
+                    child: Text(
+                      'Возврат по закрытому заказу делает администратор',
+                      key: const ValueKey('refund-admin-only'),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),
@@ -3779,7 +3799,7 @@ class _WeightSettleBar extends StatelessWidget {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  'Меньше 80% заказа: позвоните покупателю',
+                  'Меньше 80% заказа: позвоните клиенту',
                   style: TextStyle(
                       fontSize: 12.5, color: scheme.onSurfaceVariant),
                 ),

@@ -305,7 +305,13 @@ Future<void> scrollTo(WidgetTester t, Finder finder) async {
   await t.scrollUntilVisible(
     finder,
     300,
-    scrollable: find.byType(Scrollable).first,
+    // The page's own vertical list; other scrollables (horizontal chips, a
+    // text field's) come and go with role and status.
+    scrollable: find
+        .byWidgetPredicate(
+          (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+        )
+        .first,
   );
   await t.pump();
 }

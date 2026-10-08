@@ -2,7 +2,7 @@
 //
 // Кирилл 2026-10-07 gave both rules for the person holding the knife:
 //   * «Отрежьте не меньше заказа и не больше чем на 5% сверху»  (Сб.1)
-//   * «Меньше 80% заказа: позвоните покупателю»                 (Сб.2)
+//   * «Меньше 80% заказа: позвоните клиенту»                 (Сб.2)
 //
 // They are plain Text, not fields, so nothing can functionally "break" them —
 // which is exactly why they need pinning: a rule stated in prose and then
@@ -48,7 +48,7 @@ void main() {
   group('the <80% call rule is stated', () {
     test('the hint is present', () {
       expect(
-        page.contains('Меньше 80% заказа: позвоните покупателю'),
+        page.contains('Меньше 80% заказа: позвоните клиенту'),
         isTrue,
         reason: 'the call-the-customer hint is gone',
       );
@@ -56,7 +56,9 @@ void main() {
 
     test('it names the threshold and the action', () {
       expect(page.contains('80%'), isTrue);
-      expect(page.contains('позвоните покупателю'), isTrue);
+      expect(page.contains('позвоните клиенту'), isTrue);
+      // One word for the customer across the admin weight copy (review B12).
+      expect(page.contains('позвоните покупателю'), isFalse);
     });
   });
 
