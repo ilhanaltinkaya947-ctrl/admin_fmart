@@ -799,6 +799,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     }
   }
 
+  /// «Расчёт по весу уже выполнен» (409): plain words, NO «Повторить» (the
+  /// server refuses the same request every time), and a reload so the screen
+  /// shows the settled state instead of fields that can no longer save.
+  void _showWeightSettledRefusal(String? serverMessage) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(weightAlreadySettledText(serverMessage)),
+        duration: const Duration(seconds: 6),
+      ),
+    );
+    _refetchOrderNow();
+  }
+
   /// A refusal the server will repeat. Offers «Обновить» (re-read the truth)
   /// rather than «Повторить» (re-send the request it just rejected).
   void _showError(String message) {
@@ -2067,8 +2080,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           ),
         );
       }
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
+      final msg = e is OrdersApiException ? e.message : backendDetail(e);
+      final code = e is OrdersApiException ? e.statusCode : backendStatus(e);
+      if (isWeightAlreadySettledRefusal(code, msg)) {
+        _showWeightSettledRefusal(msg);
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Не удалось удалить товар')),
       );
@@ -2167,6 +2186,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       });
     } on OrdersApiException catch (e) {
       if (!mounted) return;
+      if (isWeightAlreadySettledRefusal(e.statusCode, e.message)) {
+        // Another iPad settled this order. No figure typed here can change
+        // that, so say it plainly and reload: the fields freeze on the
+        // server's weight_settled.
+        _showWeightSettledRefusal(e.message);
+        return;
+      }
       // Kept beside the field, not just toasted: the operator is mid-edit and
       // the number they must change is in this message.
       setState(() => _weightError[item.id] = e.message);
@@ -2224,6 +2250,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       _showSettleOutcome(res);
     } on OrdersApiException catch (e) {
       if (!mounted) return;
+      if (isWeightAlreadySettledRefusal(e.statusCode, e.message)) {
+        _showWeightSettledRefusal(e.message);
+        return;
+      }
       // A 409 weight_missing means a line still has no weight. Refresh so the
       // picker sees the current truth, then say the server's reason.
       if (e.statusCode == 409) {
@@ -2283,7 +2313,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   ) {
     final detail = operatorSafeDetail(e.message, e.statusCode);
     final code = e.statusCode;
-    if (detail != null) {
+    if (isWeightAlreadySettledRefusal(code, e.message)) {
+      // Checked BEFORE the Russian-detail branch, which would offer
+      // «Повторить» for a request the server refuses every time.
+      _showWeightSettledRefusal(e.message);
+    } else if (detail != null) {
       _showErrorWithRetry(detail, retry);
     } else if (code == 403) {
       // A refusal, not a failure. «Повторить» here can never succeed — the

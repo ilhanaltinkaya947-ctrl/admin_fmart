@@ -164,3 +164,33 @@ String describeApiError(Object e, {required String subject}) {
       return 'Не удалось загрузить $subject. Попробуйте ещё раз.';
   }
 }
+
+/// The HTTP status of a failed call, or null when there was no response.
+int? backendStatus(Object e) =>
+    e is DioException ? e.response?.statusCode : null;
+
+/// order-service's refusal once an order's weight has been settled
+/// (`order_service.py`): «Расчёт по весу уже выполнен: вес больше не
+/// меняется» on a weight PUT, «…: весовую позицию нельзя убрать, оформите
+/// возврат вручную» on removing the line. Always a 409.
+const String kWeightSettledPhrase = 'Расчёт по весу уже выполнен';
+
+bool isWeightAlreadySettledRefusal(int? statusCode, String? message) =>
+    statusCode == 409 && (message ?? '').contains(kWeightSettledPhrase);
+
+/// The refusal as two plain sentences: «Расчёт по весу уже выполнен. Вес
+/// больше не меняется.» The server's tail is kept, because it is the part
+/// that tells the operator what to do instead.
+///
+/// A decision, not a glitch: callers show it WITHOUT «Повторить», since the
+/// same request is refused the same way every time.
+String weightAlreadySettledText(String? message) {
+  final m = (message ?? '').trim();
+  final i = m.indexOf(kWeightSettledPhrase);
+  var tail = i < 0 ? '' : m.substring(i + kWeightSettledPhrase.length);
+  tail = tail.replaceFirst(RegExp(r'^[\s:.,]+'), '').trim();
+  if (tail.isEmpty) return '$kWeightSettledPhrase. Вес больше не меняется.';
+  tail = tail[0].toUpperCase() + tail.substring(1);
+  if (!RegExp(r'[.!?]$').hasMatch(tail)) tail = '$tail.';
+  return '$kWeightSettledPhrase. $tail';
+}
