@@ -30,6 +30,34 @@ String formatGrams(int g) {
 String weightTargetText(int orderedG, int capG) =>
     'Нужно: от ${formatGrams(orderedG)} до ${formatGrams(capG)}';
 
+/// The over-cap confirm: «Сохранить 330 г? Клиент заплатит только за 315 г,
+/// остальное за счёт магазина.» True only on «Сохранить».
+String overCapConfirmText(int actualG, int capG) =>
+    'Сохранить ${formatGrams(actualG)}? Клиент заплатит только за '
+    '${formatGrams(capG)}, остальное за счёт магазина.';
+
+Future<bool?> confirmOverCapWeight(
+  BuildContext context, {
+  required int actualG,
+  required int capG,
+}) =>
+    showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        content: Text(overCapConfirmText(actualG, capG)),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('Сохранить'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Отмена'),
+          ),
+        ],
+      ),
+    );
+
 /// How a typed or stored reading compares with the order.
 enum WeightCheck { none, under80, underOrder, inRange, overCap }
 
@@ -84,8 +112,10 @@ String weightLineSummary(OrderItem item) {
 ///     «Вернём клиенту 120 ₸»
 ///   * between the order and the cap → they already paid for the buffer, so
 ///     the difference is theirs: «Клиент доплатил заранее, возврат 16 ₸»
-///   * above the cap → the cut is too big to accept, and the operator is told
-///     exactly how much to take: «Больше лимита, берём только до 330 г»
+///   * above the cap → ALLOWED (Ilhan 08.10): saving asks first, «Сохранить
+///     330 г? Клиент заплатит только за 315 г, остальное за счёт магазина.»
+///     The server bills at most the cap, so the true weight is recorded and
+///     the store absorbs the rest.
 ///
 /// `refundPreview` is the SERVER's figure for this line alone. It is an
 /// estimate: the order ceiling and earlier refunds apply only at settlement.
@@ -148,9 +178,14 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final g = int.tryParse(_ctrl.text.trim());
     if (g == null) return;
+    final cap = widget.item.chargedGCap;
+    if (cap != null && g > cap) {
+      final ok = await confirmOverCapWeight(context, actualG: g, capG: cap);
+      if (ok != true || !mounted) return;
+    }
     widget.onWeightSet?.call(g);
   }
 
@@ -165,9 +200,7 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
     final typed = int.tryParse(_ctrl.text.trim());
     final shown = typed ?? widget.item.actualG;
 
-    if (cap != null && typed != null && typed > cap) {
-      return 'Больше лимита, берём только до ${formatGrams(cap)}';
-    }
+    if (cap != null && shown != null && shown > cap) return null;
     if (shown == null || ordered == null) return null;
     // Below the order is a rule broken, not a refund to announce: the amber
     // and red warnings below say so, and this hint stays out of their way.
@@ -262,7 +295,6 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
 
     final cap = item.chargedGCap;
     final typed = int.tryParse(_ctrl.text.trim());
-    final overCap = cap != null && typed != null && typed > cap;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -308,8 +340,6 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
                     labelText: 'Факт, г',
                     isDense: true,
                     border: const OutlineInputBorder(),
-                    errorText: overCap ? ' ' : null,
-                    errorStyle: const TextStyle(fontSize: 0, height: 0),
                   ),
                   // Rebuild on every keystroke so the warnings below follow
                   // the figure being typed, not the last one saved.
@@ -326,10 +356,10 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
                 )
               else
                 FilledButton(
-                  // Above the cap the server will refuse, so the button is
-                  // disabled rather than letting the operator submit a weight
-                  // that cannot be saved.
-                  onPressed: (typed == null || overCap) ? null : _submit,
+                  // Above the cap is allowed: _submit asks first. Never
+                  // disabled for weight, or a candy portion that cannot be
+                  // trimmed forces the picker to type a false figure.
+                  onPressed: typed == null ? null : _submit,
                   child: const Text('Сохранить'),
                 ),
             ],
@@ -366,7 +396,7 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
                 style: TextStyle(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w500,
-                  color: overCap ? scheme.error : scheme.primary,
+                  color: scheme.primary,
                 ),
               ),
             );
