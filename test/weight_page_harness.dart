@@ -6,11 +6,13 @@
 // "the settle POST went out exactly once" rather than trusting a flag.
 
 import 'package:admin_fmart/core/api/api_client.dart';
+import 'package:dio/dio.dart';
 import 'package:admin_fmart/core/services/onesignal_service.dart';
 import 'package:admin_fmart/core/storage/prefs_storage.dart';
 import 'package:admin_fmart/features/auth/models/current_user.dart';
 import 'package:admin_fmart/features/auth/state/auth_cubit.dart';
 import 'package:admin_fmart/features/delivery/data/delivery_repository.dart';
+import 'package:admin_fmart/features/delivery/models/delivery_models.dart';
 import 'package:admin_fmart/features/delivery/state/delivery_cubit.dart';
 import 'package:admin_fmart/features/orders/data/orders_repository.dart';
 import 'package:admin_fmart/features/orders/models/order_models.dart';
@@ -19,6 +21,7 @@ import 'package:admin_fmart/features/stores/data/stores_repository.dart';
 import 'package:admin_fmart/features/stores/state/store_cubit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '_harness.dart' show StubAuthRepository, StubTokenStorage;
@@ -56,7 +59,7 @@ Map<String, dynamic> weighedOrderJson({
           'qty': 6,
           'price': '155.00',
           'total': '976.00',
-          'product': {'name': 'Сыр Emsar для пиццы', 'sku': '4870001'},
+          'product': {'name': 'Сыр Emsar для пиццы', 'in_stock': true},
           'unit_g': 50,
           'price_per_kg': '3105.00',
           'ordered_g': 300,
@@ -181,6 +184,21 @@ class FakeOrdersRepository extends OrdersRepository {
   }
 }
 
+/// No courier claim yet (a 404), answered at once: the real repository would
+/// reach for secure storage and the network.
+class FakeDeliveryRepository extends DeliveryRepository {
+  FakeDeliveryRepository({required super.api});
+
+  @override
+  Future<GetClaimsResponseDto> getClaimByOrder(int orderId) async {
+    final req = RequestOptions(path: '/gw/delivery/$orderId/claim');
+    throw DioException(
+      requestOptions: req,
+      response: Response(requestOptions: req, statusCode: 404),
+    );
+  }
+}
+
 class TestAuthCubit extends AuthCubit {
   TestAuthCubit({
     required super.tokenStorage,
@@ -244,7 +262,7 @@ Future<void> pumpOrderPage(
       providers: [
         RepositoryProvider<OrdersRepository>.value(value: repo),
         RepositoryProvider<DeliveryRepository>(
-          create: (_) => DeliveryRepository(api: api),
+          create: (_) => FakeDeliveryRepository(api: api),
         ),
       ],
       child: MultiBlocProvider(
@@ -257,7 +275,8 @@ Future<void> pumpOrderPage(
             ),
           ),
           BlocProvider<DeliveryCubit>(
-            create: (_) => DeliveryCubit(repo: DeliveryRepository(api: api)),
+            create: (_) =>
+                DeliveryCubit(repo: FakeDeliveryRepository(api: api)),
           ),
           BlocProvider<StoreCubit>(
             create: (_) => TestStoreCubit(
@@ -268,7 +287,21 @@ Future<void> pumpOrderPage(
           ),
         ],
         child: MaterialApp(
-          theme: theme,
+          debugShowCheckedModeBanner: false,
+          // As app.dart: the admin app's seed colour, Russian locale.
+          theme: theme ??
+              ThemeData(
+                colorScheme:
+                    ColorScheme.fromSeed(seedColor: const Color(0xFFEE6F00)),
+                useMaterial3: true,
+              ),
+          locale: const Locale('ru'),
+          supportedLocales: const [Locale('ru'), Locale('en')],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
           home: OrderDetailsPage(order: Order.fromJson(seedJson)),
         ),
       ),
