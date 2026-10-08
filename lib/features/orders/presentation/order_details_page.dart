@@ -2812,6 +2812,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                     refundPreview: _weightPreview[it.id],
                     weightError: _weightError[it.id],
                     settled: _weightsSettled,
+                    customerPhone: _customer?.phone,
                   ),
                   SubstitutionItemRow(
                     order: _order,

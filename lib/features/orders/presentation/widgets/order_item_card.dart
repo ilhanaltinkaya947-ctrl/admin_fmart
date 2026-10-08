@@ -45,6 +45,9 @@ class OrderItemCard extends StatelessWidget {
   /// the field is disabled and says so.
   final bool settled;
 
+  /// The customer's phone, for the under-80% call prompt on a weight line.
+  final String? customerPhone;
+
   const OrderItemCard({
     super.key,
     required this.item,
@@ -59,6 +62,7 @@ class OrderItemCard extends StatelessWidget {
     this.refundPreview,
     this.weightError,
     this.settled = false,
+    this.customerPhone,
   });
 
   @override
@@ -119,6 +123,7 @@ class OrderItemCard extends StatelessWidget {
                       refundPreview: refundPreview,
                       error: weightError,
                       settled: settled,
+                      customerPhone: customerPhone,
                     )
                   else if (editable)
                     _EditableQtyRow(

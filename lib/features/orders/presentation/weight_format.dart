@@ -13,11 +13,48 @@ import '../models/order_models.dart';
 /// site.
 String formatGrams(int g) {
   if (g < 1000) return '$g г';
-  final kilos = g / 1000;
-  // Trim a trailing ,0: «1 кг», not «1,0 кг».
-  final s = kilos.toStringAsFixed(1).replaceAll('.', ',');
-  return s.endsWith(',0') ? '${s.substring(0, s.length - 2)} кг' : '$s кг';
+  // Up to three decimals, trailing zeros trimmed: «1 кг», «1,5 кг», and
+  // «1,05 кг» for a 1 050 g cap. One decimal would round that cap to «1,1 кг»,
+  // which is a weight the picker must NOT cut to.
+  var s = (g / 1000).toStringAsFixed(3);
+  s = s.replaceFirst(RegExp(r'0+$'), '');
+  if (s.endsWith('.')) s = s.substring(0, s.length - 1);
+  return '${s.replaceAll('.', ',')} кг';
 }
+
+/// The range the picker must hit: «Нужно: от 300 г до 315 г».
+///
+/// Both ends are the server's: `ordered_g` and `charged_g_cap`. The cap is
+/// floor(ordered_g × 105 / 100) in order-service (`weight_settle.py`), and it is
+/// never recomputed here.
+String weightTargetText(int orderedG, int capG) =>
+    'Нужно: от ${formatGrams(orderedG)} до ${formatGrams(capG)}';
+
+/// How a typed or stored reading compares with the order.
+enum WeightCheck { none, under80, underOrder, inRange, overCap }
+
+/// Classify [actualG] against the order. Under 80% wins over «under order»:
+/// it needs a phone call, not just a top-up.
+WeightCheck weightCheck({int? actualG, int? orderedG, int? capG}) {
+  if (actualG == null || orderedG == null) return WeightCheck.none;
+  // Integer arithmetic: actual < 0.8 × ordered, without a float edge at 80%.
+  if (actualG * 5 < orderedG * 4) return WeightCheck.under80;
+  if (actualG < orderedG) return WeightCheck.underOrder;
+  if (capG != null && actualG > capG) return WeightCheck.overCap;
+  return WeightCheck.inRange;
+}
+
+/// The amber line for a cut below the order: «Меньше заказа на 30 г. Довесьте
+/// до 300 г».
+String weightUnderOrderText(int actualG, int orderedG) =>
+    'Меньше заказа на ${orderedG - actualG} г. '
+    'Довесьте до ${formatGrams(orderedG)}';
+
+const String kWeightUnder80Text = 'Меньше 80% заказа. Позвоните клиенту';
+
+/// Amber for «under the order»: a warning, not an error. Dark enough to read
+/// on white (amber 800).
+const Color kWeightAmber = Color(0xFFB45309);
 
 /// The weight-line label from the brief:
 /// «Сыр Emsar для пиццы · 300 г · 3 105 ₸/кг · заказ 1 023 ₸ (до 330 г)».
@@ -61,6 +98,10 @@ class WeightLinePanel extends StatefulWidget {
   final String? error;
   final bool settled;
 
+  /// The customer's phone, shown with «Скопировать номер» when a cut falls
+  /// under 80% of the order. Null or empty hides the number, never the warning.
+  final String? customerPhone;
+
   const WeightLinePanel({
     super.key,
     required this.item,
@@ -69,6 +110,7 @@ class WeightLinePanel extends StatefulWidget {
     this.refundPreview,
     this.error,
     this.settled = false,
+    this.customerPhone,
   });
 
   @override
@@ -127,16 +169,88 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
       return 'Больше лимита, берём только до ${formatGrams(cap)}';
     }
     if (shown == null || ordered == null) return null;
+    // Below the order is a rule broken, not a refund to announce: the amber
+    // and red warnings below say so, and this hint stays out of their way.
+    if (shown < ordered) return null;
 
     final preview = widget.refundPreview;
     if (preview == null) return null;
     if (preview <= 0.005) return null;
 
-    if (shown < ordered) {
-      return 'Вернём клиенту ${formatTenge(preview.toStringAsFixed(2))}';
-    }
     return 'Клиент доплатил заранее, возврат '
         '${formatTenge(preview.toStringAsFixed(2))}';
+  }
+
+  /// The reading the warnings judge: what is typed, else what is stored.
+  int? get _shownG =>
+      int.tryParse(_ctrl.text.trim()) ?? widget.item.actualG;
+
+  Future<void> _copyPhone(String phone) async {
+    await Clipboard.setData(ClipboardData(text: phone));
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(content: Text('Номер скопирован')),
+    );
+  }
+
+  Widget _under80Block(ColorScheme scheme) {
+    final phone = (widget.customerPhone ?? '').trim();
+    return Container(
+      key: const ValueKey('weight-under80'),
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.error.withValues(alpha: 0.6)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.call_outlined, size: 16, color: scheme.error),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  kWeightUnder80Text,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.error,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (phone.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 12,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SelectableText(
+                  phone,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                // No «Позвонить»: the admin app has no url_launcher, and an
+                // iPad without a SIM cannot place the call anyway. The picker
+                // copies the number to a phone.
+                OutlinedButton.icon(
+                  onPressed: () => _copyPhone(phone),
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('Скопировать номер'),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   @override
@@ -158,6 +272,18 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
           weightLineSummary(item),
           style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
         ),
+        // The range to hit, while there is still a cut to make.
+        if (editable && item.orderedG != null && cap != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            weightTargetText(item.orderedG!, cap),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: scheme.onSurface,
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
 
         if (editable)
@@ -185,6 +311,9 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
                     errorText: overCap ? ' ' : null,
                     errorStyle: const TextStyle(fontSize: 0, height: 0),
                   ),
+                  // Rebuild on every keystroke so the warnings below follow
+                  // the figure being typed, not the last one saved.
+                  onChanged: (_) => setState(() {}),
                   onSubmitted: (_) => _submit(),
                 ),
               ),
@@ -243,6 +372,39 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
             );
           },
         ),
+
+        // Under the order: amber, top up. Under 80%: red, call the customer.
+        // Only while the weight can still change; on a frozen order the cut
+        // is made and the instruction can no longer help.
+        if (editable)
+          Builder(
+            builder: (_) {
+              final shown = _shownG;
+              switch (weightCheck(
+                actualG: shown,
+                orderedG: item.orderedG,
+                capG: cap,
+              )) {
+                case WeightCheck.under80:
+                  return _under80Block(scheme);
+                case WeightCheck.underOrder:
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      weightUnderOrderText(shown!, item.orderedG!),
+                      key: const ValueKey('weight-under-order'),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: kWeightAmber,
+                      ),
+                    ),
+                  );
+                default:
+                  return const SizedBox.shrink();
+              }
+            },
+          ),
 
         // The server's reason for refusing a weight, shown in place.
         if (widget.error != null)
