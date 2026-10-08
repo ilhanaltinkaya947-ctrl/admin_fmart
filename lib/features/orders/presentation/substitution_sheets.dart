@@ -497,7 +497,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
         action: FilledButton(
           onPressed: () => Navigator.of(context)
               .pop(SubstituteSheetOutcome.removeItemRequested),
-          child: Text('Убрать и вернуть ${_money(_origUnitPrice * _qty)}'),
+          child: Text('Убрать и вернуть ${_money(widget.item.removalRefund)}'),
         ),
       );
     }
@@ -716,7 +716,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
           onPressed: () => Navigator.of(context)
               .pop(SubstituteSheetOutcome.removeItemRequested),
           icon: const Icon(Icons.delete_outline, size: 18),
-          label: Text('Убрать и вернуть ${_money(_origUnitPrice * _qty)}'),
+          label: Text('Убрать и вернуть ${_money(widget.item.removalRefund)}'),
         ),
       );
     }

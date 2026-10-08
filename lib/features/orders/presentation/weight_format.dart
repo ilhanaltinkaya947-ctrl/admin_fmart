@@ -219,6 +219,15 @@ class WeightLinePanel extends StatefulWidget {
   /// under 80% of the order. Null or empty hides the number, never the warning.
   final String? customerPhone;
 
+  /// Removes the line from the order (the card's existing «Удалить», which
+  /// confirms and refunds the line). Shown only while the weight can still
+  /// change: an unweighed cheese that is not on the shelf must be removable,
+  /// or the order can never be settled.
+  final VoidCallback? onRemove;
+
+  /// True while a remove or another edit of this line is in flight.
+  final bool removeBusy;
+
   const WeightLinePanel({
     super.key,
     required this.item,
@@ -228,6 +237,8 @@ class WeightLinePanel extends StatefulWidget {
     this.error,
     this.settled = false,
     this.customerPhone,
+    this.onRemove,
+    this.removeBusy = false,
   });
 
   @override
@@ -449,6 +460,17 @@ class _WeightLinePanelState extends State<WeightLinePanel> {
                   onPressed: typed == null ? null : _submit,
                   child: const Text('Сохранить'),
                 ),
+              if (widget.onRemove != null) ...[
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Удалить',
+                  onPressed:
+                      (widget.busy || widget.removeBusy) ? null : widget.onRemove,
+                  icon: const Icon(Icons.delete_outline),
+                  color: Colors.red.shade600,
+                  iconSize: 20,
+                ),
+              ],
             ],
           )
         else if (item.actualG != null)

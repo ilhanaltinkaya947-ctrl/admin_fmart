@@ -5,6 +5,8 @@
 // data. The fake repository records every money call so a test can assert
 // "the settle POST went out exactly once" rather than trusting a flag.
 
+import 'dart:async';
+
 import 'package:admin_fmart/core/api/api_client.dart';
 import 'package:dio/dio.dart';
 import 'package:admin_fmart/core/services/onesignal_service.dart';
@@ -26,13 +28,46 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '_harness.dart' show StubAuthRepository, StubTokenStorage;
 
-/// One weighed cheese line (300 g ordered, cap 315 g) plus one piece line.
+/// A weighed cheese line: 300 g ordered, 155 ₸ per 50 g × 6 = 930 + a 46 ₸
+/// buffer = 976 paid, cap 315 g, 3 105 ₸/кг. Settle at 270 g refunds
+/// 976 − floor(3105 × 270 / 1000) = 976 − 838 = 138.
+Map<String, dynamic> cheeseLine({
+  int id = 7,
+  int? actualG,
+  String name = 'Сыр Emsar для пиццы',
+}) =>
+    <String, dynamic>{
+      'id': id,
+      'product_id': 40 + id,
+      'qty': 6,
+      'price': '155.00',
+      'total': '976.00',
+      'product': {'name': name, 'in_stock': true},
+      'unit_g': 50,
+      'price_per_kg': '3105.00',
+      'ordered_g': 300,
+      'buffer_amount': '46.00',
+      'charged_g_cap': 315,
+      if (actualG != null) 'actual_g': actualG,
+      'uom': 'кг',
+    };
+
+/// The server's per-line refund preview for [actualG] on [cheeseLine].
+double cheesePreview(int actualG) {
+  final billable = actualG < 315 ? actualG : 315;
+  final fin = (3105 * billable / 1000).floorToDouble();
+  final r = 976 - fin;
+  return r < 0 ? 0 : r;
+}
+
+/// One weighed cheese line by default; [items] replaces the item list.
 Map<String, dynamic> weighedOrderJson({
   String status = 'processing',
   int? actualG,
   bool closed = false,
   Object? weightSettled = _absent,
   Object? weightRefundAmount = _absent,
+  List<Map<String, dynamic>>? items,
 }) =>
     <String, dynamic>{
       'id': 1101,
@@ -52,23 +87,7 @@ Map<String, dynamic> weighedOrderJson({
       'closed': closed,
       'created_at': '2026-10-08T09:00:00Z',
       'updated_at': '2026-10-08T09:05:00Z',
-      'items': [
-        {
-          'id': 7,
-          'product_id': 42,
-          'qty': 6,
-          'price': '155.00',
-          'total': '976.00',
-          'product': {'name': 'Сыр Emsar для пиццы', 'in_stock': true},
-          'unit_g': 50,
-          'price_per_kg': '3105.00',
-          'ordered_g': 300,
-          'buffer_amount': '46.00',
-          'charged_g_cap': 315,
-          if (actualG != null) 'actual_g': actualG,
-          'uom': 'кг',
-        },
-      ],
+      'items': items ?? [cheeseLine(actualG: actualG)],
       if (!identical(weightSettled, _absent)) 'weight_settled': weightSettled,
       if (!identical(weightRefundAmount, _absent))
         'weight_refund_amount': weightRefundAmount,
@@ -83,6 +102,13 @@ class FakeOrdersRepository extends OrdersRepository {
   Map<String, dynamic> detail;
 
   int settleCalls = 0;
+  int getCalls = 0;
+
+  /// When set, GET /admin/orders/{id} waits for it (a slow poll).
+  Completer<void>? getGate;
+
+  /// When set, the weight PUT waits for it (a slow save).
+  Completer<void>? putGate;
   final List<int> weightPuts = [];
   final List<int> removeCalls = [];
   int refundCalls = 0;
@@ -96,16 +122,23 @@ class FakeOrdersRepository extends OrdersRepository {
   WeightSettleResult settleResult = WeightSettleResult(
     orderId: 1101,
     weightLines: 1,
-    due: 98,
+    due: 138,
     alreadySettled: 0,
-    refundAmount: 98,
+    refundAmount: 138,
     refundPublished: true,
     lines: const [],
   );
 
   @override
-  Future<Order?> getOrderById({required int storeId, required int orderId}) async =>
-      Order.fromJson(detail);
+  Future<Order?> getOrderById({required int storeId, required int orderId}) async {
+    getCalls++;
+    // Snapshot BEFORE waiting: a slow GET returns what the server held when
+    // the request was served, not what it holds when the answer lands.
+    final snapshot = Order.fromJson(detail);
+    final gate = getGate;
+    if (gate != null) await gate.future;
+    return snapshot;
+  }
 
   @override
   Future<CustomerInfo> getCustomerInfo({required int customerId}) async =>
@@ -137,8 +170,14 @@ class FakeOrdersRepository extends OrdersRepository {
     required int actualG,
   }) async {
     weightPuts.add(actualG);
+    final gate = putGate;
+    if (gate != null) await gate.future;
     final e = weightError;
     if (e != null) throw e;
+    // The server now holds the reading.
+    for (final it in (detail['items'] as List).cast<Map<String, dynamic>>()) {
+      if (it['id'] == itemId) it['actual_g'] = actualG;
+    }
     return OrderItemWeightResult(
       orderId: orderId,
       itemId: itemId,
@@ -146,7 +185,7 @@ class FakeOrdersRepository extends OrdersRepository {
       orderedG: 300,
       chargedGCap: 315,
       weighedAt: DateTime.utc(2026, 10, 8, 9, 10),
-      refundPreview: 98,
+      refundPreview: cheesePreview(actualG),
     );
   }
 
@@ -166,7 +205,18 @@ class FakeOrdersRepository extends OrdersRepository {
     removeCalls.add(itemId);
     final e = removeError;
     if (e != null) throw e;
-    throw StateError('removeItem success path not faked');
+    (detail['items'] as List).removeWhere((it) => (it as Map)['id'] == itemId);
+    return OrderItemEditResult(
+      ok: true,
+      orderId: orderId,
+      itemId: itemId,
+      newQty: null,
+      newTotal: 0,
+      subtotal: 0,
+      deliverySum: 500,
+      totalAmount: 1476,
+      removed: true,
+    );
   }
 
   @override

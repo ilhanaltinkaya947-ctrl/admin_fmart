@@ -124,6 +124,9 @@ class OrderItemCard extends StatelessWidget {
                       error: weightError,
                       settled: settled,
                       customerPhone: customerPhone,
+                      // Same «Удалить» as a piece line, only while editable.
+                      onRemove: editable ? onRemove : null,
+                      removeBusy: busy,
                     )
                   else if (editable)
                     _EditableQtyRow(

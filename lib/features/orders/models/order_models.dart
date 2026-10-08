@@ -550,6 +550,19 @@ class OrderItem {
   /// The scale reading, once entered. Null until the picker weighs it.
   bool get isWeighed => actualG != null;
 
+  /// What removing this line refunds, as order-service computes it.
+  ///
+  /// A weight line returns everything charged for it, the base AND the 5%
+  /// buffer (`weight_paid_line_total` in `remove_item`): 155 × 6 + 46 = 976,
+  /// not 930. A piece line returns price × qty. The server also clamps to what
+  /// is still refundable, so this is the figure before that clamp.
+  double get removalRefund {
+    final p = double.tryParse(price) ?? 0;
+    final base = p * qty;
+    if (!isWeightLine) return base;
+    return base + (double.tryParse(bufferAmount ?? '') ?? 0);
+  }
+
   factory OrderItem.fromJson(Map<String, dynamic> j) => OrderItem(
     id: j['id'] as int? ?? 0,
     productId: (j['product_id'] is int)
