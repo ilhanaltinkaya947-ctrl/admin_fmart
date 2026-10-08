@@ -219,13 +219,31 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
   /// Force-refetch the order now (after a substitution propose/cancel) so the
   /// item chips reflect the new state without waiting for the 8s poll.
+  /// A server preview belongs to the reading it was computed for. When a
+  /// reload brings a different `actual_g` for a line (another iPad weighed
+  /// it), that preview is stale and is dropped, so the hint and the settle
+  /// estimate fall back to the new reading (review M3).
+  void _dropStalePreviews(Order fresh) {
+    final before = {for (final it in _order.items) it.id: it.actualG};
+    for (final it in fresh.items) {
+      if (before.containsKey(it.id) && before[it.id] != it.actualG) {
+        _weightPreview.remove(it.id);
+      }
+    }
+  }
+
   Future<void> _refetchOrderNow() async {
     if (!mounted) return;
     try {
       final repo = context.read<OrdersRepository>();
       final fresh = await repo.getOrderById(
           storeId: _order.storeId, orderId: _order.id);
-      if (fresh != null && mounted) setState(() => _order = fresh);
+      if (fresh != null && mounted) {
+        setState(() {
+          _dropStalePreviews(fresh);
+          _order = fresh;
+        });
+      }
     } catch (_) {/* the 8s poll will catch up */}
   }
 
@@ -446,6 +464,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
       final statusChanged = fresh.status != _order.status;
       setState(() {
+        _dropStalePreviews(fresh);
         _order = fresh;
         if (statusChanged) {
           // The status changed under us (e.g. a consumer-driven transition
@@ -2262,7 +2281,12 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // figure, so a rushed tap mid-pick cannot settle the order.
     final ok = await confirmSettleWeights(
       context,
-      estimateWeightRefund(_order.items, previews: _weightPreview),
+      estimateWeightRefund(
+        _order.items,
+        previews: _weightPreview,
+        alreadyRefunded:
+            double.tryParse(_order.weightRefundAmount ?? '') ?? 0,
+      ),
     );
     if (ok != true || !mounted || _settleBusy) return;
 

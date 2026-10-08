@@ -67,9 +67,14 @@ Future<bool?> confirmOverCapWeight(
 ///   paid  = price × qty + buffer_amount
 ///   final = floor(price_per_kg × min(actual_g, charged_g_cap) / 1000)
 ///   line  = max(0, paid − final)
+///
+/// [alreadyRefunded] is the order's `weight_refund_amount` (settle + manual
+/// «Разница по весу» already returned): the settle nets it, so the estimate
+/// does too, and never goes below zero.
 double estimateWeightRefund(
   Iterable<OrderItem> items, {
   Map<int, double> previews = const {},
+  double alreadyRefunded = 0,
 }) {
   var sum = 0.0;
   for (final it in items) {
@@ -89,6 +94,8 @@ double estimateWeightRefund(
     final line = paid - fin;
     if (line > 0) sum += line;
   }
+  sum -= alreadyRefunded;
+  if (sum < 0) sum = 0;
   return (sum * 100).roundToDouble() / 100;
 }
 
