@@ -2242,7 +2242,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       }
       // Kept beside the field, not just toasted: the operator is mid-edit and
       // the number they must change is in this message.
-      setState(() => _weightError[item.id] = e.message);
+      setState(() => _weightError[item.id] = _weightFailureText(
+          e, 'Не удалось сохранить вес. Попробуйте ещё раз.'));
     } catch (_) {
       if (!mounted) return;
       setState(() =>
@@ -2314,7 +2315,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         if (!mounted) return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
+        SnackBar(
+          content: Text(_weightFailureText(
+              e, 'Не удалось рассчитать вес. Попробуйте ещё раз.')),
+        ),
       );
     } catch (_) {
       if (!mounted) return;
@@ -2409,6 +2413,22 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     } else {
       _showErrorWithRetry(fallback, retry);
     }
+  }
+
+  /// What a weight PUT or settle failure says to the picker (review M4).
+  ///
+  /// The server's own Russian refusal when there is one (operatorSafeDetail:
+  /// 4xx, Cyrillic), a Russian 403 as is («…доступен только администратору»),
+  /// and otherwise the caller's Russian fallback. Never raw English such as
+  /// "Cannot enter a weight in status=delivering".
+  String _weightFailureText(OrdersApiException e, String fallback) {
+    final detail = operatorSafeDetail(e.message, e.statusCode);
+    if (detail != null) return detail;
+    final msg = e.message.trim();
+    if (e.statusCode == 403) {
+      return _hasCyrillic(msg) ? msg : 'Действие доступно только администратору.';
+    }
+    return fallback;
   }
 
   /// True when the text contains Cyrillic, so it is safe to show an operator.
