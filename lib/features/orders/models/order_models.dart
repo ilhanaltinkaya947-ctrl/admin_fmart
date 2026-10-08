@@ -94,6 +94,16 @@ class Order {
   /// manager on a delivered order whose status no longer says "completed".
   /// False when the backend does not send the key.
   final bool closed;
+
+  /// The picker FINISHED weighing this order (order-service
+  /// `orders.weight_settled_at`). Null when the key is absent: a piece-only
+  /// order, the list endpoint, or an older order-service. Null means UNKNOWN,
+  /// never "not settled".
+  final bool? weightSettled;
+
+  /// Money already returned for weight, settle + manual «Разница по весу», as
+  /// the server's money string. Null when absent.
+  final String? weightRefundAmount;
   final DateTime createdAt;
   final DateTime updatedAt;
   // Set only when status == 'scheduled'. ISO UTC string of the next
@@ -145,6 +155,8 @@ class Order {
     required this.paymentMethod,
     required this.isPromo,
     this.closed = false,
+    this.weightSettled,
+    this.weightRefundAmount,
     required this.createdAt,
     required this.updatedAt,
     this.scheduledForAt,
@@ -270,6 +282,10 @@ class Order {
     // order. The server still refuses a closed-order refund with a 403, so a
     // wrong "false" costs a failed tap, never a wrong refund.
     closed: j['closed'] as bool? ?? false,
+    // `is bool`, not a cast: a malformed value must read as unknown, never
+    // crash the order screen.
+    weightSettled: j['weight_settled'] is bool ? j['weight_settled'] as bool : null,
+    weightRefundAmount: j['weight_refund_amount']?.toString(),
     createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ?? DateTime.now(),
     updatedAt: DateTime.tryParse(j['updated_at']?.toString() ?? '') ?? DateTime.now(),
     pickupHoldUntil: j['pickup_hold_until'] != null
@@ -342,6 +358,10 @@ class Order {
         // An optimistic `copyWith(status: ...)` would otherwise reset it to
         // false and re-offer «Возврат» to a manager on a closed order.
         closed: closed,
+        // Server facts, carried: an optimistic status or item edit must not
+        // make a settled order look unsettled and re-open the weight fields.
+        weightSettled: weightSettled,
+        weightRefundAmount: weightRefundAmount,
         createdAt: createdAt,
         updatedAt: updatedAt,
         scheduledForAt: scheduledForAt,

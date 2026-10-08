@@ -36,7 +36,7 @@ void main() {
     await pumpOrderPage(t, repo);
     await scrollTo(t, find.text('Сборка завершена'));
     await t.tap(find.text('Сборка завершена'));
-    await t.pumpAndSettle(const Duration(milliseconds: 100));
+    await settle(t);
 
     expect(find.text('Завершить сборку?'), findsOneWidget);
     expect(
@@ -45,7 +45,7 @@ void main() {
       findsOneWidget,
     );
     await t.tap(find.text('Отмена'));
-    await t.pumpAndSettle(const Duration(milliseconds: 100));
+    await settle(t);
     expect(repo.settleCalls, 0);
     await disposePage(t);
   });
@@ -55,7 +55,7 @@ void main() {
     await pumpOrderPage(t, repo);
     await scrollTo(t, find.text('Сборка завершена'));
     await t.tap(find.text('Сборка завершена'));
-    await t.pumpAndSettle(const Duration(milliseconds: 100));
+    await settle(t);
     expect(repo.settleCalls, 0, reason: 'nothing sent before the confirm');
 
     await t.tap(find.text('Завершить'));
@@ -69,13 +69,13 @@ void main() {
     await pumpOrderPage(t, repo);
     await scrollTo(t, find.text('Сборка завершена'));
     await t.tap(find.text('Сборка завершена'));
-    await t.pumpAndSettle(const Duration(milliseconds: 100));
+    await settle(t);
     expect(
       find.text('Возврат за вес не нужен. После этого вес изменить нельзя.'),
       findsOneWidget,
     );
     await t.tap(find.text('Отмена'));
-    await t.pumpAndSettle(const Duration(milliseconds: 100));
+    await settle(t);
     expect(repo.settleCalls, 0);
     await disposePage(t);
   });

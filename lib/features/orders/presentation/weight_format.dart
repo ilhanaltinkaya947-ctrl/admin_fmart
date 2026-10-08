@@ -136,6 +136,15 @@ Future<bool?> confirmSettleWeights(BuildContext context, double amount) =>
       ),
     );
 
+/// The settle bar once the SERVER says the order is settled:
+/// «Расчёт выполнен · Возврат 98 ₸». No amount, or zero, reads «Расчёт
+/// выполнен» alone rather than promising «Возврат 0 ₸».
+String settledBarText(String? weightRefundAmount) {
+  final n = double.tryParse((weightRefundAmount ?? '').trim());
+  if (n == null || n <= 0.005) return 'Расчёт выполнен';
+  return 'Расчёт выполнен · Возврат ${formatTenge(n.toStringAsFixed(2))}';
+}
+
 /// How a typed or stored reading compares with the order.
 enum WeightCheck { none, under80, underOrder, inRange, overCap }
 

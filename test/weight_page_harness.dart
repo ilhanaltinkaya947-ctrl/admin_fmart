@@ -10,6 +10,8 @@ import 'package:admin_fmart/core/services/onesignal_service.dart';
 import 'package:admin_fmart/core/storage/prefs_storage.dart';
 import 'package:admin_fmart/features/auth/models/current_user.dart';
 import 'package:admin_fmart/features/auth/state/auth_cubit.dart';
+import 'package:admin_fmart/features/delivery/data/delivery_repository.dart';
+import 'package:admin_fmart/features/delivery/state/delivery_cubit.dart';
 import 'package:admin_fmart/features/orders/data/orders_repository.dart';
 import 'package:admin_fmart/features/orders/models/order_models.dart';
 import 'package:admin_fmart/features/orders/presentation/order_details_page.dart';
@@ -199,6 +201,23 @@ class TestAuthCubit extends AuthCubit {
   }
 }
 
+/// A store is always selected in the running app, and the page's 8 s poll
+/// (the path that brings `weight_settled` after a reload) only runs then.
+class TestStoreCubit extends StoreCubit {
+  TestStoreCubit({
+    required super.storesRepository,
+    required super.prefsStorage,
+    required super.oneSignalService,
+  }) {
+    emit(const StoreSelected(
+      storeId: 1,
+      storeName: 'F-Mart',
+      storeAddress: 'Шымкент',
+      coordinates: [69.6, 42.3],
+    ));
+  }
+}
+
 /// The page on an iPad-sized surface, seeded like the list would seed it
 /// (without the weight_* keys), then polled to the [repo]'s detail.
 Future<void> pumpOrderPage(
@@ -224,6 +243,9 @@ Future<void> pumpOrderPage(
     MultiRepositoryProvider(
       providers: [
         RepositoryProvider<OrdersRepository>.value(value: repo),
+        RepositoryProvider<DeliveryRepository>(
+          create: (_) => DeliveryRepository(api: api),
+        ),
       ],
       child: MultiBlocProvider(
         providers: [
@@ -234,8 +256,11 @@ Future<void> pumpOrderPage(
               role: role,
             ),
           ),
+          BlocProvider<DeliveryCubit>(
+            create: (_) => DeliveryCubit(repo: DeliveryRepository(api: api)),
+          ),
           BlocProvider<StoreCubit>(
-            create: (_) => StoreCubit(
+            create: (_) => TestStoreCubit(
               storesRepository: StoresRepository(api: api),
               prefsStorage: PrefsStorage(),
               oneSignalService: OneSignalService(),

@@ -2113,12 +2113,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
   /// Whether the weights on this order have already been settled.
   ///
-  /// Read from the server's own record if we have it, else inferred: a
-  /// settlement freezes the weights, and the status leaves paid/processing.
-  /// When in doubt the field stays enabled — the server refuses a late weight
-  /// with a plain reason, which is a better outcome than hiding a control the
-  /// picker still needs.
-  bool get _weightsSettled => _settleResult != null;
+  /// The SERVER's `weight_settled` decides (UX review B7): it survives a
+  /// reload and a second iPad, which `_settleResult` (this screen's memory)
+  /// never did. `_settleResult` only covers the moment between this screen's
+  /// own settle and the refetch. A missing key is unknown, not "unsettled",
+  /// and then the screen behaves as before: settled only after its own settle.
+  /// Either source can only FREEZE the fields, never re-open them.
+  bool get _weightsSettled =>
+      _order.weightSettled == true || _settleResult != null;
 
   /// Save the picker's scale reading for one line.
   ///
@@ -2845,6 +2847,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             _WeightSettleBar(
               busy: _settleBusy,
               settled: _weightsSettled,
+              serverSettled: _order.weightSettled == true,
+              weightRefundAmount: _order.weightRefundAmount,
               unweighedCount: _unweighedLines.length,
               weightLineCount:
                   _order.items.where((it) => it.isWeightLine).length,
@@ -3656,6 +3660,11 @@ class _ScheduledDeliveryRow extends StatelessWidget {
 class _WeightSettleBar extends StatelessWidget {
   final bool busy;
   final bool settled;
+
+  /// True when the server's `weight_settled` says so. Then the bar is a status
+  /// line, «Расчёт выполнен · Возврат {amount}», with no button.
+  final bool serverSettled;
+  final String? weightRefundAmount;
   final int unweighedCount;
   final int weightLineCount;
   final WeightSettleResult? result;
@@ -3664,6 +3673,8 @@ class _WeightSettleBar extends StatelessWidget {
   const _WeightSettleBar({
     required this.busy,
     required this.settled,
+    this.serverSettled = false,
+    this.weightRefundAmount,
     required this.unweighedCount,
     required this.weightLineCount,
     required this.result,
@@ -3677,7 +3688,9 @@ class _WeightSettleBar extends StatelessWidget {
     final canSettle = !settled && !busy && unweighedCount == 0;
 
     final String subtitle;
-    if (settled) {
+    if (serverSettled) {
+      subtitle = settledBarText(weightRefundAmount);
+    } else if (settled) {
       final r = result;
       if (r != null && r.wasAlreadySettled && r.refundAmount <= 0.005) {
         subtitle = 'Расчёт уже сделан: '
@@ -3716,7 +3729,14 @@ class _WeightSettleBar extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             subtitle,
-            style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+            key: const ValueKey('weight-settle-subtitle'),
+            style: serverSettled
+                ? TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurface,
+                  )
+                : TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 8),
           // The two rules the picker needs while standing at the counter with
@@ -3767,6 +3787,7 @@ class _WeightSettleBar extends StatelessWidget {
             ],
           ),
           ],
+          if (!serverSettled) ...[
           const SizedBox(height: 10),
           FilledButton(
             onPressed: canSettle ? onSettle : null,
@@ -3778,6 +3799,7 @@ class _WeightSettleBar extends StatelessWidget {
                   )
                 : Text(settled ? 'Расчёт выполнен' : 'Сборка завершена'),
           ),
+          ],
         ],
       ),
     );
