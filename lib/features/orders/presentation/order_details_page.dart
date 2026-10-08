@@ -378,6 +378,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   Future<void> _pollOrder() async {
     if (!mounted) return;
     if (_saving || _actionLoading || _itemBusy.isNotEmpty || _pickBusy.isNotEmpty) return;
+    // A weight PUT or a settle in flight: a GET served now can predate it and
+    // would put the old reading back in the field (review M1).
+    if (_weightBusy.isNotEmpty || _settleBusy) return;
     // _handingOver: a GET already in flight when the POST commits returns the
     // PRE-write snapshot, so `_order = fresh` rolls the status back seconds
     // after the green success toast and the button flips to its previous label.
@@ -434,6 +437,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           _actionLoading ||
           _itemBusy.isNotEmpty ||
           _pickBusy.isNotEmpty ||
+          _weightBusy.isNotEmpty ||
+          _settleBusy ||
           _substituteSheetOpen ||
           _confirmOpen) {
         return;
@@ -2192,6 +2197,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         actualG: actualG,
       );
       if (!mounted) return;
+      // Re-stamped on success: a poll GET that went out while this PUT was
+      // in flight holds the pre-write reading and must not be applied.
+      _lastLocalWriteAt = DateTime.now();
       final updatedItems = _order.items
           .map((it) => it.id == item.id
               ? it.copyWith(
@@ -2264,6 +2272,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       final repo = context.read<OrdersRepository>();
       final res = await repo.settleOrderWeight(orderId: _order.id);
       if (!mounted) return;
+      _lastLocalWriteAt = DateTime.now();
       setState(() => _settleResult = res);
       await _refetchOrderNow();
       if (!mounted) return;
