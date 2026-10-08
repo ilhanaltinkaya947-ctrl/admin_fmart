@@ -154,6 +154,32 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     return auth is Authenticated && auth.user.isAdmin;
   }
 
+  /// Statuses in which order-service accepts «Сборка завершена»
+  /// (`_WEIGHT_SETTLE_STATUSES`, order_service.py). Wider than the weighing
+  /// window: a manager who moved the order on before settling must still be
+  /// able to return the buffer.
+  static const Set<String> _weightSettleStatuses = {
+    'paid',
+    'processing',
+    'ready-for-delivery',
+    'delivering',
+    'completed',
+    'partially-refunded',
+  };
+
+  bool get _inWeightSettleStatus =>
+      _weightSettleStatuses.contains(_order.status.toLowerCase());
+
+  /// The order was ever completed. Settling it is then ADMIN ONLY: the server
+  /// answers a manager with 403 «Возврат по закрытому заказу доступен только
+  /// администратору.»
+  bool get _everCompleted =>
+      _order.closed || _order.status.toLowerCase() == 'completed';
+
+  /// Whether THIS user may press «Сборка завершена» now.
+  bool get _mayPressSettle =>
+      _inWeightSettleStatus && (!_everCompleted || _isAdmin);
+
   bool get _itemsEditable {
     final s = _order.status.toLowerCase();
     return s == 'paid' || s == 'processing';
@@ -2892,11 +2918,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
           // «Сборка завершена» — the ONE place weight money moves.
           //
-          // Only on an order that has weight lines and is still being picked.
+          // Shown wherever the server would accept a settle (review H2), not
+          // only while picking: an order moved on to delivery before settling
+          // still owes the buffer back. Weight FIELDS stay editable only in
+          // paid/processing; past that the readings are shown read-only.
+          // On an ever-completed order only an admin gets the button.
           // Disabled until every line has a reading, because the server refuses
           // otherwise (409 weight_missing) and a control that submits a
           // known-rejected request teaches the operator to distrust it.
-          if (_hasWeightLines && (_itemsEditable || _weightsSettled)) ...[
+          if (_hasWeightLines && (_weightsSettled || _inWeightSettleStatus)) ...[
             const SizedBox(height: 12),
             _WeightSettleBar(
               busy: _settleBusy,
@@ -2908,6 +2938,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                   _order.items.where((it) => it.isWeightLine).length,
               result: _settleResult,
               onSettle: _settleWeights,
+              showCutHints: _itemsEditable,
+              adminOnly: !_mayPressSettle,
             ),
           ],
 
@@ -3724,7 +3756,16 @@ class _WeightSettleBar extends StatelessWidget {
   final WeightSettleResult? result;
   final VoidCallback onSettle;
 
+  /// The cut rules only help while the knife is still out (paid/processing).
+  final bool showCutHints;
+
+  /// This user may not settle here (an ever-completed order, not an admin).
+  /// A muted line replaces the button so the manager knows whom to ask.
+  final bool adminOnly;
+
   const _WeightSettleBar({
+    this.showCutHints = true,
+    this.adminOnly = false,
     required this.busy,
     required this.settled,
     this.serverSettled = false,
@@ -3808,7 +3849,7 @@ class _WeightSettleBar extends StatelessWidget {
           // the field itself cannot enforce «не меньше заказа» — the app cannot
           // stop a hand — and a rule that only appears once violated is a rule
           // the picker learns by getting it wrong.
-          if (!settled) ...[
+          if (!settled && showCutHints) ...[
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -3841,7 +3882,14 @@ class _WeightSettleBar extends StatelessWidget {
             ],
           ),
           ],
-          if (!serverSettled) ...[
+          if (!serverSettled && !settled && adminOnly) ...[
+          const SizedBox(height: 10),
+          Text(
+            'Расчёт по закрытому заказу делает администратор',
+            key: const ValueKey('settle-admin-only'),
+            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+          ),
+          ] else if (!serverSettled) ...[
           const SizedBox(height: 10),
           FilledButton(
             onPressed: canSettle ? onSettle : null,

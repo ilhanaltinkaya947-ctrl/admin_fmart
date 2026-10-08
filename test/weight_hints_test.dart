@@ -96,7 +96,8 @@ void main() {
       // Once the weight is calculated the cut is made; the instruction cannot
       // change anything and is noise on a delivered order.
       final cutHint = page.indexOf('Отрежьте не меньше заказа');
-      final gating = page.lastIndexOf('if (!settled)', cutHint);
+      // `if (!settled` also matches `if (!settled && showCutHints)` (H2a).
+      final gating = page.lastIndexOf('if (!settled', cutHint);
       expect(gating, greaterThan(-1),
           reason: 'the hints must be inside an `if (!settled)` block');
       // and the gate must be close above them, not somewhere unrelated
