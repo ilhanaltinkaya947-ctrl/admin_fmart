@@ -20,6 +20,7 @@ import '_sub_tokens.dart';
 import '../models/order_models.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../delivery/presentation/delivery_section.dart';
+import 'weight_format.dart';
 import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
 import '../../auth/state/auth_cubit.dart';
@@ -2191,6 +2192,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
       return;
     }
+
+    // Irreversible: weights freeze and money goes back. Ask first, with the
+    // figure, so a rushed tap mid-pick cannot settle the order.
+    final ok = await confirmSettleWeights(
+      context,
+      estimateWeightRefund(_order.items, previews: _weightPreview),
+    );
+    if (ok != true || !mounted || _settleBusy) return;
 
     setState(() => _settleBusy = true);
     _lastLocalWriteAt = DateTime.now();

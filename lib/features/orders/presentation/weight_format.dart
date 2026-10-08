@@ -58,6 +58,84 @@ Future<bool?> confirmOverCapWeight(
       ),
     );
 
+/// The refund «Сборка завершена» is about to send, for the confirm sheet.
+///
+/// An ESTIMATE, which is why the sheet says «примерно»: the server nets earlier
+/// settlements and clamps to the capture. Per weighed line it takes the
+/// server's own preview from the weight PUT when this screen has one, else the
+/// settle formula from order-service `weight_settle.py`:
+///   paid  = price × qty + buffer_amount
+///   final = floor(price_per_kg × min(actual_g, charged_g_cap) / 1000)
+///   line  = max(0, paid − final)
+double estimateWeightRefund(
+  Iterable<OrderItem> items, {
+  Map<int, double> previews = const {},
+}) {
+  var sum = 0.0;
+  for (final it in items) {
+    if (!it.isWeightLine || it.actualG == null) continue;
+    final preview = previews[it.id];
+    if (preview != null) {
+      sum += preview < 0 ? 0 : preview;
+      continue;
+    }
+    final price = double.tryParse(it.price) ?? 0;
+    final buffer = double.tryParse(it.bufferAmount ?? '') ?? 0;
+    final perKg = double.tryParse(it.pricePerKg ?? '') ?? 0;
+    final paid = price * it.qty + buffer;
+    final billable =
+        it.actualG! < it.chargedGCap! ? it.actualG! : it.chargedGCap!;
+    final fin = (perKg * billable / 1000).floorToDouble();
+    final line = paid - fin;
+    if (line > 0) sum += line;
+  }
+  return (sum * 100).roundToDouble() / 100;
+}
+
+/// The body of the settle confirm.
+String settleConfirmBody(double amount) => amount > 0.005
+    ? 'Вернём клиенту примерно ${formatTenge(amount.toStringAsFixed(2))} '
+        'за вес. После этого вес изменить нельзя.'
+    : 'Возврат за вес не нужен. После этого вес изменить нельзя.';
+
+/// «Завершить сборку?» sheet before the one action that moves weight money.
+/// True only on «Завершить».
+Future<bool?> confirmSettleWeights(BuildContext context, double amount) =>
+    showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (c) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Завершить сборку?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                settleConfirmBody(amount),
+                style: const TextStyle(fontSize: 15),
+              ),
+              const SizedBox(height: 20),
+              FilledButton(
+                onPressed: () => Navigator.of(c).pop(true),
+                child: const Text('Завершить'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: () => Navigator.of(c).pop(false),
+                child: const Text('Отмена'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
 /// How a typed or stored reading compares with the order.
 enum WeightCheck { none, under80, underOrder, inRange, overCap }
 
