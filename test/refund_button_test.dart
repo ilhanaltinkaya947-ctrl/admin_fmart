@@ -189,4 +189,48 @@ void main() {
           reason: 'a 403 must not offer a retry control');
     });
   });
+
+
+  group('round 6: the 403 / 409 copy', () {
+    // NOTE ON METHOD: this file has TWO `_showMoneyPathError`-style arms, and the
+    // first `indexOf('code == 409')` hits the OTHER one. Slicing by offset gave
+    // nonsense (compared index 491 to 57094). These assertions therefore anchor
+    // on the UNIQUE strings the round-6 change introduced, with no offsets.
+    final page = File(
+      'lib/features/orders/presentation/order_details_page.dart',
+    ).readAsStringSync();
+
+    test('a 403 gates the server text on Cyrillic', () {
+      expect(page.contains('_hasCyrillic(serverReason)'), isTrue,
+          reason: 'an English 403 body ("Admin only") would reach an operator');
+      expect(page.contains('Действие доступно только администратору.'), isTrue,
+          reason: 'the approved fallback must be present');
+    });
+
+    test('the Cyrillic gate is a range test, matching api_errors.dart', () {
+      expect(page.contains(r'\u0400'), isTrue,
+          reason: 'a range, not a word list');
+      expect(page.contains('static bool _hasCyrillic(String text)'), isTrue);
+    });
+
+    test('the weight 409 gets its OWN message', () {
+      // The unique conditional the round-6 change added.
+      expect(page.contains("msg.contains('вес не меняется')"), isTrue,
+          reason: 'the closed-order weight refusal must not tell staff to reload');
+      expect(
+        page.contains("? msg\n            : 'Заказ уже изменился. Обновите экран.'"),
+        isTrue,
+        reason: 'the generic message must remain the FALLBACK for other 409s',
+      );
+    });
+
+    test('a 403 still offers no retry', () {
+      // The 403 arm ends with a bare `_showError(` — never _showErrorWithRetry.
+      final i = page.indexOf('_hasCyrillic(serverReason)');
+      expect(i, greaterThan(-1));
+      final arm = page.substring(i, i + 400);
+      expect(arm.contains('_showErrorWithRetry'), isFalse,
+          reason: 'a 403 can never succeed on retry');
+    });
+  });
 }

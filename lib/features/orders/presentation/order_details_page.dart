@@ -2089,27 +2089,48 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       // Offering it teaches staff to distrust the button (they tap, it fails,
       // they tap again).
       //
-      // The TEXT comes from the server, not from a constant here. This one
-      // method serves the refund, the cancel and the weight-difference paths,
-      // and the server's `detail` is already specific to each («Возврат по
-      // закрытому заказу…» vs «Заказ уже закрыт: вес не меняется.»). A
-      // hardcoded refund sentence showed on all three — telling a manager their
-      // CANCEL was refused "по закрытому заказу" with refund wording.
+      // The TEXT comes from the server, but ONLY when it is Russian. This one
+      // method serves the refund, the cancel and the weight-difference paths and
+      // the server's `detail` is already specific to each («Возврат по закрытому
+      // заказу…» vs «Заказ уже закрыт: вес не меняется.») — but the server can
+      // also answer 403 with English text ("Admin only"), and raw English must
+      // never reach an operator. Anything without Cyrillic is replaced.
       //
-      // Only when the server said nothing usable do we fall back, and then to a
-      // reason that is true for every caller here: it is the admin's action now.
+      // Falls back to a sentence that is true for every caller here: it is the
+      // admin's action now.
       final serverReason = (e.message).trim();
       _showError(
-        serverReason.isNotEmpty
+        _hasCyrillic(serverReason)
             ? serverReason
             : 'Действие доступно только администратору.',
       );
     } else if (code == 409 || code == 404 || code == 400) {
-      _showError('Заказ уже изменился. Обновите экран.');
+      // One 409 has its own wording: the server refuses a weight change or a
+      // weight settle on a closed order with «Заказ уже закрыт: вес не
+      // меняется.». Showing «Заказ уже изменился. Обновите экран.» told the
+      // operator to reload, which cannot help — the rule is about the order
+      // being closed, not about stale screen state.
+      final msg = e.message.trim();
+      _showError(
+        msg.contains('вес не меняется')
+            ? msg
+            : 'Заказ уже изменился. Обновите экран.',
+      );
     } else {
       _showErrorWithRetry(fallback, retry);
     }
   }
+
+  /// True when the text contains Cyrillic, so it is safe to show an operator.
+  ///
+  /// A RANGE test, matching `operatorSafeDetail`'s own gate in api_errors.dart,
+  /// not a word list: the server's copy is Russian («доступен только
+  /// администратору»), but it can also answer 403 with English ("Admin only"),
+  /// and raw English must never reach a store manager. Only the presence of
+  /// Cyrillic is assumed; nothing else about the text is.
+  static final RegExp _cyrillicRange = RegExp(r'[\u0400-\u04FF\u0500-\u052F]');
+
+  static bool _hasCyrillic(String text) => _cyrillicRange.hasMatch(text);
 
   Future<void> _refundOrder({
     required double amount,
