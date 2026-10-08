@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../../../core/api/api_client.dart';
+import '../../../core/api/api_errors.dart';
 import '../../../core/api/safe_response.dart';
 import '../models/order_models.dart';
 
@@ -25,7 +26,16 @@ class OrdersApiException implements Exception {
 /// inside `{"error": {"message": "..."}}`, and some endpoints return
 /// plain strings. We try each shape in turn and fall back to null so
 /// the caller can use a generic message.
+///
+/// The SAFETY rules — Russian only, 4xx only, never 401/403, never a bare
+/// English code — live in [backendDetail], which this defers to first. The
+/// extra shapes below are the ones that helper deliberately does not handle
+/// (a nested proxy reason, a plain-string body), and they are reached only
+/// when it has already declined.
 String? _extractApiErrorMessage(DioException e) {
+  final canonical = backendDetail(e);
+  if (canonical != null) return canonical;
+
   final data = e.response?.data;
   if (data == null) return null;
   if (data is String) {
@@ -35,12 +45,9 @@ String? _extractApiErrorMessage(DioException e) {
   if (data is Map) {
     final detail = data['detail'];
     if (detail is String && detail.trim().isNotEmpty) return detail.trim();
-    if (detail is List && detail.isNotEmpty) {
-      final first = detail.first;
-      if (first is Map && first['msg'] is String) {
-        final s = (first['msg'] as String).trim();
-        if (s.isNotEmpty) return s;
-      }
+    if (detail is Map) {
+      final msg = detail['message'];
+      if (msg is String && msg.trim().isNotEmpty) return msg.trim();
     }
     for (final key in const ['message', 'error_message', 'reason']) {
       final v = data[key];
@@ -319,6 +326,50 @@ class OrdersRepository {
       data: {'qty': qty},
     );
     return OrderItemEditResult.fromJson(asJsonMap(resp.data));
+  }
+
+  /// The picker's scale reading for one weight line, in grams.
+  ///
+  /// Moves NO money — the refund happens once per order in [settleOrderWeight].
+  /// 422 `weight_out_of_range` carries `max_g`; the caller surfaces that so the
+  /// operator is told the real ceiling rather than a bare rejection.
+  Future<OrderItemWeightResult> setItemWeight({
+    required int orderId,
+    required int itemId,
+    required int actualG,
+  }) async {
+    try {
+      final resp = await api.dio.put(
+        '/gw/order/admin/orders/$orderId/items/$itemId/weight',
+        data: {'actual_g': actualG},
+      );
+      return OrderItemWeightResult.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось сохранить вес',
+        statusCode: e.response?.statusCode,
+      );
+    }
+  }
+
+  /// «Сборка завершена»: ONE refund for every weight line on the order.
+  ///
+  /// Idempotent — a repeat call refunds nothing new and reports the previous
+  /// figure in `already_settled`. 409 `weight_missing` lists the lines that
+  /// still have no weight; the caller must show which ones rather than a
+  /// generic failure, because the operator's next action depends on it.
+  Future<WeightSettleResult> settleOrderWeight({required int orderId}) async {
+    try {
+      final resp = await api.dio.post(
+        '/gw/order/admin/orders/$orderId/weight-settle',
+      );
+      return WeightSettleResult.fromJson(asJsonMap(resp.data));
+    } on DioException catch (e) {
+      throw OrdersApiException(
+        _extractApiErrorMessage(e) ?? 'Не удалось рассчитать вес',
+        statusCode: e.response?.statusCode,
+      );
+    }
   }
 
   /// Manager override for auto-assigned bag counts. Used when the

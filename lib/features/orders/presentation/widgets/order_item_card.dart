@@ -4,10 +4,15 @@ import 'package:flutter/services.dart';
 
 import '../../../../core/format/money.dart';
 import '../../models/order_models.dart';
+import '../weight_format.dart';
 
 /// Card row for one order item.
 /// Shows image, name, barcode (copyable), qty x price, line total.
 /// When [editable] is true, shows +/- and remove controls.
+///
+/// A weight line (see [OrderItem.isWeightLine]) renders differently throughout:
+/// its quantity is a weight, not a count, so «N шт» would be a lie, and it
+/// carries the picker's «Факт, г» input instead of the ± stepper.
 class OrderItemCard extends StatelessWidget {
   final OrderItem item;
   final bool editable;
@@ -19,6 +24,27 @@ class OrderItemCard extends StatelessWidget {
   final ValueChanged<bool>? onPickedToggle;
   final bool pickedBusy;
 
+  /// Called with the grams the picker typed. Null hides the field entirely
+  /// (a settled order, or a caller that does not weigh).
+  final ValueChanged<int>? onWeightSet;
+
+  /// True while the weight PUT is in flight, so the field locks and shows a
+  /// spinner rather than accepting a second reading.
+  final bool weightBusy;
+
+  /// What the server said this line alone would return, once a weight is in.
+  /// Shown as the live hint under the field.
+  final double? refundPreview;
+
+  /// Set when the last attempt to save a weight was refused, so the operator
+  /// sees the server's reason next to the field rather than a passing snackbar.
+  final String? weightError;
+
+  /// True once the order has been settled: weights are frozen by the server
+  /// (a corrected figure would no longer match the money that went back), so
+  /// the field is disabled and says so.
+  final bool settled;
+
   const OrderItemCard({
     super.key,
     required this.item,
@@ -28,6 +54,11 @@ class OrderItemCard extends StatelessWidget {
     this.onRemove,
     this.onPickedToggle,
     this.pickedBusy = false,
+    this.onWeightSet,
+    this.weightBusy = false,
+    this.refundPreview,
+    this.weightError,
+    this.settled = false,
   });
 
   @override
@@ -80,7 +111,16 @@ class OrderItemCard extends StatelessWidget {
                   if (item.product.sku != null && item.product.sku!.isNotEmpty)
                     _BarcodeChip(sku: item.product.sku!),
                   const SizedBox(height: 8),
-                  if (editable)
+                  if (item.isWeightLine)
+                    WeightLinePanel(
+                      item: item,
+                      onWeightSet: onWeightSet,
+                      busy: weightBusy,
+                      refundPreview: refundPreview,
+                      error: weightError,
+                      settled: settled,
+                    )
+                  else if (editable)
                     _EditableQtyRow(
                       qty: item.qty,
                       price: item.price,

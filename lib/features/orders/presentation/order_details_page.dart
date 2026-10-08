@@ -56,6 +56,27 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // checkbox spins instead of double-firing on a second tap.
   final Set<int> _pickBusy = <int>{};
 
+  // ── Weight steps (part A) ─────────────────────────────────────────────
+  //
+  // Which weight lines have a PUT in flight, so the «Факт, г» field locks.
+  final Set<int> _weightBusy = <int>{};
+
+  // The server's refund estimate per line, keyed by item id, as it came back
+  // on the weight PUT. Held here rather than on OrderItem because it is a
+  // transient hint, not part of the order's stored state.
+  final Map<int, double> _weightPreview = <int, double>{};
+
+  // The last weight failure per line, so the reason stays visible beside the
+  // field instead of scrolling away in a snackbar.
+  final Map<int, String> _weightError = <int, String>{};
+
+  // True while the settle POST is in flight: «Сборка завершена» moves money,
+  // so it must not be double-tappable.
+  bool _settleBusy = false;
+
+  // What a completed settlement returned, to show once.
+  WeightSettleResult? _settleResult;
+
   /// When a local mutation last COMMITTED.
   ///
   /// The busy-flag guards only cover a poll that returns while the write is
@@ -1221,9 +1242,28 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // already stores — no schema/endpoint change, fully backward-compatible
     // (old builds just keep sending free text). The free-text field below
     // becomes an OPTIONAL note appended after the canonical label.
-    const refundReasons = <String>[
+    // ── «Разница по весу» (review MEDIUM-2) ──────────────────────────────
+    //
+    // The string is NOT a free-text label. order-service matches it by prefix,
+    // case-insensitively (`is_weight_refund_reason`, weight_settle.py:57) to
+    // decide whether a refund is a weight difference: the ledger nets manual
+    // and automatic weight refunds together so the two can never exceed what
+    // the weighed lines owe. So this must be the exact canonical string, and it
+    // must come FIRST — an optional note is appended after it, which is why the
+    // server matches on a prefix rather than equality.
+    //
+    // A manual «Разница по весу» refund is REFUSED by the server (409) on any
+    // order that has a PROFILED weight line, because those settle through
+    // «Сборка завершена» and a second manual refund would be paid on top of the
+    // settlement (or net it to zero with nobody knowing which line it was for).
+    // Offering it there would hand the operator a control that always fails, so
+    // it is hidden. It stays for LEGACY weight goods that carry no snapshot
+    // (frozen poultry, say), which is exactly what the server allows.
+    const weightReason = 'Разница по весу';
+    final hasProfiledWeightLines = _order.items.any((it) => it.isWeightLine);
+    final refundReasons = <String>[
       'Нет в наличии',
-      'Разница по весу',
+      if (!hasProfiledWeightLines) weightReason,
       'Брак / качество товара',
       'Замена товара',
       'Жалоба клиента',
@@ -2048,6 +2088,149 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   }
 
 
+  /// Whether this order has any weight line at all. Drives «Сборка завершена»
+  /// and the MEDIUM-2 refund-reason rule.
+  bool get _hasWeightLines => _order.items.any((it) => it.isWeightLine);
+
+  /// Weight lines with no scale reading yet. The settle POST refuses while any
+  /// exist (409 weight_missing), so the button is disabled on the same
+  /// condition rather than letting the operator submit a request the server
+  /// will reject.
+  List<OrderItem> get _unweighedLines =>
+      _order.items.where((it) => it.isWeightLine && !it.isWeighed).toList();
+
+  /// Whether the weights on this order have already been settled.
+  ///
+  /// Read from the server's own record if we have it, else inferred: a
+  /// settlement freezes the weights, and the status leaves paid/processing.
+  /// When in doubt the field stays enabled — the server refuses a late weight
+  /// with a plain reason, which is a better outcome than hiding a control the
+  /// picker still needs.
+  bool get _weightsSettled => _settleResult != null;
+
+  /// Save the picker's scale reading for one line.
+  ///
+  /// Moves NO money. The refund is computed once, for the whole order, by
+  /// [_settleWeights]; this only records the grams. The server refuses a weight
+  /// that is too large for the line's cap (422 weight_out_of_range, which names
+  /// the real maximum), so the reason is shown next to the field rather than in
+  /// a passing snackbar — the operator needs it while re-entering the figure.
+  Future<void> _setItemWeight(OrderItem item, int actualG) async {
+    if (_weightBusy.contains(item.id)) return;
+    setState(() {
+      _weightBusy.add(item.id);
+      _weightError.remove(item.id);
+    });
+    _lastLocalWriteAt = DateTime.now();
+    try {
+      final repo = context.read<OrdersRepository>();
+      final res = await repo.setItemWeight(
+        orderId: _order.id,
+        itemId: item.id,
+        actualG: actualG,
+      );
+      if (!mounted) return;
+      final updatedItems = _order.items
+          .map((it) => it.id == item.id
+              ? it.copyWith(
+                  actualG: res.actualG,
+                  weighedAt: res.weighedAt,
+                )
+              : it)
+          .toList();
+      setState(() {
+        _order = _order.copyWith(items: updatedItems);
+        _weightPreview[item.id] = res.refundPreview;
+      });
+    } on OrdersApiException catch (e) {
+      if (!mounted) return;
+      // Kept beside the field, not just toasted: the operator is mid-edit and
+      // the number they must change is in this message.
+      setState(() => _weightError[item.id] = e.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() =>
+          _weightError[item.id] = 'Не удалось сохранить вес. Проверьте связь.');
+    } finally {
+      if (mounted) setState(() => _weightBusy.remove(item.id));
+    }
+  }
+
+  /// «Сборка завершена»: settle every weight line and send ONE refund.
+  ///
+  /// This is the only place weight money moves. The server is idempotent, so a
+  /// repeat call refunds nothing new and reports the earlier figure — shown as
+  /// such rather than as a second refund.
+  Future<void> _settleWeights() async {
+    if (_settleBusy) return;
+
+    // The server refuses while a line is unweighed; say which, before asking.
+    final missing = _unweighedLines;
+    if (missing.isNotEmpty) {
+      final names = missing
+          .map((it) => it.product.name ?? 'Товар ${it.productId}')
+          .take(3)
+          .join(', ');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(missing.length == 1
+              ? 'Укажите вес: $names'
+              : 'Укажите вес для ${missing.length} позиций: $names'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _settleBusy = true);
+    _lastLocalWriteAt = DateTime.now();
+    try {
+      final repo = context.read<OrdersRepository>();
+      final res = await repo.settleOrderWeight(orderId: _order.id);
+      if (!mounted) return;
+      setState(() => _settleResult = res);
+      await _refetchOrderNow();
+      if (!mounted) return;
+      _showSettleOutcome(res);
+    } on OrdersApiException catch (e) {
+      if (!mounted) return;
+      // A 409 weight_missing means a line still has no weight. Refresh so the
+      // picker sees the current truth, then say the server's reason.
+      if (e.statusCode == 409) {
+        await _refetchOrderNow();
+        if (!mounted) return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось рассчитать вес. Проверьте связь.')),
+      );
+    } finally {
+      if (mounted) setState(() => _settleBusy = false);
+    }
+  }
+
+  void _showSettleOutcome(WeightSettleResult res) {
+    final String text;
+    if (res.wasAlreadySettled && res.refundAmount <= 0.005) {
+      // A repeat: do NOT present it as money sent now.
+      text = 'Расчёт по весу уже сделан ранее: '
+          '${formatTenge(res.alreadySettled.toStringAsFixed(2))}';
+    } else if (res.refundAmount > 0.005 && res.refundPublished) {
+      text = 'Вернём клиенту ${formatTenge(res.refundAmount.toStringAsFixed(2))}';
+    } else if (res.due > 0.005 && !res.refundPublished) {
+      // The ledger refused the row. The server logs this as money the customer
+      // is owed, so the operator is told rather than shown a silent success.
+      text = 'Возврат не отправлен. Передайте в поддержку: '
+          '${formatTenge(res.due.toStringAsFixed(2))}';
+    } else {
+      text = 'Расчёт по весу готов, возврат не требуется';
+    }
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
   /// Show a MONEY-path failure without leaking backend text, and without
   /// offering a retry the server has already refused.
   ///
@@ -2565,6 +2748,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                         ? (v) => _setItemPicked(it, v)
                         : null,
                     pickedBusy: _pickBusy.contains(it.id),
+                    // A weight line replaces the ± stepper with «Факт, г». The
+                    // callback is null on a read-only order, which hides the
+                    // field and shows the stored reading instead.
+                    onWeightSet: (_itemsEditable && !_weightsSettled)
+                        ? (g) => _setItemWeight(it, g)
+                        : null,
+                    weightBusy: _weightBusy.contains(it.id),
+                    refundPreview: _weightPreview[it.id],
+                    weightError: _weightError[it.id],
+                    settled: _weightsSettled,
                   ),
                   SubstitutionItemRow(
                     order: _order,
@@ -2576,6 +2769,25 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                   ),
                 ],
               )),
+
+          // «Сборка завершена» — the ONE place weight money moves.
+          //
+          // Only on an order that has weight lines and is still being picked.
+          // Disabled until every line has a reading, because the server refuses
+          // otherwise (409 weight_missing) and a control that submits a
+          // known-rejected request teaches the operator to distrust it.
+          if (_hasWeightLines && (_itemsEditable || _weightsSettled)) ...[
+            const SizedBox(height: 12),
+            _WeightSettleBar(
+              busy: _settleBusy,
+              settled: _weightsSettled,
+              unweighedCount: _unweighedLines.length,
+              weightLineCount:
+                  _order.items.where((it) => it.isWeightLine).length,
+              result: _settleResult,
+              onSettle: _settleWeights,
+            ),
+          ],
 
           const SizedBox(height: 16),
           const Divider(),
@@ -3364,6 +3576,94 @@ class _ScheduledDeliveryRow extends StatelessWidget {
               fontWeight: FontWeight.w700,
               color: Color(0xFF111827),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+/// «Сборка завершена» — settle every weight line and send ONE refund.
+///
+/// Presented as a guarded action rather than a bare button, because it is the
+/// only control on this screen that moves weight money and it cannot be undone
+/// by re-entering a weight (the server freezes weights once settled).
+class _WeightSettleBar extends StatelessWidget {
+  final bool busy;
+  final bool settled;
+  final int unweighedCount;
+  final int weightLineCount;
+  final WeightSettleResult? result;
+  final VoidCallback onSettle;
+
+  const _WeightSettleBar({
+    required this.busy,
+    required this.settled,
+    required this.unweighedCount,
+    required this.weightLineCount,
+    required this.result,
+    required this.onSettle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final canSettle = !settled && !busy && unweighedCount == 0;
+
+    final String subtitle;
+    if (settled) {
+      final r = result;
+      if (r != null && r.wasAlreadySettled && r.refundAmount <= 0.005) {
+        subtitle = 'Расчёт уже сделан: '
+            '${formatTenge(r.alreadySettled.toStringAsFixed(2))}';
+      } else if (r != null && r.refundAmount > 0.005) {
+        subtitle = 'Возврат: ${formatTenge(r.refundAmount.toStringAsFixed(2))}';
+      } else {
+        subtitle = 'Расчёт по весу выполнен';
+      }
+    } else if (unweighedCount > 0) {
+      subtitle = unweighedCount == 1
+          ? 'Осталось взвесить 1 позицию из $weightLineCount'
+          : 'Осталось взвесить $unweighedCount из $weightLineCount';
+    } else {
+      subtitle = 'Спишем по факту и вернём разницу';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Весовые товары',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 14,
+              color: scheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 10),
+          FilledButton(
+            onPressed: canSettle ? onSettle : null,
+            child: busy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Text(settled ? 'Расчёт выполнен' : 'Сборка завершена'),
           ),
         ],
       ),
