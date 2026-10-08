@@ -2884,6 +2884,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           ],
           const SizedBox(height: 8),
           ...items.map((it) => Column(
+                // Keyed by the line: removing a line above must not hand its
+                // typed «Факт, г» (widget state) to the line that moves up.
+                key: ValueKey(it.id),
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   OrderItemCard(
