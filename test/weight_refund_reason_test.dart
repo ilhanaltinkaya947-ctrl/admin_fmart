@@ -1,13 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:admin_fmart/features/orders/models/order_models.dart';
+import 'package:admin_fmart/features/orders/models/refund_button.dart';
 
 /// The weight refund reason (review MEDIUM-2).
 ///
 /// order-service matches «Разница по весу» by PREFIX, case-insensitively
-/// (`is_weight_refund_reason`, weight_settle.py:57), and REFUSES a manual refund
-/// carrying it on any order that has a profiled weight line. The admin app must
-/// therefore (a) keep the string byte-exact, and (b) not offer it where the
-/// server will reject it.
+/// (`is_weight_refund_reason`, weight_settle.py:57), and on an order with a
+/// profiled weight line it refuses a MANAGER's manual refund carrying it (403)
+/// while letting an ADMIN through. The admin app must therefore (a) keep the
+/// string byte-exact, and (b) offer it exactly where the server accepts it.
 void main() {
   Map<String, dynamic> line({
     bool profiled = true,
@@ -28,21 +29,17 @@ void main() {
         },
       };
 
-  /// The exact list the sheet builds, mirroring order_details_page.
-  List<String> reasonsFor(List<Map<String, dynamic>> items) {
+  /// The list the sheet builds for a MANAGER (the page calls the same
+  /// buildRefundReasons with its real role).
+  List<String> reasonsFor(List<Map<String, dynamic>> items,
+      {bool isAdmin = false}) {
     final hasProfiled = items
         .map(OrderItem.fromJson)
         .any((it) => it.isWeightLine);
-    const weightReason = 'Разница по весу';
-    return <String>[
-      'Нет в наличии',
-      if (!hasProfiled) weightReason,
-      'Брак / качество товара',
-      'Замена товара',
-      'Жалоба клиента',
-      'Отмена заказа',
-      'Другое',
-    ];
+    return buildRefundReasons(
+      hasProfiledWeightLines: hasProfiled,
+      isAdmin: isAdmin,
+    );
   }
 
   group('«Разница по весу» visibility', () {
@@ -63,6 +60,12 @@ void main() {
       // which is why hiding on `isWeightLine` rather than on the product being
       // sold by weight is the correct rule.
       expect(reasonsFor([line(profiled: false)]), contains('Разница по весу'));
+    });
+
+    test('an ADMIN keeps it on a profiled order (the server allows admins)',
+        () {
+      expect(reasonsFor([line(profiled: true)], isAdmin: true),
+          contains('Разница по весу'));
     });
 
     test('hidden when ANY line is profiled, even beside a legacy one', () {

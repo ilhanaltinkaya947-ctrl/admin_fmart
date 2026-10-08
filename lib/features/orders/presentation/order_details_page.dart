@@ -1312,24 +1312,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // must come FIRST — an optional note is appended after it, which is why the
     // server matches on a prefix rather than equality.
     //
-    // A manual «Разница по весу» refund is REFUSED by the server (409) on any
-    // order that has a PROFILED weight line, because those settle through
-    // «Сборка завершена» and a second manual refund would be paid on top of the
-    // settlement (or net it to zero with nobody knowing which line it was for).
-    // Offering it there would hand the operator a control that always fails, so
-    // it is hidden. It stays for LEGACY weight goods that carry no snapshot
-    // (frozen poultry, say), which is exactly what the server allows.
-    const weightReason = 'Разница по весу';
+    // On an order with a PROFILED weight line a manual «Разница по весу» is
+    // ADMIN ONLY: order-service 403s a manager («Ручной возврат разницы по весу
+    // доступен только администратору.») and lets an admin through, netting it
+    // against the settlement in the same ledger so the two can never exceed
+    // what the weighed lines owe. Hidden from managers there, offered to
+    // admins; everyone keeps it for legacy weight goods with no snapshot. The
+    // rule lives in refund_button.dart (refundReasons).
     final hasProfiledWeightLines = _order.items.any((it) => it.isWeightLine);
-    final refundReasons = <String>[
-      'Нет в наличии',
-      if (!hasProfiledWeightLines) weightReason,
-      'Брак / качество товара',
-      'Замена товара',
-      'Жалоба клиента',
-      'Отмена заказа',
-      'Другое',
-    ];
+    final refundReasons = buildRefundReasons(
+      hasProfiledWeightLines: hasProfiledWeightLines,
+      isAdmin: _isAdmin,
+    );
     final reasonCode = ValueNotifier<String?>(null);
 
     // Which lines were NOT ON THE SHELF. Only meaningful for «Нет в наличии»,

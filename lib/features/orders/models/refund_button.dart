@@ -64,3 +64,30 @@ bool canRefund({
     'partially-refunded',
   }.contains(s);
 }
+
+/// The canonical weight refund reason. order-service matches it by prefix,
+/// case-insensitively (`is_weight_refund_reason`), so it must be byte-exact
+/// and come first in the reason string.
+const String kWeightRefundReason = 'Разница по весу';
+
+/// The refund sheet's reasons, in display order.
+///
+/// «Разница по весу» on an order with a PROFILED weight line is ADMIN ONLY:
+/// order-service answers a manager with 403 «Ручной возврат разницы по весу
+/// доступен только администратору.» and lets an admin through, netting the
+/// manual row against the settlement in one ledger. So it is hidden from a
+/// manager there and offered to an admin. On orders with no profiled line
+/// (legacy weight goods such as frozen poultry) everyone gets it.
+List<String> buildRefundReasons({
+  required bool hasProfiledWeightLines,
+  required bool isAdmin,
+}) =>
+    <String>[
+      'Нет в наличии',
+      if (!hasProfiledWeightLines || isAdmin) kWeightRefundReason,
+      'Брак / качество товара',
+      'Замена товара',
+      'Жалоба клиента',
+      'Отмена заказа',
+      'Другое',
+    ];
