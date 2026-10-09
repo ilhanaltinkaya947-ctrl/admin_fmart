@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../features/orders/data/orders_repository.dart';
+import '../../features/orders/models/order_models.dart';
 import '../../features/orders/presentation/order_details_page.dart';
 import '../../features/orders/state/orders_cubit.dart';
 import '../storage/prefs_storage.dart';
@@ -18,8 +19,15 @@ class OrderWatcher {
   final SoundService sound;
   final GlobalKey<NavigatorState> navigatorKey;
 
+  /// Called when a poll sees a paid order the orders list has not been
+  /// refreshed for yet. The list never refreshes by itself otherwise, so
+  /// without this the iPad rang but the order only showed after someone
+  /// pulled the list down (order 1095, 2026-10-09).
+  final void Function(int storeId)? onNewOrders;
+
   Timer? _timer;
   bool _dialogOpen = false;
+  bool _inFlight = false;
 
   DateTime? _sinceUtc;
   // Capped FIFO of recently-shown order ids so we don't double-dialog
@@ -27,6 +35,9 @@ class OrderWatcher {
   // unbounded.
   static const int _alreadyNotifiedCap = 200;
   final List<int> _alreadyNotified = <int>[];
+  // Paid orders the list has already been refreshed for. Separate from
+  // _alreadyNotified: the list must refresh even when no dialog can be shown.
+  final List<int> _listRefreshedFor = <int>[];
 
   int _consecutiveFailures = 0;
   DateTime _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -36,7 +47,20 @@ class OrderWatcher {
     required this.ordersRepository,
     required this.sound,
     required this.navigatorKey,
+    this.onNewOrders,
   });
+
+  static void _remember(List<int> list, Iterable<int> ids) {
+    for (final id in ids) {
+      if (!list.contains(id)) list.add(id);
+    }
+    if (list.length > _alreadyNotifiedCap) {
+      list.removeRange(0, list.length - _alreadyNotifiedCap);
+    }
+  }
+
+  bool _wasAlerted(int id) =>
+      _alreadyNotified.contains(id) || newOrderDialogGuard.wasShown(id);
 
   void start({Duration interval = const Duration(seconds: 10)}) {
     _timer?.cancel();
@@ -53,22 +77,31 @@ class OrderWatcher {
   }
 
   Future<void> _tick() async {
-    if (_dialogOpen) return;
-
+    // Keep polling while a dialog is open: a second order that arrives
+    // meanwhile must still reach the list. Only the alarm waits.
+    if (_inFlight) return;
     if (DateTime.now().isBefore(_nextRetryAt)) return;
 
     final storeId = await prefsStorage.getSelectedStoreId();
     if (storeId == null) return;
 
     try {
-      final resp = await ordersRepository.getNewOrders(
-        storeId: storeId,
-        since: _sinceUtc,
-        minutes: 10,
-        limit: 20,
-        statuses: const ['paid'],
-        tz: 'Asia/Almaty',
-      );
+      // Only the request is exclusive. The dialog below can stay open for
+      // minutes and polling must carry on underneath it.
+      final NewOrdersResponse resp;
+      _inFlight = true;
+      try {
+        resp = await ordersRepository.getNewOrders(
+          storeId: storeId,
+          since: _sinceUtc,
+          minutes: 10,
+          limit: 20,
+          statuses: const ['paid'],
+          tz: 'Asia/Almaty',
+        );
+      } finally {
+        _inFlight = false;
+      }
 
       _consecutiveFailures = 0;
 
@@ -76,25 +109,45 @@ class OrderWatcher {
 
       if (!resp.hasNew || resp.orders.isEmpty) return;
 
-      final first = resp.orders.firstWhere(
-        (o) => !_alreadyNotified.contains(o.id),
-        orElse: () => resp.orders.first,
-      );
-
-      if (_alreadyNotified.contains(first.id)) return;
-      _alreadyNotified.add(first.id);
-      // Trim the oldest entries when we exceed the cap so the list
-      // never grows past _alreadyNotifiedCap during a long shift.
-      if (_alreadyNotified.length > _alreadyNotifiedCap) {
-        _alreadyNotified.removeRange(
-          0,
-          _alreadyNotified.length - _alreadyNotifiedCap,
-        );
+      // 1. The list. The «Новый заказ» push is sent when the order is
+      //    CREATED, a few seconds before it is paid, and the refresh that
+      //    follows the push dialog runs before the order is in the paid list.
+      //    Refresh again the first time a poll sees each paid order.
+      final unseen = [
+        for (final o in resp.orders)
+          if (!_listRefreshedFor.contains(o.id)) o.id,
+      ];
+      if (unseen.isNotEmpty) {
+        _remember(_listRefreshedFor, unseen);
+        onNewOrders?.call(storeId);
       }
 
+      // 2. The alarm.
+      if (_dialogOpen) return;
+
+      final first = resp.orders.firstWhere(
+        (o) => !_wasAlerted(o.id),
+        orElse: () => resp.orders.first,
+      );
+      if (_wasAlerted(first.id)) return;
+
       // Coordinate with the OneSignal foreground handler so push + poll
-      // don't stack two dialogs on top of each other.
+      // don't stack two dialogs on top of each other. If the slot is taken,
+      // do NOT mark the order: it used to be marked first, so an order that
+      // arrived while another dialog was open was never alarmed at all.
+      // The next tick tries again.
       if (!newOrderDialogGuard.tryAcquire()) return;
+
+      // No context means no dialog, and a siren with no dialog can never be
+      // stopped. Leave the order unmarked for the next tick.
+      final ctx = navigatorKey.currentContext;
+      if (ctx == null) {
+        newOrderDialogGuard.release();
+        return;
+      }
+
+      _remember(_alreadyNotified, [first.id]);
+      newOrderDialogGuard.markShown(first.id);
 
       await sound.ring();
       // Haptic alongside the sound for operators who feel the iPad
@@ -102,12 +155,6 @@ class OrderWatcher {
       // receipts). On models without the Taptic engine this is a
       // no-op — harmless. iPhones get a strong tap.
       HapticFeedback.heavyImpact();
-
-      final ctx = navigatorKey.currentContext;
-      if (ctx == null) {
-        newOrderDialogGuard.release();
-        return;
-      }
 
       _dialogOpen = true;
 

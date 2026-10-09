@@ -168,6 +168,9 @@ class _AppState extends State<App> with WidgetsBindingObserver {
 
       // Попробуем найти order_id в payload (если ты его добавишь на бэке)
       final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
+      // Tell the poller this order has had its dialog, so it does not ring
+      // again a few seconds later when the order turns paid.
+      if (orderId != null) newOrderDialogGuard.markShown(orderId);
 
       // If the context unmounted while the siren was starting, stop it and
       // bail — otherwise the loop would have no dialog to end it.
@@ -312,6 +315,13 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       ordersRepository: _ordersRepo,
       sound: _sound,
       navigatorKey: _navKey,
+      // A paid order the list has not shown yet: refresh it quietly, even
+      // when the dialog is busy or was already shown by the push.
+      onNewOrders: (storeId) {
+        final ctx = _navKey.currentContext;
+        if (ctx == null || !ctx.mounted) return;
+        unawaited(ctx.read<OrdersCubit>().refreshQuietly(storeId: storeId));
+      },
     );
 
     // 10s matches the customer-app polling cadence and the "operator sees

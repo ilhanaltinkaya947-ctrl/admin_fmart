@@ -57,7 +57,27 @@ enum OrdersTabPreset { active, closed, scheduled, all }
 class OrdersCubit extends Cubit<OrdersState> {
   final OrdersRepository ordersRepository;
 
-  OrdersCubit({required this.ordersRepository}) : super(OrdersInitial());
+  /// [autoRefreshEvery]: how often the loaded list re-reads page 1 quietly.
+  /// null turns it off (tests).
+  OrdersCubit({
+    required this.ordersRepository,
+    Duration? autoRefreshEvery = const Duration(seconds: 30),
+  })  : _autoRefreshEvery = autoRefreshEvery,
+        super(OrdersInitial());
+
+  // The list used to change only when someone pressed refresh or pulled it
+  // down. A store iPad left on «Новые» therefore never showed an order the
+  // poller had already rung for (order 1095, 2026-10-09). Dart timers are
+  // suspended in background on iOS, so this costs nothing while locked.
+  final Duration? _autoRefreshEvery;
+  Timer? _autoTimer;
+
+  // Bumped by everything that replaces or extends the list on purpose
+  // (refresh, loadMore, reset). A quiet refresh started before such a change
+  // is stale when it lands and is dropped, so it can never undo a tab switch,
+  // a search, or a page the operator just scrolled in.
+  int _gen = 0;
+  bool _quietInFlight = false;
 
   int? _storeId;
   final int _perPage = 20;
@@ -74,6 +94,9 @@ class OrdersCubit extends Cubit<OrdersState> {
   /// next admin signing in on this device doesn't briefly see the
   /// previous user's orders.
   void reset() {
+    _gen++;
+    _autoTimer?.cancel();
+    _autoTimer = null;
     _searchDebounce?.cancel();
     _storeId = null;
     _filters = OrderFilters.empty;
@@ -91,10 +114,12 @@ class OrdersCubit extends Cubit<OrdersState> {
   Future<void> refresh({required int storeId}) async {
     if (_loading) return;
     _loading = true;
+    _gen++;
 
     emit(OrdersLoading());
     try {
       _storeId = storeId;
+      _armAutoRefresh();
       final data = await _fetchPage(storeId: storeId, page: 1);
       emit(OrdersLoaded(
         items: data.items,
@@ -105,6 +130,64 @@ class OrdersCubit extends Cubit<OrdersState> {
       emit(OrdersFailure(message: describeApiError(e, subject: 'заказы')));
     } finally {
       _loading = false;
+    }
+  }
+
+  void _armAutoRefresh() {
+    final every = _autoRefreshEvery;
+    if (every == null || _autoTimer != null) return;
+    _autoTimer = Timer.periodic(every, (_) {
+      final id = _storeId;
+      if (id != null) refreshQuietly(storeId: id);
+    });
+  }
+
+  /// Re-read page 1 without a spinner and without touching filters.
+  ///
+  /// Used by the 30 s timer and by the new-order poller. Never shows an
+  /// error: on failure the operator keeps the list they had. A list that
+  /// failed to load is retried with a normal [refresh] so it can recover.
+  Future<void> refreshQuietly({required int storeId}) async {
+    if (_storeId != storeId) return; // showing another store, or logged out
+    final st = state;
+    if (st is OrdersFailure) {
+      await refresh(storeId: storeId);
+      return;
+    }
+    if (st is! OrdersLoaded) return;
+    if (_loading || _quietInFlight) return;
+
+    final gen = _gen;
+    _quietInFlight = true;
+    try {
+      final data = await _fetchPage(storeId: storeId, page: 1);
+      final cur = state;
+      if (gen != _gen || _loading || _storeId != storeId) return;
+      if (cur is! OrdersLoaded) return;
+
+      if (cur.pagination.page <= 1) {
+        emit(OrdersLoaded(
+          items: data.items,
+          pagination: data.pagination,
+          filters: _filters,
+        ));
+        return;
+      }
+      // The operator scrolled further. Put the fresh first page on top and
+      // keep what they already loaded below it, so nothing jumps away.
+      final fresh = {for (final o in data.items) o.id};
+      emit(OrdersLoaded(
+        items: [
+          ...data.items,
+          ...cur.items.where((o) => !fresh.contains(o.id)),
+        ],
+        pagination: cur.pagination,
+        filters: _filters,
+      ));
+    } catch (_) {
+      // Quiet by design: the next tick or a manual refresh tries again.
+    } finally {
+      _quietInFlight = false;
     }
   }
 
@@ -236,6 +319,7 @@ class OrdersCubit extends Cubit<OrdersState> {
     if (_loading) return;
 
     _loading = true;
+    _gen++;
     try {
       final nextPage = st.pagination.page + 1;
       final data = await _fetchPage(storeId: _storeId!, page: nextPage);
@@ -271,6 +355,7 @@ class OrdersCubit extends Cubit<OrdersState> {
     final idx = st.items.indexWhere((o) => o.id == updated.id);
     if (idx == -1) return;
 
+    _gen++; // a quiet refresh fetched before this edit must not undo it
     final newList = [...st.items];
     newList[idx] = updated;
     emit(OrdersLoaded(
@@ -282,6 +367,7 @@ class OrdersCubit extends Cubit<OrdersState> {
 
   @override
   Future<void> close() {
+    _autoTimer?.cancel();
     _searchDebounce?.cancel();
     return super.close();
   }
