@@ -291,6 +291,24 @@ void main() {
       await cubit.close();
     });
 
+    test('a failed list is left with its error, not reloaded every 30 s',
+        () async {
+      final repo = _Repo(pages: [_page([1094])])..failOrders = true;
+      final cubit = OrdersCubit(ordersRepository: repo, autoRefreshEvery: null);
+      await cubit.refresh(storeId: 3);
+      expect(cubit.state, isA<OrdersFailure>());
+
+      final seen = <OrdersState>[];
+      final sub = cubit.stream.listen(seen.add);
+      await cubit.refreshQuietly(storeId: 3);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(repo.orderCalls.length, 1);
+      expect(seen, isEmpty, reason: 'no spinner, no reload under «Новые»');
+      await sub.cancel();
+      await cubit.close();
+    });
+
     test('a quiet refresh for another store does nothing', () async {
       final repo = _Repo(pages: [_page([1094])]);
       final cubit = OrdersCubit(ordersRepository: repo, autoRefreshEvery: null);
@@ -309,9 +327,11 @@ void main() {
 
       final quiet = Completer<OrdersPage>();
       final tab = Completer<OrdersPage>();
+      final again = Completer<OrdersPage>();
       repo.pageCompleters
         ..add(quiet)
-        ..add(tab);
+        ..add(tab)
+        ..add(again);
 
       final q = cubit.refreshQuietly(storeId: 3); // in flight
       final f = cubit.applyFilters(OrderFilters.empty.copyWith(statusIds: [8]));
@@ -320,7 +340,15 @@ void main() {
       quiet.complete(_page([1095, 1094])); // stale: fetched before the switch
       await q;
 
-      expect((cubit.state as OrdersLoaded).items.map((o) => o.id), [2000]);
+      expect((cubit.state as OrdersLoaded).items.map((o) => o.id), [2000],
+          reason: 'the stale rows never reach the screen');
+      expect(repo.orderCalls.length, 4, reason: 'fetched again');
+      expect(repo.orderCalls.last.statusIds, [8],
+          reason: 'with the tab the operator is on now');
+      again.complete(_page([2001, 2000]));
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect((cubit.state as OrdersLoaded).items.map((o) => o.id), [2001, 2000]);
       await cubit.close();
     });
 
@@ -331,13 +359,52 @@ void main() {
       await cubit.refresh(storeId: 3);
 
       final quiet = Completer<OrdersPage>();
-      repo.pageCompleters.add(quiet);
+      final again = Completer<OrdersPage>();
+      repo.pageCompleters
+        ..add(quiet)
+        ..add(again);
       final q = cubit.refreshQuietly(storeId: 3);
       cubit.updateOrderInList(_order(1095, status: 'processing'));
       quiet.complete(_page([1095])); // still says paid
       await q;
 
-      expect((cubit.state as OrdersLoaded).items.single.status, 'processing');
+      expect((cubit.state as OrdersLoaded).items.single.status, 'processing',
+          reason: 'the stale answer is dropped');
+      expect(repo.orderCalls.length, 3,
+          reason: 'and fetched again instead of waiting 30 s');
+      again.complete(OrdersPage(
+        pagination: _page([]).pagination,
+        items: [_order(1096), _order(1095, status: 'processing')],
+      ));
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect((cubit.state as OrdersLoaded).items.map((o) => o.id), [1096, 1095]);
+      await cubit.close();
+    });
+
+    test('the poller\'s refresh is not lost behind a refresh already running',
+        () async {
+      final repo = _Repo(pages: [_page([1094])]);
+      final cubit = OrdersCubit(ordersRepository: repo, autoRefreshEvery: null);
+      await cubit.refresh(storeId: 3);
+
+      // The refresh after the push dialog: sent at 16:02:00, before payment.
+      final early = Completer<OrdersPage>();
+      final again = Completer<OrdersPage>();
+      repo.pageCompleters
+        ..add(early)
+        ..add(again);
+      final r = cubit.refresh(storeId: 3);
+      // 16:02:02: the poller sees 1095 paid while that refresh is running.
+      await cubit.refreshQuietly(storeId: 3);
+      early.complete(_page([1094])); // the early answer has no 1095
+      await r;
+      expect(repo.orderCalls.length, 3, reason: 'the quiet refresh ran again');
+      again.complete(_page([1095, 1094]));
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect((cubit.state as OrdersLoaded).items.map((o) => o.id), [1095, 1094]);
       await cubit.close();
     });
 

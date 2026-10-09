@@ -48,6 +48,8 @@ class NewOrderDialogGuard {
 
   bool wasShown(int orderId) => _shown.contains(orderId);
 
+  void unmarkShown(int orderId) => _shown.remove(orderId);
+
   /// Tests only: forget everything, the instance is a process-wide singleton.
   void resetForTest() {
     _showing = false;

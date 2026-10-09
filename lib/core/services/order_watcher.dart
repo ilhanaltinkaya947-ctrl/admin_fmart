@@ -150,6 +150,15 @@ class OrderWatcher {
       newOrderDialogGuard.markShown(first.id);
 
       await sound.ring();
+      // The context can go away while the siren starts. Then there is no
+      // dialog to stop it: stop now and leave the order for the next tick.
+      if (!ctx.mounted) {
+        await sound.stop();
+        _alreadyNotified.remove(first.id);
+        newOrderDialogGuard.unmarkShown(first.id);
+        newOrderDialogGuard.release();
+        return;
+      }
       // Haptic alongside the sound for operators who feel the iPad
       // before they hear it (e.g., iPad sitting under a stack of
       // receipts). On models without the Taptic engine this is a

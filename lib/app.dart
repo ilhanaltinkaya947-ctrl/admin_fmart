@@ -265,6 +265,9 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       _newOrderCounter.bump();
       final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
       if (orderId == null) return;
+      // The operator is opening this order: the poller must not ring for it
+      // again on resume.
+      newOrderDialogGuard.markShown(orderId);
 
       final navCtx = _navKey.currentContext;
       final navReady = _navKey.currentState != null && navCtx != null;

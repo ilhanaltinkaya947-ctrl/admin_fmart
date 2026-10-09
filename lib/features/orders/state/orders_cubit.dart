@@ -78,6 +78,11 @@ class OrdersCubit extends Cubit<OrdersState> {
   // a search, or a page the operator just scrolled in.
   int _gen = 0;
   bool _quietInFlight = false;
+  // A quiet refresh asked for while another load was running. That load may
+  // have been sent before the new order was paid (the refresh after the push
+  // dialog is), so run the quiet one again as soon as it finishes instead of
+  // leaving the order to the next 30 s tick.
+  bool _quietAgain = false;
 
   int? _storeId;
   final int _perPage = 20;
@@ -95,6 +100,7 @@ class OrdersCubit extends Cubit<OrdersState> {
   /// previous user's orders.
   void reset() {
     _gen++;
+    _quietAgain = false;
     _autoTimer?.cancel();
     _autoTimer = null;
     _searchDebounce?.cancel();
@@ -130,7 +136,18 @@ class OrdersCubit extends Cubit<OrdersState> {
       emit(OrdersFailure(message: describeApiError(e, subject: 'заказы')));
     } finally {
       _loading = false;
+      _runQuietAgain();
     }
+  }
+
+  void _runQuietAgain() {
+    if (!_quietAgain) return;
+    _quietAgain = false;
+    final id = _storeId;
+    // After a failed load the operator sees the error and its retry button;
+    // the 30 s tick retries too. Do not flash a spinner on top of it.
+    if (id == null || state is OrdersFailure) return;
+    unawaited(refreshQuietly(storeId: id));
   }
 
   void _armAutoRefresh() {
@@ -150,19 +167,28 @@ class OrdersCubit extends Cubit<OrdersState> {
   Future<void> refreshQuietly({required int storeId}) async {
     if (_storeId != storeId) return; // showing another store, or logged out
     final st = state;
-    if (st is OrdersFailure) {
-      await refresh(storeId: storeId);
+    if (_loading || _quietInFlight || st is OrdersLoading) {
+      _quietAgain = true;
       return;
     }
+    // A failed list stays as the operator sees it, with its retry button.
+    // A full refresh from here would flash a spinner every 30 s, and after a
+    // failed status fetch it would load EVERY status under «Новые».
     if (st is! OrdersLoaded) return;
-    if (_loading || _quietInFlight) return;
 
     final gen = _gen;
     _quietInFlight = true;
     try {
       final data = await _fetchPage(storeId: storeId, page: 1);
       final cur = state;
-      if (gen != _gen || _loading || _storeId != storeId) return;
+      if (_storeId != storeId) return;
+      if (gen != _gen || _loading) {
+        // Stale (a scroll, tab switch or status edit happened meanwhile).
+        // Fetch again rather than wait for the 30 s tick: this may be the
+        // poller's one refresh for a new paid order.
+        _quietAgain = true;
+        return;
+      }
       if (cur is! OrdersLoaded) return;
 
       if (cur.pagination.page <= 1) {
@@ -188,6 +214,7 @@ class OrdersCubit extends Cubit<OrdersState> {
       // Quiet by design: the next tick or a manual refresh tries again.
     } finally {
       _quietInFlight = false;
+      _runQuietAgain();
     }
   }
 
@@ -333,6 +360,7 @@ class OrdersCubit extends Cubit<OrdersState> {
       // молча, чтобы не ломать UX
     } finally {
       _loading = false;
+      _runQuietAgain();
     }
   }
 
