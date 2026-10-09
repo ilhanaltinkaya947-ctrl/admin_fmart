@@ -210,6 +210,9 @@ class OrdersRepository {
     required double amount,
     required String reason,
     required String idempotencyKey,
+    /// Products the operator marked as not on the shelf. Catalog hides these
+    /// from every customer until they are genuinely restocked.
+    List<int> oosProductIds = const [],
   }) async {
     try {
       final resp = await api.dio.post(
@@ -217,6 +220,11 @@ class OrdersRepository {
         data: {
           'amount': amount,
           'reason': reason,
+          // Omitted entirely when empty rather than sent as []. An older
+          // order-service ignores unknown fields, but sending nothing at all
+          // keeps the request byte-identical to today for every refund that
+          // is not about missing stock.
+          if (oosProductIds.isNotEmpty) 'oos_product_ids': oosProductIds,
         },
         options: Options(headers: {'Idempotency-Key': idempotencyKey}),
       );

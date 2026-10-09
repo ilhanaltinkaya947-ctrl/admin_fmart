@@ -1232,6 +1232,22 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     ];
     final reasonCode = ValueNotifier<String?>(null);
 
+    // Which lines were NOT ON THE SHELF. Only meaningful for «Нет в наличии»,
+    // and only shown then.
+    //
+    // This is the point of the picker: the operator is already deciding how
+    // much to give back, and the missing lines ARE that decision. Tapping them
+    // fills the amount, so naming the products costs nothing extra — it
+    // replaces typing a number rather than adding a step.
+    //
+    // Why they must be named rather than inferred: catalog hides a held
+    // product from every customer until it is genuinely restocked. Guessing
+    // which product from the refund amount resolves roughly half the cases
+    // (measured: 28 of 51 over 90 days) and can be wrong, and being wrong
+    // hides something that IS in stock for up to three weeks.
+    final oosItemIds = ValueNotifier<Set<int>>(<int>{});
+    const oosReason = 'Нет в наличии';
+
     // ONE idempotency key for the entire modal session. Used by every
     // submit attempt from this sheet — including any retries the
     // operator triggers if they re-tap "Оформить" before the spinner
@@ -1247,7 +1263,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       showDragHandle: true,
       isDismissible: false,  // operator must explicitly close or confirm
       builder: (c) {
-        return Padding(
+        return SingleChildScrollView(
+          // ONE scroll for the whole sheet.
+          //
+          // The out-of-stock picker was a bounded, separately scrolling
+          // list inside this Column. On a five-line order it clipped
+          // through the MIDDLE of a row, which reads as a rendering fault
+          // rather than "there is more below" — and a scroll nested in a
+          // draggable bottom sheet means a drag either scrolls the list or
+          // dismisses the sheet depending on a few pixels.
+          //
+          // Scrolling the sheet itself removes both, and fixes a
+          // pre-existing one: with the keyboard up and a comment being
+          // typed, the buttons could already fall below the fold.
+          child: Padding(
           padding: EdgeInsets.only(
             left: 16,
             right: 16,
@@ -1338,9 +1367,105 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                     for (final r in refundReasons)
                       DropdownMenuItem(value: r, child: Text(r)),
                   ],
-                  onChanged: (v) => reasonCode.value = v,
+                  onChanged: (v) {
+                    reasonCode.value = v;
+                    // Leaving «Нет в наличии» clears the selection. Otherwise a
+                    // reason changed after picking would still hide products
+                    // while the sheet no longer shows which, or why.
+                    if (v != oosReason) oosItemIds.value = <int>{};
+                  },
                 ),
               ),
+
+              // The missing lines. Shown only for «Нет в наличии» — for every
+              // other reason it is noise, and this sheet is already dense.
+              ValueListenableBuilder<String?>(
+                valueListenable: reasonCode,
+                builder: (_, code, __) {
+                  if (code != oosReason) return const SizedBox.shrink();
+                  return ValueListenableBuilder<Set<int>>(
+                    valueListenable: oosItemIds,
+                    builder: (_, picked, __) => Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Каких товаров не было на полке?',
+                            style: Theme.of(c).textTheme.labelLarge,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Скроем их у покупателей, пока не завезут.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(c).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          // Bounded and scrollable: a twelve-line order would
+                          // otherwise push the amount field and both buttons
+                          // off the sheet with the keyboard up.
+                          Column(
+                                children: [
+                                  for (final it in _order.items)
+                                    CheckboxListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      controlAffinity:
+                                          ListTileControlAffinity.leading,
+                                      value: picked.contains(it.id),
+                                      title: Text(
+                                        it.product.name ??
+                                            'Товар ${it.productId}',
+                                        style: const TextStyle(fontSize: 13.5),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      subtitle: Text(
+                                        '${it.qty} шт · ${formatTenge(it.total)}',
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                      onChanged: (on) {
+                                        final next = Set<int>.from(picked);
+                                        if (on == true) {
+                                          next.add(it.id);
+                                        } else {
+                                          next.remove(it.id);
+                                        }
+                                        oosItemIds.value = next;
+                                        // Selection drives the amount: the sum
+                                        // of the missing lines IS what the
+                                        // customer is owed. The field stays
+                                        // editable for what it does not cover
+                                        // (a weight difference, say).
+                                        // `total` is a STRING from the backend
+                                        // and can arrive as "145,00". The
+                                        // repo's own parseMoney handles both
+                                        // forms — a bare double.parse here
+                                        // would throw on the comma and take
+                                        // the sheet down mid-refund.
+                                        final sum = _order.items
+                                            .where((x) => next.contains(x.id))
+                                            .fold<double>(
+                                                0.0,
+                                                (s, x) =>
+                                                    s + parseMoney(x.total));
+                                        if (next.isNotEmpty) {
+                                          amountCtrl.text =
+                                              sum.toStringAsFixed(2);
+                                        }
+                                      },
+                                    ),
+                                ],
+                              ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+
               const SizedBox(height: 8),
               TextField(
                 controller: reasonCtrl,
@@ -1428,9 +1553,22 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                                 ),
                                 const SizedBox(height: 8),
                                 Text('Причина: $reason'),
+                                // The refund is irreversible; the hold is not,
+                                // and saying so is the difference between an
+                                // operator who hesitates and one who picks the
+                                // wrong reason to avoid the scary sentence.
+                                if (code == oosReason &&
+                                    oosItemIds.value.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Скроем ${oosItemIds.value.length} '
+                                    '${_tovarWord(oosItemIds.value.length)} '
+                                    'у покупателей, пока не завезут.',
+                                  ),
+                                ],
                                 const SizedBox(height: 12),
                                 const Text(
-                                  'Это действие нельзя отменить.',
+                                  'Возврат денег отменить нельзя.',
                                   style: TextStyle(color: Colors.red),
                                 ),
                               ],
@@ -1454,6 +1592,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                           amount: amount,
                           reason: reason,
                           idempotencyKey: sessionIdempotencyKey,
+                          // Map the picked ORDER-LINE ids to PRODUCT ids — the
+                          // catalog knows nothing about order lines. Only when
+                          // the reason is still «Нет в наличии»; changing the
+                          // reason clears the set, and this re-checks so a
+                          // stale selection can never leak through.
+                          oosProductIds: code == oosReason
+                              ? _order.items
+                                  .where((x) => oosItemIds.value.contains(x.id))
+                                  .map((x) => x.productId)
+                                  .toSet()
+                                  .toList()
+                              : const [],
                         ));
                       },
                       child: const Text('Оформить'),
@@ -1463,6 +1613,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               ),
             ],
           ),
+        ),
         );
       },
     );
@@ -1474,6 +1625,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     amountCtrl.dispose();
     reasonCtrl.dispose();
     reasonCode.dispose();
+    oosItemIds.dispose();
 
     if (result == null) return;
 
@@ -1481,6 +1633,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       amount: result.amount,
       reason: result.reason,
       idempotencyKey: result.idempotencyKey,
+      oosProductIds: result.oosProductIds,
     );
   }
 
@@ -1929,6 +2082,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     required double amount,
     required String reason,
     required String idempotencyKey,
+    List<int> oosProductIds = const [],
   }) async {
     HapticFeedback.mediumImpact();
     setState(() {
@@ -1948,6 +2102,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         amount: amount,
         reason: reason,
         idempotencyKey: idempotencyKey,
+        oosProductIds: oosProductIds,
       );
 
       if (!mounted) return;
@@ -2578,9 +2733,34 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   }
 }
 
+/// Russian pluralisation for «товар». 1 товар / 2 товара / 5 товаров.
+///
+/// Worth doing properly: this sentence tells an operator how many products are
+/// about to disappear from the shop, and «2 товаров» reads like a bug in the
+/// very dialog that is asking them to trust the number.
+String _tovarWord(int n) {
+  final mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 14) return 'товаров';
+  switch (n % 10) {
+    case 1:
+      return 'товар';
+    case 2:
+    case 3:
+    case 4:
+      return 'товара';
+    default:
+      return 'товаров';
+  }
+}
+
 class _RefundPayload {
   final double amount;
   final String reason;
+  /// Products the operator marked as NOT ON THE SHELF. Empty for every reason
+  /// other than «Нет в наличии». Catalog hides these from all customers until
+  /// they are genuinely restocked, so they are the operator's explicit choice
+  /// and never inferred from the amount.
+  final List<int> oosProductIds;
   /// Idempotency key generated once when the refund sheet opens, used
   /// for the entire modal session. If the operator triple-taps "Оформить"
   /// (or re-opens the sheet by accident), the backend dedupes on this
@@ -2591,6 +2771,7 @@ class _RefundPayload {
     required this.amount,
     required this.reason,
     required this.idempotencyKey,
+    this.oosProductIds = const [],
   });
 }
 

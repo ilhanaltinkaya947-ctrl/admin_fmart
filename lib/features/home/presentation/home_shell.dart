@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/feature_flags.dart';
 import '../../../core/services/new_order_counter.dart';
 import '../../auth/state/auth_cubit.dart';
+import '../../stock/presentation/held_products_page.dart';
 import '../../orders/data/orders_repository.dart';
 import '../../banners/presentation/banners_list_page.dart';
 import '../../delivery_slots/presentation/slot_templates_list_page.dart';
@@ -39,6 +40,10 @@ enum _Section {
   // end window, slot duration, capacity cap. Customer app reads
   // /delivery/slots and renders these as the checkout slot picker.
   deliverySlots,
+  // Products hidden from customers because a picker could not find them.
+  // Placed and lifted automatically; this tab exists so "why has this stopped
+  // selling?" has an answer, and so a wrong hold can be undone.
+  heldProducts,
   broadcast,
   settings,
 }
@@ -118,6 +123,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.users:
       case _Section.banners:
       case _Section.deliverySlots:
+      case _Section.heldProducts:
       case _Section.broadcast:
       case _Section.settings:
         break;
@@ -189,6 +195,12 @@ class _HomeShellState extends State<HomeShell> {
           selectedIcon: Icon(Icons.image),
           label: 'Баннеры',
         );
+      case _Section.heldProducts:
+        return const NavigationDestination(
+          icon: Icon(Icons.visibility_off_outlined),
+          selectedIcon: Icon(Icons.visibility_off),
+          label: 'Скрытые',
+        );
       case _Section.deliverySlots:
         return const NavigationDestination(
           icon: Icon(Icons.access_time_outlined),
@@ -241,6 +253,11 @@ class _HomeShellState extends State<HomeShell> {
         return const UsersListPage();
       case _Section.banners:
         return const BannersListPage();
+      case _Section.heldProducts:
+        return HeldProductsPage(
+          storeId: widget.storeId,
+          storeName: widget.storeName,
+        );
       case _Section.deliverySlots:
         return SlotTemplatesListPage(
           storeId: widget.storeId,
@@ -301,6 +318,9 @@ class _HomeShellState extends State<HomeShell> {
           // Slot config is per-store; managers run their store day-to-day,
           // so they can tune their own caps. Admin gets it too.
           _Section.deliverySlots,
+          // Staff, not admin-only: the manager standing in the shop is the one
+          // who knows the shelf was restocked. Matches the server's gate.
+          _Section.heldProducts,
           if (isAdmin) _Section.broadcast,
           _Section.settings,
         ];
