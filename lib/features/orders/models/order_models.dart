@@ -486,6 +486,33 @@ class SimilarProduct {
 
 
 
+/// «Проверьте наличие» (26.10): order-service's verdict for one line, from
+/// what the shelf had BEFORE this order (not the stock left after it) and from
+/// what we know is unreliable. Null on an older server: the badge then reads
+/// the catalog's in_stock exactly as before.
+class StockCheck {
+  /// "ok" | "check" | "confirmed" | "missing"
+  final String level;
+  final List<String> reasons;
+
+  const StockCheck({required this.level, this.reasons = const []});
+
+  bool get needsCheck => level == 'check';
+  bool get confirmed => level == 'confirmed';
+  bool get missing => level == 'missing';
+
+  static StockCheck? tryParse(dynamic v) {
+    if (v is! Map) return null;
+    final level = v['level'];
+    if (level is! String || level.isEmpty) return null;
+    final raw = v['reasons'];
+    return StockCheck(
+      level: level,
+      reasons: raw is List ? raw.whereType<String>().toList(growable: false) : const [],
+    );
+  }
+}
+
 class OrderItem {
   final int id;
   final int productId;
@@ -506,6 +533,7 @@ class OrderItem {
   final int? actualG;
   final DateTime? weighedAt;
   final String? uom;
+  final StockCheck? stockCheck;
 
   OrderItem({
     required this.id,
@@ -523,6 +551,7 @@ class OrderItem {
     this.actualG,
     this.weighedAt,
     this.uom,
+    this.stockCheck,
   });
 
   bool get isPicked => pickedAt != null;
@@ -588,6 +617,7 @@ class OrderItem {
         ? null
         : DateTime.tryParse(j['weighed_at'].toString()),
     uom: j['uom']?.toString(),
+    stockCheck: StockCheck.tryParse(j['stock_check']),
   );
 
   OrderItem copyWith({
@@ -617,6 +647,7 @@ class OrderItem {
         actualG: actualG ?? this.actualG,
         weighedAt: weighedAt ?? this.weighedAt,
         uom: uom,
+        stockCheck: stockCheck,
       );
 }
 

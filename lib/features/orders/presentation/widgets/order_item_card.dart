@@ -108,9 +108,18 @@ class OrderItemCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      _StockBadge(inStock: item.product.inStock),
+                      _StockBadge(inStock: item.product.inStock, check: item.stockCheck),
                     ],
                   ),
+                  if (item.stockCheck?.needsCheck == true &&
+                      item.stockCheck!.reasons.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      item.stockCheck!.reasons.join(' · '),
+                      key: const ValueKey('stock-check-reasons'),
+                      style: TextStyle(fontSize: 12, color: Colors.orange.shade800),
+                    ),
+                  ],
                   const SizedBox(height: 6),
                   if (item.product.sku != null && item.product.sku!.isNotEmpty)
                     _BarcodeChip(sku: item.product.sku!),
@@ -477,35 +486,43 @@ class _PickedToggle extends StatelessWidget {
 
 class _StockBadge extends StatelessWidget {
   final bool inStock;
-  const _StockBadge({required this.inStock});
+  final StockCheck? check;
+  const _StockBadge({required this.inStock, this.check});
 
   @override
   Widget build(BuildContext context) {
+    // 26.10: the server's verdict wins; without one (older server) the
+    // catalog's yes/no, exactly as before.
+    final MaterialColor tone;
+    final IconData icon;
+    final String label;
+    if (check?.missing == true) {
+      (tone, icon, label) = (Colors.red, Icons.cancel, 'Нет');
+    } else if (check?.confirmed == true) {
+      (tone, icon, label) = (Colors.green, Icons.verified, 'Проверено');
+    } else if (check?.needsCheck == true) {
+      (tone, icon, label) = (Colors.orange, Icons.help, 'Проверьте наличие');
+    } else if (inStock) {
+      (tone, icon, label) = (Colors.green, Icons.check_circle, 'В наличии');
+    } else {
+      (tone, icon, label) = (Colors.red, Icons.cancel, 'Нет');
+    }
     return Container(
+      key: ValueKey('stock-badge-$label'),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: inStock ? Colors.green.shade50 : Colors.red.shade50,
+        color: tone.shade50,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: inStock ? Colors.green.shade200 : Colors.red.shade200,
-        ),
+        border: Border.all(color: tone.shade200),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            inStock ? Icons.check_circle : Icons.cancel,
-            size: 12,
-            color: inStock ? Colors.green.shade700 : Colors.red.shade700,
-          ),
+          Icon(icon, size: 12, color: tone.shade700),
           const SizedBox(width: 4),
           Text(
-            inStock ? 'В наличии' : 'Нет',
-            style: TextStyle(
-              fontSize: 11,
-              color: inStock ? Colors.green.shade800 : Colors.red.shade800,
-              fontWeight: FontWeight.w500,
-            ),
+            label,
+            style: TextStyle(fontSize: 11, color: tone.shade800, fontWeight: FontWeight.w500),
           ),
         ],
       ),
