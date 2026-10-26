@@ -47,7 +47,27 @@ class _StockRepo extends FakeOrdersRepository {
   final List<(int, bool?)> answers = [];
   final List<bool> removeOutOfStock = [];
   final List<(double, String, List<int>)> refunds = [];
+  final List<(String?, List<int>)> cancels = [];
   Object? answerError;
+
+  /// Thrown by the next cancel AFTER the server applied it when
+  /// [cancelAppliedThenFails] (a timeout on a cancel that went through).
+  OrdersApiException? cancelError;
+  bool cancelAppliedThenFails = false;
+
+  @override
+  Future<SimpleActionResponse> cancelOrder({
+    required int orderId,
+    String? reason,
+    List<int> oosProductIds = const [],
+  }) async {
+    cancels.add((reason, oosProductIds));
+    final e = cancelError;
+    if (e != null && !cancelAppliedThenFails) throw e;
+    detail['status'] = 'refunded';
+    if (e != null) throw e;
+    return SimpleActionResponse(success: true, message: '');
+  }
 
   @override
   Future<SimpleActionResponse> refundOrder({
@@ -274,38 +294,88 @@ void main() {
       await disposePage(t);
     });
 
-    testWidgets('«Нет в наличии» on the LAST line: a full refund that names the product', (t) async {
-      // removeItem refuses the last line, and a plain cancel places no hold.
-      final repo = _repo(single: true);
-      await pumpOrderPage(t, repo);
+    Future<void> pickMissingOnLast(WidgetTester t) async {
       await openMenu(t, 1);
       await t.tap(find.text('Нет в наличии').last);
       await settle(t);
+    }
+
+    testWidgets('«Нет в наличии» on the LAST line: the admin cancel, naming the product', (t) async {
+      // removeItem refuses the last line; the server's cancel sizes the refund
+      // itself, so the app sends no amount and the dialog promises none.
+      final repo = _repo(single: true);
+      await pumpOrderPage(t, repo);
+      await pickMissingOnLast(t);
       expect(find.textContaining('Это последний товар в заказе'), findsOneWidget);
       expect(find.textContaining('Товар скроем у покупателей'), findsOneWidget);
-      await t.tap(find.textContaining('Вернуть 1'));
+      expect(find.descendant(of: find.byType(AlertDialog), matching: find.textContaining('₸')), findsNothing);
+      await t.tap(find.widgetWithText(ElevatedButton, 'Отменить заказ'));
       await settle(t);
-      expect(repo.removeCalls, isEmpty);
-      expect(repo.answers, isEmpty);
-      // The whole captured amount, the canonical reason, and this product.
-      expect(repo.refunds, hasLength(1));
-      final (amount, reason, oos) = repo.refunds.single;
-      expect(amount, 1476.0);
+      expect(repo.cancels, hasLength(1));
+      final (reason, oos) = repo.cancels.single;
       expect(reason, 'Нет в наличии');
       expect(oos, [66001]);
+      expect(repo.refunds, isEmpty);
+      expect(repo.removeCalls, isEmpty);
       await disposePage(t);
     });
 
-    testWidgets('the last-line refund can be backed out of', (t) async {
+    testWidgets('the last-line cancel can be backed out of', (t) async {
       final repo = _repo(single: true);
       await pumpOrderPage(t, repo);
-      await openMenu(t, 1);
-      await t.tap(find.text('Нет в наличии').last);
-      await settle(t);
+      await pickMissingOnLast(t);
       await t.tap(find.text('Назад'));
       await settle(t);
-      expect(repo.refunds, isEmpty);
+      expect(repo.cancels, isEmpty);
       await disposePage(t);
+    });
+
+    testWidgets('a fast double pick opens ONE confirmation', (t) async {
+      final repo = _repo(single: true);
+      await pumpOrderPage(t, repo);
+      final card = t.widget<OrderItemCard>(find.byType(OrderItemCard).first);
+      card.onStockAnswer!(StockAnswer.missing);
+      card.onStockAnswer!(StockAnswer.missing);
+      await settle(t);
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await t.tap(find.widgetWithText(ElevatedButton, 'Отменить заказ'));
+      await settle(t);
+      expect(repo.cancels, hasLength(1));
+      await disposePage(t);
+    });
+
+    testWidgets('no answer, but the server did cancel: success, not «не удалось»', (t) async {
+      final repo = _repo(single: true)
+        ..cancelError = OrdersApiException('timeout')
+        ..cancelAppliedThenFails = true;
+      await pumpOrderPage(t, repo);
+      await pickMissingOnLast(t);
+      await t.tap(find.widgetWithText(ElevatedButton, 'Отменить заказ'));
+      await settle(t);
+      expect(find.text('Оформлен возврат'), findsOneWidget);
+      expect(find.text('Не удалось отменить заказ'), findsNothing);
+      await disposePage(t);
+    });
+
+    testWidgets('no answer and nothing changed: ask to refresh, no retry', (t) async {
+      final repo = _repo(single: true)..cancelError = OrdersApiException('timeout');
+      await pumpOrderPage(t, repo);
+      await pickMissingOnLast(t);
+      await t.tap(find.widgetWithText(ElevatedButton, 'Отменить заказ'));
+      await settle(t);
+      expect(find.text('Не удалось проверить результат. Обновите экран.'), findsOneWidget);
+      expect(find.text('Повторить'), findsNothing);
+      expect(repo.cancels, hasLength(1));
+      await disposePage(t);
+    });
+
+    test('the cancel body: reason + oos ids only on this path', () async {
+      final (repo, sent) = _capturing({'success': true, 'message': ''});
+      await repo.cancelOrder(orderId: 1382, reason: 'Нет в наличии', oosProductIds: [66001]);
+      await repo.cancelOrder(orderId: 1382);
+      expect(sent[0].path, '/gw/order/admin/1382/cancel');
+      expect(sent[0].data, {'reason': 'Нет в наличии', 'oos_product_ids': [66001]});
+      expect(sent[1].data, isNull);
     });
 
     testWidgets('409 (another iPad said «нет»): reverted, said, refetched', (t) async {

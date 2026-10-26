@@ -176,9 +176,24 @@ class OrdersRepository {
   }
 
 
-  Future<SimpleActionResponse> cancelOrder({required int orderId}) async {
+  /// [reason] / [oosProductIds] (26.10): the last line's «Нет в наличии».
+  /// order-service sizes the refund itself, releases stock and the promo, and
+  /// hides those products at the store. A plain cancel sends no body, exactly
+  /// as before.
+  Future<SimpleActionResponse> cancelOrder({
+    required int orderId,
+    String? reason,
+    List<int> oosProductIds = const [],
+  }) async {
+    final body = <String, dynamic>{
+      if (reason != null) 'reason': reason,
+      if (oosProductIds.isNotEmpty) 'oos_product_ids': oosProductIds,
+    };
     try {
-      final resp = await api.dio.post('/gw/order/admin/$orderId/cancel');
+      final resp = await api.dio.post(
+        '/gw/order/admin/$orderId/cancel',
+        data: body.isEmpty ? null : body,
+      );
       return SimpleActionResponse.fromJson(asJsonMap(resp.data));
     } on DioException catch (e) {
       throw OrdersApiException(

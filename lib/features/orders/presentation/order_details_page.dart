@@ -1066,8 +1066,6 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // this stops the call, which is what matters if the button is ever
     // rebuilt from a stale frame or reached from a future call site.
     if (_actionLoading || _handingOver || _saving) return;
-    final repo = context.read<OrdersRepository>();
-    final storeState = context.read<StoreCubit>().state;
     final confirm = await showDialog<bool>(
       context: context,
       // The old body was exactly «Заказ #N будет отменён.» — it never said that
@@ -1130,6 +1128,23 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     );
 
     if (confirm != true) return;
+    await _performCancel();
+  }
+
+  /// The cancel call, after its confirmation. Shared by «Отменить заказ» and
+  /// the last line's «Нет в наличии» ([oosProductIds] non-empty: the server
+  /// also hides those products). A retry repeats the same call; the server's
+  /// refund key is stable per order (cancel-refund:{id}), so it cannot refund
+  /// twice.
+  Future<void> _performCancel({
+    String? reason,
+    List<int> oosProductIds = const [],
+  }) async {
+    if (_actionLoading || _handingOver || _saving) return;
+    final repo = context.read<OrdersRepository>();
+    final storeState = context.read<StoreCubit>().state;
+    Future<void> retry() =>
+        _performCancel(reason: reason, oosProductIds: oosProductIds);
 
     HapticFeedback.mediumImpact();
     setState(() {
@@ -1138,7 +1153,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     });
 
     try {
-      final res = await repo.cancelOrder(orderId: _order.id);
+      final res = await repo.cancelOrder(
+        orderId: _order.id,
+        reason: reason,
+        oosProductIds: oosProductIds,
+      );
 
       if (!mounted) return;
       if (res.success) {
@@ -1173,12 +1192,52 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
-      _showMoneyPathError(e, _cancelOrder, 'Не удалось отменить заказ');
+      if (oosProductIds.isNotEmpty && e.statusCode == null) {
+        await _settleUnknownCancel(repo, storeState);
+        return;
+      }
+      _showMoneyPathError(e, retry, 'Не удалось отменить заказ');
     } catch (_) {
       if (!mounted) return;
-      _showErrorWithRetry('Не удалось отменить заказ', _cancelOrder);
+      if (oosProductIds.isNotEmpty) {
+        await _settleUnknownCancel(repo, storeState);
+        return;
+      }
+      _showErrorWithRetry('Не удалось отменить заказ', retry);
     } finally {
       if (mounted) setState(() => _actionLoading = false);
+    }
+  }
+
+  /// No answer (a timeout, a dropped connection): the server may well have
+  /// cancelled and refunded. Saying «не удалось» invites a second attempt on
+  /// an order that is already done, so ask the server what happened.
+  Future<void> _settleUnknownCancel(
+    OrdersRepository repo,
+    StoreState storeState,
+  ) async {
+    Order? fresh;
+    if (storeState is StoreSelected) {
+      try {
+        fresh = await repo.getOrderById(
+          storeId: storeState.storeId,
+          orderId: _order.id,
+        );
+      } catch (_) {
+        fresh = null;
+      }
+    }
+    if (!mounted) return;
+    final s = fresh?.status.toLowerCase();
+    final done = s == 'canceled' || s == 'refunded' || s == 'partially-refunded';
+    if (fresh != null && done) {
+      setState(() => _order = fresh!);
+      _timelineKey.currentState?.refresh();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(s == 'canceled' ? 'Заказ отменён' : 'Оформлен возврат'),
+      ));
+    } else {
+      _showError('Не удалось проверить результат. Обновите экран.');
     }
   }
 
@@ -2233,40 +2292,50 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// server hides the product and records the «нет».
   Future<void> _markMissing(OrderItem item) async {
     if (_itemBusy.contains(item.id) || _subBusy.contains(item.id)) return;
-    if (AdminFeatureFlags.instance.substitution) {
-      await _openSubstitutePicker(item, outOfStock: true);
-    } else {
-      await _removeOutOfStock(item);
+    // Set BEFORE any dialog or sheet opens: a fast second pick from the menu
+    // must not stack a second confirmation (each would act on its own).
+    if (_markingMissing) return;
+    _markingMissing = true;
+    try {
+      if (AdminFeatureFlags.instance.substitution) {
+        await _openSubstitutePicker(item, outOfStock: true);
+      } else {
+        await _removeOutOfStock(item);
+      }
+    } finally {
+      _markingMissing = false;
     }
   }
 
+  // True from a «Нет в наличии» pick until its flow (sheet, dialog, call)
+  // is over.
+  bool _markingMissing = false;
+
   /// Out-of-stock removal of one line. The LAST line cannot be removed (the
   /// server refuses an empty order), and a plain cancel places no hold, so
-  /// the product would stay on sale. There the whole order is refunded with
-  /// the «Нет в наличии» reason and this product named, which is the refund
-  /// path that places the hold.
+  /// the product would stay on sale. There the order is cancelled with the
+  /// product named, which places the hold (see [_cancelLastItemOutOfStock]).
   Future<void> _removeOutOfStock(OrderItem item) async {
     if (_order.items.length <= 1) {
-      await _refundLastItemOutOfStock(item);
+      await _cancelLastItemOutOfStock(item);
     } else {
       await _removeItem(item, outOfStock: true);
     }
   }
 
-  /// «Нет в наличии» on the only line: a full refund that hides the product.
+  /// «Нет в наличии» on the only line: cancel the order with a full refund
+  /// and hide the product.
   ///
-  /// The same guards as «Возврат»: only where a refund is allowed, sized
-  /// against what was CAPTURED minus what was already returned (refundable.
-  /// dart), one idempotency key per confirmation, and nothing while another
-  /// money action or the refund sheet is open.
-  Future<void> _refundLastItemOutOfStock(OrderItem item) async {
-    if (_refundSheetOpen || _actionLoading) return;
-    final remaining = refundCeiling(
-      capturedAmount: _order.capturedAmount,
-      totalAmount: _order.totalAmount,
-      alreadyRefunded: _refunds.fold<double>(0.0, (s, r) => s + r.amount),
-    ).remaining;
-    if (!_canRefund || remaining <= 0) {
+  /// Through order-service's admin cancel, NOT a client-sized refund: the
+  /// server computes what is still refundable (earlier line removals, quantity
+  /// cuts, substitutions and weight settles refund without changing the
+  /// status, so the app's refund history cannot know), uses its own stable
+  /// key, releases stock and the promo, and places the hold for
+  /// `oos_product_ids`. The dialog therefore names no amount.
+  Future<void> _cancelLastItemOutOfStock(OrderItem item) async {
+    // The cancel button's guards.
+    if (_actionLoading || _handingOver || _saving) return;
+    if (!_canCancel) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Нельзя удалить последний товар. Отмените заказ.'),
@@ -2274,7 +2343,6 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
       return;
     }
-    final refundText = formatTenge(remaining);
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -2294,11 +2362,6 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               'Товар скроем у покупателей этого магазина, '
               'пока его не подтвердят на полке.',
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Покупателю вернём $refundText на карту. '
-              'Обычно от 1 до 3 рабочих дней.',
-            ),
           ],
         ),
         actions: [
@@ -2307,17 +2370,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             child: const Text('Назад'),
           ),
           ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
             onPressed: () => Navigator.of(c).pop(true),
-            child: Text('Вернуть $refundText'),
+            child: const Text('Отменить заказ'),
           ),
         ],
       ),
     );
     if (ok != true || !mounted) return;
-    await _refundOrder(
-      amount: remaining,
+    await _performCancel(
       reason: 'Нет в наличии',
-      idempotencyKey: const Uuid().v4(),
       oosProductIds: [item.productId],
     );
   }
