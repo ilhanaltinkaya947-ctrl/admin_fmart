@@ -392,14 +392,37 @@ class OrdersRepository {
     return PackagingEditResult.fromJson(asJsonMap(resp.data));
   }
 
+  /// [outOfStock] = the line was NOT ON THE SHELF (the «Нет в наличии» path):
+  /// order-service then places the catalog hold, which is also the line's
+  /// «нет». Left false for any other removal (the customer asked), so a
+  /// product that is on the shelf is never hidden.
   Future<OrderItemEditResult> removeItem({
     required int orderId,
     required int itemId,
+    bool outOfStock = false,
   }) async {
     final resp = await api.dio.delete(
       '/gw/order/admin/orders/$orderId/items/$itemId',
+      queryParameters: outOfStock ? {'out_of_stock': true} : null,
     );
     return OrderItemEditResult.fromJson(asJsonMap(resp.data));
+  }
+
+  /// «Проверьте наличие ▾» (26.10): [present] true = «В наличии», null =
+  /// «Сбросить ответ». There is no false here: «Нет в наличии» is the
+  /// out-of-stock flow (substitution / removal with a refund), which records
+  /// the «нет» itself. Returns the line's new verdict, null after a reset.
+  Future<StockCheck?> setItemStockAnswer({
+    required int orderId,
+    required int itemId,
+    required bool? present,
+  }) async {
+    assert(present != false, '«Нет в наличии» is the out-of-stock flow');
+    final resp = await api.dio.post(
+      '/gw/order/admin/orders/$orderId/items/$itemId/stock-answer',
+      data: {'present': present},
+    );
+    return StockCheck.tryParse(asJsonMap(resp.data)['stock_check']);
   }
 
   /// Per-day order count + revenue between [dateFrom] and [dateTo].

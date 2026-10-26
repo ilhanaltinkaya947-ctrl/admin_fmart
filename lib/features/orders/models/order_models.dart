@@ -501,6 +501,14 @@ class StockCheck {
   bool get confirmed => level == 'confirmed';
   bool get missing => level == 'missing';
 
+  /// Nobody has answered for this line yet («ok» or «check»): the dropdown
+  /// reads «Проверьте наличие».
+  bool get unanswered => !confirmed && !missing;
+
+  /// The same line with another level, keeping the reasons (the stock-answer
+  /// response sends none, and the hint must survive a «Сбросить ответ»).
+  StockCheck withLevel(String l) => StockCheck(level: l, reasons: reasons);
+
   static StockCheck? tryParse(dynamic v) {
     if (v is! Map) return null;
     final level = v['level'];
@@ -627,6 +635,7 @@ class OrderItem {
     bool clearPickedAt = false,
     int? actualG,
     DateTime? weighedAt,
+    StockCheck? stockCheck,
   }) =>
       OrderItem(
         id: id,
@@ -647,7 +656,7 @@ class OrderItem {
         actualG: actualG ?? this.actualG,
         weighedAt: weighedAt ?? this.weighedAt,
         uom: uom,
-        stockCheck: stockCheck,
+        stockCheck: stockCheck ?? this.stockCheck,
       );
 }
 

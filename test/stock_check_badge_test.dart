@@ -1,5 +1,7 @@
 // «Проверьте наличие» (26.10): the order line badge reads order-service's
 // stock_check verdict; without one (older server) it reads in_stock as before.
+// Since the dropdown (same day) the answered labels are «В наличии» / «Нет в
+// наличии» and the reasons carry a «⚠ »; see stock_check_dropdown_test.dart.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:admin_fmart/features/orders/models/order_models.dart';
@@ -38,14 +40,14 @@ void main() {
         check: {'level': 'check', 'reasons': ['в 1С было 1 шт', 'не хватало 2 раз за 14 дней']})));
     expect(find.text('Проверьте наличие'), findsOneWidget);
     expect(find.text('Нет'), findsNothing);
-    expect(find.text('в 1С было 1 шт · не хватало 2 раз за 14 дней'), findsOneWidget);
+    expect(find.text('⚠ в 1С было 1 шт · не хватало 2 раз за 14 дней'), findsOneWidget);
   });
 
   testWidgets('confirmed and missing', (t) async {
     await _pump(t, OrderItem.fromJson(_line(check: {'level': 'confirmed', 'reasons': []})));
-    expect(find.text('Проверено'), findsOneWidget);
+    expect(find.text('В наличии'), findsOneWidget);
     await _pump(t, OrderItem.fromJson(_line(inStock: true, check: {'level': 'missing', 'reasons': []})));
-    expect(find.text('Нет'), findsOneWidget);
+    expect(find.text('Нет в наличии'), findsOneWidget);
   });
 
   testWidgets('older server: the yes/no badge exactly as before', (t) async {

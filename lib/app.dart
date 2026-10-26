@@ -8,6 +8,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'core/api/api_client.dart';
 import 'core/api/api_config.dart';
 import 'core/services/new_order_counter.dart';
+import 'core/services/morning_check_push.dart';
 import 'core/services/new_order_dialog_guard.dart';
 import 'core/services/onesignal_service.dart';
 import 'core/services/order_watcher.dart';
@@ -37,6 +38,7 @@ import 'features/stores/state/store_cubit.dart';
 
 import 'features/orders/data/orders_repository.dart';
 import 'features/stock/data/held_products_repository.dart';
+import 'features/stock/data/morning_check_repository.dart';
 import 'features/stores/data/pickup_stores_repository.dart';
 import 'features/orders/presentation/order_details_page.dart';
 import 'features/orders/state/orders_cubit.dart';
@@ -63,6 +65,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   late final StoresRepository _storesRepo;
   late final OrdersRepository _ordersRepo;
   late final HeldProductsRepository _heldProductsRepo;
+  late final MorningCheckRepository _morningCheckRepo;
   late final PickupStoresRepository _pickupStoresRepo;
   late final DeliveryRepository _deliveryRepo;
   late final CustomersRepository _customersRepo;
@@ -75,6 +78,8 @@ class _AppState extends State<App> with WidgetsBindingObserver {
 
   late final SoundService _sound;
   late final NewOrderCounter _newOrderCounter;
+  // «Утренняя проверка» push → HomeShell's section (26.10).
+  final MorningCheckLauncher _morningCheckLauncher = MorningCheckLauncher();
   OrderWatcher? _watcher;
 
   /// Which store [_watcher] was built for. A watcher only carries valid
@@ -114,6 +119,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     _storesRepo = StoresRepository(api: _api);
     _ordersRepo = OrdersRepository(api: _api);
     _heldProductsRepo = HeldProductsRepository(api: _api);
+    _morningCheckRepo = MorningCheckRepository(api: _api);
     _pickupStoresRepo = PickupStoresRepository(api: _api);
     _customersRepo = CustomersRepository(api: _api);
     _usersRepo = UsersRepository(api: _api);
@@ -140,6 +146,13 @@ class _AppState extends State<App> with WidgetsBindingObserver {
 
   void _setupOneSignalForegroundHandler() {
     widget.oneSignalService.onForegroundNotification = (data) async {
+      // 26.10: the morning stock question is not an order. No siren, no
+      // counter, no «Новый заказ» dialog: a quiet banner instead. Must stay
+      // the FIRST thing here, before anything an order push does.
+      if (isMorningCheckPush(data)) {
+        _showMorningCheckBanner(data);
+        return;
+      }
       // Bump the unread counter immediately — even if the dialog can't
       // open (no nav context, dialog guard busy), the operator should
       // still see the badge on the "Новые" tab next time they look.
@@ -262,6 +275,14 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       // route to the order. On a cold start the click can fire before the
       // navigator + auth exist; if so, stash the id and let the AuthCubit
       // listener replay it once Authenticated.
+      //
+      // 26.10: a morning check push opens that section instead, and is not an
+      // order (no counter bump). The launcher holds the request until a
+      // HomeShell exists, which covers the cold start.
+      if (isMorningCheckPush(data)) {
+        _openMorningCheck();
+        return;
+      }
       _newOrderCounter.bump();
       final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
       if (orderId == null) return;
@@ -279,6 +300,28 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       }
       await _openOrderById(orderId);
     };
+  }
+
+  /// Foreground morning check push: a banner, never blocking, never ringing.
+  void _showMorningCheckBanner(Map<String, dynamic> data) {
+    final ctx = _navKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(ctx);
+    if (messenger == null) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text(morningCheckBannerText(morningCheckCount(data))),
+      duration: const Duration(seconds: 10),
+      behavior: SnackBarBehavior.floating,
+      action: SnackBarAction(label: 'Открыть', onPressed: _openMorningCheck),
+    ));
+  }
+
+  /// Show the «Утренняя проверка» section: back to the shell (an order detail
+  /// may be on top), then ask it to switch. Stops at a dialog: a «Новый заказ»
+  /// dialog on screen is never closed by a stock question.
+  void _openMorningCheck() {
+    _navKey.currentState?.popUntil((r) => r.isFirst || r is PopupRoute);
+    _morningCheckLauncher.request();
   }
 
   Future<void> _startWatcherIfPossible() async {
@@ -367,6 +410,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     _watcher?.stop();
     _watcher = null;
     _newOrderCounter.dispose();
+    _morningCheckLauncher.dispose();
     _sound.dispose();
     super.dispose();
   }
@@ -379,6 +423,8 @@ class _AppState extends State<App> with WidgetsBindingObserver {
         RepositoryProvider.value(value: _storesRepo),
         RepositoryProvider.value(value: _ordersRepo),
         RepositoryProvider.value(value: _heldProductsRepo),
+        RepositoryProvider.value(value: _morningCheckRepo),
+        RepositoryProvider.value(value: _morningCheckLauncher),
         RepositoryProvider.value(value: _pickupStoresRepo),
         RepositoryProvider.value(value: _customersRepo),
         RepositoryProvider.value(value: _usersRepo),

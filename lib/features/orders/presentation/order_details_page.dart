@@ -59,6 +59,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // checkbox spins instead of double-firing on a second tap.
   final Set<int> _pickBusy = <int>{};
 
+  // Lines with a «Проверьте наличие ▾» answer in flight (26.10).
+  final Set<int> _stockBusy = <int>{};
+
   // ── Weight steps (part A) ─────────────────────────────────────────────
   //
   // Which weight lines have a PUT in flight, so the «Факт, г» field locks.
@@ -247,7 +250,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     } catch (_) {/* the 8s poll will catch up */}
   }
 
-  Future<void> _openSubstitutePicker(OrderItem it) async {
+  /// [outOfStock]: opened from the line's «Нет в наличии» (26.10 dropdown),
+  /// so a removal chosen inside the sheet is also an out-of-stock removal.
+  Future<void> _openSubstitutePicker(OrderItem it, {bool outOfStock = false}) async {
     final repo = context.read<OrdersRepository>();
     _substituteSheetOpen = true;
     final outcome = await showSubstitutePickerSheet(
@@ -279,7 +284,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         ));
       }
     } else if (outcome == SubstituteSheetOutcome.removeItemRequested) {
-      await _removeItem(it);
+      await _removeItem(it, outOfStock: outOfStock);
     }
   }
 
@@ -396,6 +401,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   Future<void> _pollOrder() async {
     if (!mounted) return;
     if (_saving || _actionLoading || _itemBusy.isNotEmpty || _pickBusy.isNotEmpty) return;
+    // An optimistic stock answer: a GET served now can predate it.
+    if (_stockBusy.isNotEmpty) return;
     // A weight PUT or a settle in flight: a GET served now can predate it and
     // would put the old reading back in the field (review M1).
     if (_weightBusy.isNotEmpty || _settleBusy) return;
@@ -455,6 +462,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           _actionLoading ||
           _itemBusy.isNotEmpty ||
           _pickBusy.isNotEmpty ||
+          _stockBusy.isNotEmpty ||
           _weightBusy.isNotEmpty ||
           _settleBusy ||
           _substituteSheetOpen ||
@@ -2035,7 +2043,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     }
   }
 
-  Future<void> _removeItem(OrderItem item) async {
+  /// [outOfStock]: the line is NOT ON THE SHELF (the «Нет в наличии» path).
+  /// The server then hides the product at this store and records the line's
+  /// «нет»; the dialog says so. Every other removal leaves the product on sale.
+  Future<void> _removeItem(OrderItem item, {bool outOfStock = false}) async {
     if (_itemBusy.contains(item.id)) return;
     if (_saving) return;
     if (_order.items.length <= 1) {
@@ -2077,6 +2088,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               'Обычно от 1 до 3 рабочих дней. '
               'Вернуть товар обратно в заказ будет нельзя.',
             ),
+            if (outOfStock) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Товар скроем у покупателей этого магазина, '
+                'пока его не подтвердят на полке.',
+              ),
+            ],
           ],
         ),
         actions: [
@@ -2101,6 +2119,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       final res = await repo.removeItem(
         orderId: _order.id,
         itemId: item.id,
+        outOfStock: outOfStock,
       );
       if (!mounted) return;
       final updatedItems =
@@ -2137,6 +2156,72 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       );
     } finally {
       if (mounted) setState(() => _itemBusy.remove(item.id));
+    }
+  }
+
+  /// «Проверьте наличие ▾» on a line (26.10).
+  ///
+  /// «В наличии» / «Сбросить ответ»: optimistic, reverted with a snackbar if
+  /// the server refuses; the 8 s poll brings the truth either way.
+  /// «Нет в наличии»: the existing out-of-stock flow, never a bare POST: it
+  /// refunds or offers a replacement, and the hold it places is the «нет».
+  Future<void> _answerStock(OrderItem item, StockAnswer answer) async {
+    if (answer == StockAnswer.missing) {
+      await _markMissing(item);
+      return;
+    }
+    final before = item.stockCheck;
+    if (before == null || _stockBusy.contains(item.id)) return;
+    final present = answer == StockAnswer.present;
+    final optimistic = present
+        ? before.withLevel('confirmed')
+        : before.withLevel(before.reasons.isEmpty ? 'ok' : 'check');
+
+    void apply(StockCheck c) {
+      _order = _order.copyWith(
+        items: _order.items
+            .map((it) => it.id == item.id ? it.copyWith(stockCheck: c) : it)
+            .toList(),
+      );
+    }
+
+    setState(() {
+      _stockBusy.add(item.id);
+      apply(optimistic);
+    });
+    _lastLocalWriteAt = DateTime.now();
+    try {
+      final repo = context.read<OrdersRepository>();
+      final res = await repo.setItemStockAnswer(
+        orderId: _order.id,
+        itemId: item.id,
+        present: present ? true : null,
+      );
+      // The server's level wins; its reasons are not in this response, so the
+      // line keeps the ones it had.
+      if (mounted && res != null) setState(() => apply(before.withLevel(res.level)));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => apply(before));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось сохранить ответ')),
+      );
+    } finally {
+      if (mounted) setState(() => _stockBusy.remove(item.id));
+    }
+  }
+
+  /// «Нет в наличии» from the dropdown: the same flow as the old «Нет в
+  /// наличии — заменить» button (a replacement, or removal with a refund from
+  /// inside the sheet). Without the substitution rollout for this manager,
+  /// removal with a refund, behind its usual confirmation. Either way the
+  /// server hides the product and records the «нет».
+  Future<void> _markMissing(OrderItem item) async {
+    if (_itemBusy.contains(item.id) || _subBusy.contains(item.id)) return;
+    if (AdminFeatureFlags.instance.substitution) {
+      await _openSubstitutePicker(item, outOfStock: true);
+    } else {
+      await _removeItem(item, outOfStock: true);
     }
   }
 
@@ -2951,6 +3036,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                     weightError: _weightError[it.id],
                     settled: _weightsSettled,
                     customerPhone: _customer?.phone,
+                    // «Проверьте наличие ▾» only while the order is being
+                    // picked (the same statuses as the «Собрано» tick);
+                    // read-only after that.
+                    onStockAnswer: _itemsEditable
+                        ? (a) => _answerStock(it, a)
+                        : null,
+                    canMarkMissing:
+                        _order.openSubstitutionForItem(it.id) == null,
+                    stockBusy: _stockBusy.contains(it.id),
                   ),
                   SubstitutionItemRow(
                     order: _order,

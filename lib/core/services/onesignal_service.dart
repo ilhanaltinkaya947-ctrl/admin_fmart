@@ -76,7 +76,10 @@ class OneSignalService {
 
   Future<void> setStoreTag(int storeId) async {
     try {
-      OneSignal.User.addTags({"store": storeId.toString()});
+      // morning_check: this build handles the «Утренняя проверка» push
+      // (26.10). The server sends it only to devices with this tag, so an
+      // older build never gets a push it would ring a siren for.
+      OneSignal.User.addTags({"store": storeId.toString(), "morning_check": "1"});
     } catch (e, st) {
       Sentry.addBreadcrumb(Breadcrumb(
         category: 'onesignal',

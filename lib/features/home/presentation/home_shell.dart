@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/feature_flags.dart';
+import '../../../core/services/morning_check_push.dart';
 import '../../../core/services/new_order_counter.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../../stock/presentation/held_products_page.dart';
+import '../../stock/presentation/morning_check_page.dart';
 import '../../orders/data/orders_repository.dart';
 import '../../delivery_slots/presentation/slot_templates_list_page.dart';
 import '../../customers/presentation/customers_list_page.dart';
@@ -39,6 +41,9 @@ enum _Section {
   // Placed and lifted automatically; this tab exists so "why has this stopped
   // selling?" has an answer, and so a wrong hold can be undone.
   heldProducts,
+  // «Утренняя проверка» (26.10): each morning, is each product a picker
+  // reported missing back on the shelf? Opened by its push too.
+  morningCheck,
   settings,
 }
 
@@ -59,9 +64,18 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   _Section _section = _Section.dashboard;
 
+  // Bumped on every push request so an already-open morning check reloads.
+  int _morningCheckEpoch = 0;
+  MorningCheckLauncher? _morningLauncher;
+
   @override
   void initState() {
     super.initState();
+    // A morning check push may have been tapped before this shell existed
+    // (cold start): the launcher kept it, take it after the first frame.
+    _morningLauncher = context.read<MorningCheckLauncher?>();
+    _morningLauncher?.addListener(_onMorningCheckRequest);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onMorningCheckRequest());
     // Default to the active-orders preset on first paint.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -74,6 +88,20 @@ class _HomeShellState extends State<HomeShell> {
       }).catchError((_) {
         // Keep the safe all-off default on any error.
       });
+    });
+  }
+
+  @override
+  void dispose() {
+    _morningLauncher?.removeListener(_onMorningCheckRequest);
+    super.dispose();
+  }
+
+  void _onMorningCheckRequest() {
+    if (!mounted || _morningLauncher?.consume() != true) return;
+    setState(() {
+      _section = _Section.morningCheck;
+      _morningCheckEpoch++;
     });
   }
 
@@ -116,6 +144,7 @@ class _HomeShellState extends State<HomeShell> {
       case _Section.reviews:
       case _Section.deliverySlots:
       case _Section.heldProducts:
+      case _Section.morningCheck:
       case _Section.settings:
         break;
     }
@@ -180,6 +209,12 @@ class _HomeShellState extends State<HomeShell> {
           selectedIcon: Icon(Icons.visibility_off),
           label: 'Скрытые',
         );
+      case _Section.morningCheck:
+        return const NavigationDestination(
+          icon: Icon(Icons.wb_sunny_outlined),
+          selectedIcon: Icon(Icons.wb_sunny),
+          label: 'Утро',
+        );
       case _Section.deliverySlots:
         return const NavigationDestination(
           icon: Icon(Icons.access_time_outlined),
@@ -227,6 +262,12 @@ class _HomeShellState extends State<HomeShell> {
           storeId: widget.storeId,
           storeName: widget.storeName,
         );
+      case _Section.morningCheck:
+        return MorningCheckPage(
+          key: ValueKey('morning-check-$_morningCheckEpoch'),
+          storeId: widget.storeId,
+          storeName: widget.storeName,
+        );
       case _Section.deliverySlots:
         return SlotTemplatesListPage(
           storeId: widget.storeId,
@@ -265,6 +306,9 @@ class _HomeShellState extends State<HomeShell> {
         // conditionally inserted here. Index↔section is still mapped through
         // this list so NavigationBar's selectedIndex can never fall outside
         // its destinations.
+        // «Утренняя проверка» is on the rail (the store iPads), not in this
+        // bar: the bar is at its 10-destination limit (see
+        // home_nav_destinations_test). On a phone it opens from its push.
         final visibleSections = <_Section>[
           _Section.dashboard,
           _Section.newOrders,
@@ -389,6 +433,13 @@ class _SideRail extends StatelessWidget {
                 label: 'История заказов',
                 isSelected: selected == _Section.orderHistory,
                 onTap: () => onSelected(_Section.orderHistory),
+              ),
+              _RailItem(
+                icon: Icons.wb_sunny_outlined,
+                selectedIcon: Icons.wb_sunny,
+                label: 'Утренняя проверка',
+                isSelected: selected == _Section.morningCheck,
+                onTap: () => onSelected(_Section.morningCheck),
               ),
               _RailItem(
                 icon: Icons.people_outline,

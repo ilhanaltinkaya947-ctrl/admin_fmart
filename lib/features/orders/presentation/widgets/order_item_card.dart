@@ -6,6 +6,9 @@ import '../../../../core/format/money.dart';
 import '../../models/order_models.dart';
 import '../weight_format.dart';
 
+/// What the picker chose in a line's «Проверьте наличие ▾» (26.10).
+enum StockAnswer { present, missing, reset }
+
 /// Card row for one order item.
 /// Shows image, name, barcode (copyable), qty x price, line total.
 /// When [editable] is true, shows +/- and remove controls.
@@ -48,6 +51,18 @@ class OrderItemCard extends StatelessWidget {
   /// The customer's phone, for the under-80% call prompt on a weight line.
   final String? customerPhone;
 
+  /// «Проверьте наличие ▾» (26.10). Null shows the line's verdict read-only
+  /// (the order is past picking). Only used when the line has a `stockCheck`;
+  /// without one (older server) the card is exactly as before.
+  final ValueChanged<StockAnswer>? onStockAnswer;
+
+  /// False hides «Нет в наличии» from the menu (a substitution is already
+  /// waiting on the customer for this line).
+  final bool canMarkMissing;
+
+  /// True while a stock answer for this line is being saved.
+  final bool stockBusy;
+
   const OrderItemCard({
     super.key,
     required this.item,
@@ -63,6 +78,9 @@ class OrderItemCard extends StatelessWidget {
     this.weightError,
     this.settled = false,
     this.customerPhone,
+    this.onStockAnswer,
+    this.canMarkMissing = true,
+    this.stockBusy = false,
   });
 
   @override
@@ -108,14 +126,25 @@ class OrderItemCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      _StockBadge(inStock: item.product.inStock, check: item.stockCheck),
+                      // 26.10: a line with the server's verdict gets the
+                      // dropdown; without one (older server) the old badge.
+                      if (item.stockCheck != null)
+                        _StockCheckDropdown(
+                          check: item.stockCheck!,
+                          onAnswer: onStockAnswer,
+                          canMarkMissing: canMarkMissing,
+                          busy: stockBusy,
+                        )
+                      else
+                        _StockBadge(inStock: item.product.inStock),
                     ],
                   ),
-                  if (item.stockCheck?.needsCheck == true &&
+                  // Why it is worth a look, only while nobody has answered.
+                  if (item.stockCheck?.unanswered == true &&
                       item.stockCheck!.reasons.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text(
-                      item.stockCheck!.reasons.join(' · '),
+                      '⚠ ${item.stockCheck!.reasons.join(' · ')}',
                       key: const ValueKey('stock-check-reasons'),
                       style: TextStyle(fontSize: 12, color: Colors.orange.shade800),
                     ),
@@ -484,29 +513,16 @@ class _PickedToggle extends StatelessWidget {
   }
 }
 
+/// The catalog's yes/no, for a line without a server verdict (older
+/// order-service). Exactly the pre-26.10 badge.
 class _StockBadge extends StatelessWidget {
   final bool inStock;
-  final StockCheck? check;
-  const _StockBadge({required this.inStock, this.check});
+  const _StockBadge({required this.inStock});
 
   @override
   Widget build(BuildContext context) {
-    // 26.10: the server's verdict wins; without one (older server) the
-    // catalog's yes/no, exactly as before.
-    final MaterialColor tone;
-    final IconData icon;
-    final String label;
-    if (check?.missing == true) {
-      (tone, icon, label) = (Colors.red, Icons.cancel, 'Нет');
-    } else if (check?.confirmed == true) {
-      (tone, icon, label) = (Colors.green, Icons.verified, 'Проверено');
-    } else if (check?.needsCheck == true) {
-      (tone, icon, label) = (Colors.orange, Icons.help, 'Проверьте наличие');
-    } else if (inStock) {
-      (tone, icon, label) = (Colors.green, Icons.check_circle, 'В наличии');
-    } else {
-      (tone, icon, label) = (Colors.red, Icons.cancel, 'Нет');
-    }
+    final MaterialColor tone = inStock ? Colors.green : Colors.red;
+    final label = inStock ? 'В наличии' : 'Нет';
     return Container(
       key: ValueKey('stock-badge-$label'),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -518,7 +534,7 @@ class _StockBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 12, color: tone.shade700),
+          Icon(inStock ? Icons.check_circle : Icons.cancel, size: 12, color: tone.shade700),
           const SizedBox(width: 4),
           Text(
             label,
@@ -528,4 +544,101 @@ class _StockBadge extends StatelessWidget {
       ),
     );
   }
+}
+
+/// «Проверьте наличие ▾» (26.10): the line's verdict as a chip that opens the
+/// picker's answers. «В наличии» and «Сбросить ответ» are a plain POST;
+/// «Нет в наличии» is handed to the page, which runs the out-of-stock flow
+/// (it moves money and hides the product, so it keeps its own confirmations).
+///
+/// A «нет» is read-only: it came with a substitution or a refund and a hold,
+/// which a menu tap here cannot undo.
+class _StockCheckDropdown extends StatelessWidget {
+  final StockCheck check;
+  final ValueChanged<StockAnswer>? onAnswer;
+  final bool canMarkMissing;
+  final bool busy;
+
+  const _StockCheckDropdown({
+    required this.check,
+    required this.onAnswer,
+    required this.canMarkMissing,
+    required this.busy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final (MaterialColor tone, IconData icon, String label) = check.missing
+        ? (Colors.red, Icons.cancel, 'Нет в наличии')
+        : check.confirmed
+            ? (Colors.green, Icons.check_circle, 'В наличии')
+            : (Colors.orange, Icons.help, 'Проверьте наличие');
+
+    final options = <StockAnswer>[
+      if (!check.confirmed) StockAnswer.present,
+      if (canMarkMissing) StockAnswer.missing,
+      if (check.confirmed) StockAnswer.reset,
+    ];
+    final interactive = onAnswer != null && !check.missing && options.isNotEmpty;
+
+    final chip = Container(
+      key: ValueKey('stock-check-$label'),
+      padding: EdgeInsets.symmetric(horizontal: 8, vertical: interactive ? 6 : 3),
+      decoration: BoxDecoration(
+        color: tone.shade50,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: tone.shade200),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (busy)
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.6, color: tone.shade700),
+            )
+          else
+            Icon(icon, size: 12, color: tone.shade700),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(fontSize: 11, color: tone.shade800, fontWeight: FontWeight.w500),
+          ),
+          if (interactive) ...[
+            const SizedBox(width: 2),
+            Icon(Icons.arrow_drop_down, size: 16, color: tone.shade800),
+          ],
+        ],
+      ),
+    );
+    if (!interactive) return chip;
+
+    return PopupMenuButton<StockAnswer>(
+      key: const ValueKey('stock-check-menu'),
+      enabled: !busy,
+      tooltip: 'Ответ по наличию',
+      onSelected: onAnswer,
+      itemBuilder: (_) => [
+        for (final o in options)
+          PopupMenuItem<StockAnswer>(
+            value: o,
+            child: switch (o) {
+              StockAnswer.present => _menuRow(Icons.check_circle, Colors.green, 'В наличии'),
+              StockAnswer.missing => _menuRow(Icons.cancel, Colors.red, 'Нет в наличии'),
+              StockAnswer.reset => _menuRow(Icons.undo, Colors.grey, 'Сбросить ответ'),
+            },
+          ),
+      ],
+      child: chip,
+    );
+  }
+
+  static Widget _menuRow(IconData icon, MaterialColor tone, String label) => Row(
+        children: [
+          Icon(icon, size: 18, color: tone.shade700),
+          const SizedBox(width: 10),
+          Text(label),
+        ],
+      );
 }

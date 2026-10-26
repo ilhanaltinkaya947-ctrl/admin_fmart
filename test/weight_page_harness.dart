@@ -201,6 +201,7 @@ class FakeOrdersRepository extends OrdersRepository {
   Future<OrderItemEditResult> removeItem({
     required int orderId,
     required int itemId,
+    bool outOfStock = false,
   }) async {
     removeCalls.add(itemId);
     final e = removeError;

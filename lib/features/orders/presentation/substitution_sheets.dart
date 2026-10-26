@@ -124,6 +124,10 @@ class SubstitutionItemRow extends StatelessWidget {
     // (Open/resolved substitution rows above still render — they only exist for
     // allowlisted flows anyway, so nothing to hide there.)
     if (!AdminFeatureFlags.instance.substitution) return const SizedBox.shrink();
+    // 26.10: a line with the server's stock verdict has «Нет в наличии» in its
+    // «Проверьте наличие ▾» dropdown, which opens this same flow. Two buttons
+    // for one action would be one too many.
+    if (item.stockCheck != null) return const SizedBox.shrink();
 
     // Offer the substitute action.
     return Align(
