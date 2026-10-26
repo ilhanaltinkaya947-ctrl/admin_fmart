@@ -74,8 +74,9 @@ class _HomeShellState extends State<HomeShell> {
     // A morning check push may have been tapped before this shell existed
     // (cold start): the launcher kept it, take it after the first frame.
     _morningLauncher = context.read<MorningCheckLauncher?>();
-    _morningLauncher?.addListener(_onMorningCheckRequest);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _onMorningCheckRequest());
+    _morningLauncher?.requests.addListener(_onMorningCheckRequest);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _onMorningCheckRequest());
     // Default to the active-orders preset on first paint.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -93,7 +94,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   void dispose() {
-    _morningLauncher?.removeListener(_onMorningCheckRequest);
+    _morningLauncher?.requests.removeListener(_onMorningCheckRequest);
     super.dispose();
   }
 
@@ -379,116 +380,128 @@ class _SideRail extends StatelessWidget {
       child: Material(
         color: theme.colorScheme.surface,
         child: SafeArea(
+          // The sections scroll when they do not fit (iPad mini landscape is
+          // ~744 pt and the list keeps growing); «Сменить магазин» / «Выйти»
+          // stay pinned below them, always on screen.
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 16, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'F-Mart Admin',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 20, 16, 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'F-Mart Admin',
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              storeName,
+                              style: TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      storeName,
-                      style: TextStyle(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        fontSize: 13,
+                      const SizedBox(height: 8),
+                      _RailItem(
+                        icon: Icons.dashboard_outlined,
+                        selectedIcon: Icons.dashboard,
+                        label: 'Сегодня',
+                        isSelected: selected == _Section.dashboard,
+                        onTap: () => onSelected(_Section.dashboard),
                       ),
-                    ),
-                  ],
+                      _RailItem(
+                        icon: Icons.fiber_new_outlined,
+                        selectedIcon: Icons.fiber_new,
+                        label: 'Новые заказы',
+                        isSelected: selected == _Section.newOrders,
+                        onTap: () => onSelected(_Section.newOrders),
+                        badgeBuilder: (child) => _NewOrdersBadge(child: child),
+                      ),
+                      _RailItem(
+                        icon: Icons.schedule_outlined,
+                        selectedIcon: Icons.schedule,
+                        label: 'Запланированные',
+                        isSelected: selected == _Section.scheduled,
+                        onTap: () => onSelected(_Section.scheduled),
+                      ),
+                      _RailItem(
+                        icon: Icons.history_outlined,
+                        selectedIcon: Icons.history,
+                        label: 'История заказов',
+                        isSelected: selected == _Section.orderHistory,
+                        onTap: () => onSelected(_Section.orderHistory),
+                      ),
+                      _RailItem(
+                        icon: Icons.wb_sunny_outlined,
+                        selectedIcon: Icons.wb_sunny,
+                        label: 'Утренняя проверка',
+                        isSelected: selected == _Section.morningCheck,
+                        onTap: () => onSelected(_Section.morningCheck),
+                      ),
+                      _RailItem(
+                        icon: Icons.people_outline,
+                        selectedIcon: Icons.people,
+                        label: 'Клиенты',
+                        isSelected: selected == _Section.customers,
+                        onTap: () => onSelected(_Section.customers),
+                      ),
+                      _RailItem(
+                        icon: Icons.bar_chart_outlined,
+                        selectedIcon: Icons.bar_chart,
+                        label: 'Отчёты',
+                        isSelected: selected == _Section.reports,
+                        onTap: () => onSelected(_Section.reports),
+                      ),
+                      _RailItem(
+                        icon: Icons.star_outline,
+                        selectedIcon: Icons.star,
+                        label: 'Отзывы',
+                        isSelected: selected == _Section.reviews,
+                        onTap: () => onSelected(_Section.reviews),
+                      ),
+                      // Users / Banners / Promos / Broadcast deliberately have NO rail
+                      // entry: they moved into Настройки, the same as on phone. The
+                      // rail and the bar must agree, or the app has two different
+                      // ideas about where a screen lives.
+                      // Delivery slots — staff (admin + manager).
+                      Builder(builder: (ctx) {
+                        final auth = ctx.watch<AuthCubit>().state;
+                        final isStaff =
+                            auth is Authenticated && auth.user.isStaff;
+                        if (!isStaff) return const SizedBox.shrink();
+                        return _RailItem(
+                          icon: Icons.access_time_outlined,
+                          selectedIcon: Icons.access_time_filled,
+                          label: 'Слоты доставки',
+                          isSelected: selected == _Section.deliverySlots,
+                          onTap: () => onSelected(_Section.deliverySlots),
+                        );
+                      }),
+                      // Broadcast deliberately has no rail entry — it lives in
+                      // Настройки with the other admin configuration screens.
+                      _RailItem(
+                        icon: Icons.settings_outlined,
+                        selectedIcon: Icons.settings,
+                        label: 'Настройки',
+                        isSelected: selected == _Section.settings,
+                        onTap: () => onSelected(_Section.settings),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(height: 8),
-              _RailItem(
-                icon: Icons.dashboard_outlined,
-                selectedIcon: Icons.dashboard,
-                label: 'Сегодня',
-                isSelected: selected == _Section.dashboard,
-                onTap: () => onSelected(_Section.dashboard),
-              ),
-              _RailItem(
-                icon: Icons.fiber_new_outlined,
-                selectedIcon: Icons.fiber_new,
-                label: 'Новые заказы',
-                isSelected: selected == _Section.newOrders,
-                onTap: () => onSelected(_Section.newOrders),
-                badgeBuilder: (child) => _NewOrdersBadge(child: child),
-              ),
-              _RailItem(
-                icon: Icons.schedule_outlined,
-                selectedIcon: Icons.schedule,
-                label: 'Запланированные',
-                isSelected: selected == _Section.scheduled,
-                onTap: () => onSelected(_Section.scheduled),
-              ),
-              _RailItem(
-                icon: Icons.history_outlined,
-                selectedIcon: Icons.history,
-                label: 'История заказов',
-                isSelected: selected == _Section.orderHistory,
-                onTap: () => onSelected(_Section.orderHistory),
-              ),
-              _RailItem(
-                icon: Icons.wb_sunny_outlined,
-                selectedIcon: Icons.wb_sunny,
-                label: 'Утренняя проверка',
-                isSelected: selected == _Section.morningCheck,
-                onTap: () => onSelected(_Section.morningCheck),
-              ),
-              _RailItem(
-                icon: Icons.people_outline,
-                selectedIcon: Icons.people,
-                label: 'Клиенты',
-                isSelected: selected == _Section.customers,
-                onTap: () => onSelected(_Section.customers),
-              ),
-              _RailItem(
-                icon: Icons.bar_chart_outlined,
-                selectedIcon: Icons.bar_chart,
-                label: 'Отчёты',
-                isSelected: selected == _Section.reports,
-                onTap: () => onSelected(_Section.reports),
-              ),
-              _RailItem(
-                icon: Icons.star_outline,
-                selectedIcon: Icons.star,
-                label: 'Отзывы',
-                isSelected: selected == _Section.reviews,
-                onTap: () => onSelected(_Section.reviews),
-              ),
-              // Users / Banners / Promos / Broadcast deliberately have NO rail
-              // entry: they moved into Настройки, the same as on phone. The
-              // rail and the bar must agree, or the app has two different
-              // ideas about where a screen lives.
-              // Delivery slots — staff (admin + manager).
-              Builder(builder: (ctx) {
-                final auth = ctx.watch<AuthCubit>().state;
-                final isStaff = auth is Authenticated && auth.user.isStaff;
-                if (!isStaff) return const SizedBox.shrink();
-                return _RailItem(
-                  icon: Icons.access_time_outlined,
-                  selectedIcon: Icons.access_time_filled,
-                  label: 'Слоты доставки',
-                  isSelected: selected == _Section.deliverySlots,
-                  onTap: () => onSelected(_Section.deliverySlots),
-                );
-              }),
-              // Broadcast deliberately has no rail entry — it lives in
-              // Настройки with the other admin configuration screens.
-              _RailItem(
-                icon: Icons.settings_outlined,
-                selectedIcon: Icons.settings,
-                label: 'Настройки',
-                isSelected: selected == _Section.settings,
-                onTap: () => onSelected(_Section.settings),
-              ),
-              const Spacer(),
               const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.store_outlined),

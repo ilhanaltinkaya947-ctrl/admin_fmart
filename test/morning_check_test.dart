@@ -4,6 +4,7 @@
 // siren, counter, a dialog nobody can dismiss without a tap. A morning stock
 // question treated that way at 08:00 teaches the store to mute the one alarm
 // it has to trust, so the branch is pinned both as a function and in place.
+import 'dart:async';
 import 'dart:io';
 
 import 'package:admin_fmart/core/api/api_client.dart';
@@ -160,6 +161,33 @@ void main() {
       expect(find.text('без ответа'), findsOneWidget);
     });
 
+    testWidgets('a store switch mid-load shows the NEW store, not the late old answer', (t) async {
+      final slow = Completer<void>();
+      final api = ApiClient(baseUrl: 'http://localhost', tokenStorage: TokenStorage(), onUnauthorized: () {});
+      api.dio.interceptors.insert(0, InterceptorsWrapper(onRequest: (o, h) async {
+        final store = o.queryParameters['store_id'];
+        if (store == 3) await slow.future;
+        h.resolve(Response<dynamic>(requestOptions: o, statusCode: 200, data: {
+          'store_id': store, 'day': '2026-10-26', 'enabled': true,
+          'items': [{..._row(store == 3 ? 30 : 40), 'name': 'Магазин $store'}],
+        }));
+      }));
+      final repo = MorningCheckRepository(api: api);
+      Widget page(int id) => RepositoryProvider<MorningCheckRepository>.value(
+            value: repo,
+            child: MaterialApp(home: MorningCheckPage(storeId: id, storeName: 'S$id')),
+          );
+      await t.pumpWidget(page(3));
+      await t.pump();
+      await t.pumpWidget(page(4));
+      await t.pumpAndSettle();
+      expect(find.text('Магазин 4'), findsOneWidget);
+      slow.complete();
+      await t.pumpAndSettle();
+      expect(find.text('Магазин 4'), findsOneWidget);
+      expect(find.text('Магазин 3'), findsNothing);
+    });
+
     testWidgets('empty and switched off', (t) async {
       await _pump(t, _Server(_list([])).repo());
       expect(find.text('Сегодня проверять нечего'), findsOneWidget);
@@ -228,9 +256,13 @@ void main() {
       expect(h.substring(branch, ret), contains('_openMorningCheck()'));
     });
 
-    test('the device is tagged so only this build gets the push', () {
+    // The tag is informational: OneSignal 5 tags are USER-level, so they
+    // cannot tell builds apart. The gate is server-side (ops morning_push.py
+    // filters on app_version, MORNING_CHECK_APP_VERSIONS); the in-app gate
+    // is the branch above, which keeps a morning push from ever ringing.
+    test('the morning_check tag is still set, next to the store tag', () {
       final src = File('lib/core/services/onesignal_service.dart').readAsStringSync();
-      expect(src, contains('"morning_check": "1"'));
+      expect(src, contains('"store": storeId.toString(), "morning_check": "1"'));
     });
   });
 }

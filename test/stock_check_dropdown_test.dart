@@ -46,7 +46,21 @@ class _StockRepo extends FakeOrdersRepository {
 
   final List<(int, bool?)> answers = [];
   final List<bool> removeOutOfStock = [];
+  final List<(double, String, List<int>)> refunds = [];
   Object? answerError;
+
+  @override
+  Future<SimpleActionResponse> refundOrder({
+    required int orderId,
+    required double amount,
+    required String reason,
+    required String idempotencyKey,
+    List<int> oosProductIds = const [],
+  }) {
+    refunds.add((amount, reason, oosProductIds));
+    return super.refundOrder(
+        orderId: orderId, amount: amount, reason: reason, idempotencyKey: idempotencyKey, oosProductIds: oosProductIds);
+  }
 
   @override
   Future<StockCheck?> setItemStockAnswer({
@@ -78,10 +92,10 @@ class _StockRepo extends FakeOrdersRepository {
   }
 }
 
-_StockRepo _repo({String status = 'processing'}) {
+_StockRepo _repo({String status = 'processing', bool single = false}) {
   final base = fakeRepo(weighedOrderJson(status: status, items: [
     _line(id: 1, check: {'level': 'check', 'reasons': ['в 1С было 1 шт']}),
-    _line(id: 2, check: {'level': 'ok', 'reasons': []}),
+    if (!single) _line(id: 2, check: {'level': 'ok', 'reasons': []}),
   ]));
   return _StockRepo(api: base.api, detail: base.detail);
 }
@@ -257,6 +271,55 @@ void main() {
       await settle(t);
       expect(repo.removeCalls, [2]);
       expect(repo.removeOutOfStock, [true]);
+      await disposePage(t);
+    });
+
+    testWidgets('«Нет в наличии» on the LAST line: a full refund that names the product', (t) async {
+      // removeItem refuses the last line, and a plain cancel places no hold.
+      final repo = _repo(single: true);
+      await pumpOrderPage(t, repo);
+      await openMenu(t, 1);
+      await t.tap(find.text('Нет в наличии').last);
+      await settle(t);
+      expect(find.textContaining('Это последний товар в заказе'), findsOneWidget);
+      expect(find.textContaining('Товар скроем у покупателей'), findsOneWidget);
+      await t.tap(find.textContaining('Вернуть 1'));
+      await settle(t);
+      expect(repo.removeCalls, isEmpty);
+      expect(repo.answers, isEmpty);
+      // The whole captured amount, the canonical reason, and this product.
+      expect(repo.refunds, hasLength(1));
+      final (amount, reason, oos) = repo.refunds.single;
+      expect(amount, 1476.0);
+      expect(reason, 'Нет в наличии');
+      expect(oos, [66001]);
+      await disposePage(t);
+    });
+
+    testWidgets('the last-line refund can be backed out of', (t) async {
+      final repo = _repo(single: true);
+      await pumpOrderPage(t, repo);
+      await openMenu(t, 1);
+      await t.tap(find.text('Нет в наличии').last);
+      await settle(t);
+      await t.tap(find.text('Назад'));
+      await settle(t);
+      expect(repo.refunds, isEmpty);
+      await disposePage(t);
+    });
+
+    testWidgets('409 (another iPad said «нет»): reverted, said, refetched', (t) async {
+      final req = RequestOptions(path: '/x');
+      final repo = _repo()
+        ..answerError = DioException(requestOptions: req, response: Response(requestOptions: req, statusCode: 409));
+      await pumpOrderPage(t, repo);
+      final before = repo.getCalls;
+      await openMenu(t, 1);
+      await t.tap(find.text('В наличии').last);
+      await settle(t);
+      expect(find.text('Этот товар уже отмечен как отсутствующий'), findsOneWidget);
+      expect(find.byKey(const ValueKey('stock-check-В наличии')), findsNothing);
+      expect(repo.getCalls, greaterThan(before));
       await disposePage(t);
     });
 

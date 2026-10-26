@@ -76,8 +76,11 @@ class OneSignalService {
 
   Future<void> setStoreTag(int storeId) async {
     try {
-      // morning_check: this build handles the «Утренняя проверка» push
-      // (26.10). The server sends it only to devices with this tag, so an
+      // morning_check: informational only. Tags are USER-level in
+      // onesignal_flutter 5, so another device of the same user carries it
+      // too and it cannot tell builds apart. The real gate for the
+      // «Утренняя проверка» push (26.10) is server-side: ops morning_push.py
+      // sends it only to app versions in MORNING_CHECK_APP_VERSIONS, so an
       // older build never gets a push it would ring a siren for.
       OneSignal.User.addTags({"store": storeId.toString(), "morning_check": "1"});
     } catch (e, st) {

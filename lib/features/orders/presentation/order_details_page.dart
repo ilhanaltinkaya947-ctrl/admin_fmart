@@ -284,7 +284,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         ));
       }
     } else if (outcome == SubstituteSheetOutcome.removeItemRequested) {
-      await _removeItem(it, outOfStock: outOfStock);
+      if (outOfStock) {
+        await _removeOutOfStock(it);
+      } else {
+        await _removeItem(it);
+      }
     }
   }
 
@@ -2200,12 +2204,23 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       // The server's level wins; its reasons are not in this response, so the
       // line keeps the ones it had.
       if (mounted && res != null) setState(() => apply(before.withLevel(res.level)));
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() => apply(before));
+      // 409: another iPad already said «нет» for this line. Its answer
+      // stands; show the line as the server has it now.
+      final alreadyMissing = backendStatus(e) == 409;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось сохранить ответ')),
+        SnackBar(
+          content: Text(alreadyMissing
+              ? 'Этот товар уже отмечен как отсутствующий'
+              : 'Не удалось сохранить ответ'),
+        ),
       );
+      if (alreadyMissing) {
+        _stockBusy.remove(item.id);
+        unawaited(_refetchOrderNow());
+      }
     } finally {
       if (mounted) setState(() => _stockBusy.remove(item.id));
     }
@@ -2221,8 +2236,90 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     if (AdminFeatureFlags.instance.substitution) {
       await _openSubstitutePicker(item, outOfStock: true);
     } else {
+      await _removeOutOfStock(item);
+    }
+  }
+
+  /// Out-of-stock removal of one line. The LAST line cannot be removed (the
+  /// server refuses an empty order), and a plain cancel places no hold, so
+  /// the product would stay on sale. There the whole order is refunded with
+  /// the «Нет в наличии» reason and this product named, which is the refund
+  /// path that places the hold.
+  Future<void> _removeOutOfStock(OrderItem item) async {
+    if (_order.items.length <= 1) {
+      await _refundLastItemOutOfStock(item);
+    } else {
       await _removeItem(item, outOfStock: true);
     }
+  }
+
+  /// «Нет в наличии» on the only line: a full refund that hides the product.
+  ///
+  /// The same guards as «Возврат»: only where a refund is allowed, sized
+  /// against what was CAPTURED minus what was already returned (refundable.
+  /// dart), one idempotency key per confirmation, and nothing while another
+  /// money action or the refund sheet is open.
+  Future<void> _refundLastItemOutOfStock(OrderItem item) async {
+    if (_refundSheetOpen || _actionLoading) return;
+    final remaining = refundCeiling(
+      capturedAmount: _order.capturedAmount,
+      totalAmount: _order.totalAmount,
+      alreadyRefunded: _refunds.fold<double>(0.0, (s, r) => s + r.amount),
+    ).remaining;
+    if (!_canRefund || remaining <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Нельзя удалить последний товар. Отмените заказ.'),
+        ),
+      );
+      return;
+    }
+    final refundText = formatTenge(remaining);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Нет в наличии'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              item.product.name ?? 'Товар ${item.productId}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Это последний товар в заказе. '
+              'Отменить заказ с полным возвратом? '
+              'Товар скроем у покупателей этого магазина, '
+              'пока его не подтвердят на полке.',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Покупателю вернём $refundText на карту. '
+              'Обычно от 1 до 3 рабочих дней.',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Назад'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: Text('Вернуть $refundText'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await _refundOrder(
+      amount: remaining,
+      reason: 'Нет в наличии',
+      idempotencyKey: const Uuid().v4(),
+      oosProductIds: [item.productId],
+    );
   }
 
   Future<void> _setItemPicked(OrderItem item, bool picked) async {
@@ -2589,6 +2686,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           amount: amount,
           reason: reason,
           idempotencyKey: idempotencyKey,
+          // A retry is the same refund: it must hide the same products.
+          oosProductIds: oosProductIds,
         ),
         'Не удалось оформить возврат',
       );
@@ -2600,6 +2699,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           amount: amount,
           reason: reason,
           idempotencyKey: idempotencyKey,
+          // A retry is the same refund: it must hide the same products.
+          oosProductIds: oosProductIds,
         ),
       );
     } finally {

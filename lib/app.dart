@@ -303,6 +303,9 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   }
 
   /// Foreground morning check push: a banner, never blocking, never ringing.
+  /// Short (4 s): snackbars queue, and an order screen's own message («Не
+  /// удалось сохранить ответ», a refund result) must not wait behind it. The
+  /// system notification stays in the tray for anyone who missed it.
   void _showMorningCheckBanner(Map<String, dynamic> data) {
     final ctx = _navKey.currentContext;
     if (ctx == null || !ctx.mounted) return;
@@ -310,7 +313,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     if (messenger == null) return;
     messenger.showSnackBar(SnackBar(
       content: Text(morningCheckBannerText(morningCheckCount(data))),
-      duration: const Duration(seconds: 10),
+      duration: const Duration(seconds: 4),
       behavior: SnackBarBehavior.floating,
       action: SnackBarAction(label: 'Открыть', onPressed: _openMorningCheck),
     ));

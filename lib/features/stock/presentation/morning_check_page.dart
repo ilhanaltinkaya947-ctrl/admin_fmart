@@ -33,6 +33,10 @@ class _MorningCheckPageState extends State<MorningCheckPage> {
   bool _loading = false;
   final _busy = <int>{};
 
+  // Bumped by every load: a response for an older load (the previous store,
+  // after a switch) is dropped instead of painted over the new one.
+  int _generation = 0;
+
   @override
   void initState() {
     super.initState();
@@ -45,44 +49,51 @@ class _MorningCheckPageState extends State<MorningCheckPage> {
     // Kept alive across a store switch: reload, or it shows the old store.
     if (old.storeId != widget.storeId) {
       _list = null;
+      _busy.clear();
       _load();
     }
   }
 
+  /// Not skipped while a load is in flight: a store switch must reload for
+  /// the new store, and the generation check drops the older answer.
   Future<void> _load() async {
-    if (_loading || !mounted) return;
+    if (!mounted) return;
+    final gen = ++_generation;
     setState(() {
       _loading = true;
       _error = null;
     });
+    bool current() => mounted && gen == _generation;
     try {
       final repo = context.read<MorningCheckRepository>();
       final list = await repo.list(storeId: widget.storeId);
-      if (!mounted) return;
+      if (!current()) return;
       setState(() => _list = list);
     } on DioException catch (e) {
-      if (!mounted) return;
+      if (!current()) return;
       setState(() => _error = describeHeldProductsError(e));
     } catch (_) {
-      if (!mounted) return;
+      if (!current()) return;
       setState(() => _error = 'Не удалось загрузить список');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (current()) setState(() => _loading = false);
     }
   }
 
   Future<void> _answer(MorningCheckItem item, bool present) async {
     if (_busy.contains(item.productId) || item.answer == present) return;
     setState(() => _busy.add(item.productId));
+    final storeId = widget.storeId;
     try {
       final repo = context.read<MorningCheckRepository>();
       // The server answers with the fresh list.
       final list = await repo.answer(
-        storeId: widget.storeId,
+        storeId: storeId,
         productId: item.productId,
         present: present,
       );
-      if (!mounted) return;
+      // The store changed meanwhile: that list belongs to the old one.
+      if (!mounted || storeId != widget.storeId) return;
       setState(() => _list = list);
     } catch (_) {
       if (!mounted) return;
