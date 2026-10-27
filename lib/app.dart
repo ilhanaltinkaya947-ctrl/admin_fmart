@@ -403,7 +403,22 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       final ctx = _navKey.currentContext;
       if (ctx != null) {
         ctx.read<AuthCubit>().reassertPushBinding();
+        _reassertStoreTag(ctx);
       }
+    }
+  }
+
+  /// 27.10: the 08:30 morning-check push targets the OneSignal tag
+  /// `store=<id>`, and tags belong to the logged-in OneSignal USER. The cold
+  /// start sets the tag from the saved store BEFORE AuthCubit's network `me()`
+  /// and OneSignal.login, so the tag can land on the anonymous user and be
+  /// lost (store 2's iPad showed no store tag on 27.10). Set it again once
+  /// authenticated and on every resume: OneSignal.login was already called
+  /// by then, and the SDK applies operations in call order.
+  void _reassertStoreTag(BuildContext ctx) {
+    final s = ctx.read<StoreCubit>().state;
+    if (s is StoreSelected) {
+      widget.oneSignalService.setStoreTag(s.storeId);
     }
   }
 
@@ -490,6 +505,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
             listener: (ctx, state) async {
               if (state is Authenticated) {
                 _startWatcherIfPossible();
+                _reassertStoreTag(ctx);
                 // Replay a notification tap that arrived during cold start,
                 // before the navigator/auth were ready. Defer a frame so the
                 // router has swapped to the authenticated tree and _navKey has
