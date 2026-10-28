@@ -6,8 +6,10 @@ import '../../../core/api/api_config.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../../banners/presentation/banners_list_page.dart';
 import '../../broadcast/presentation/broadcast_page.dart';
+import '../../news/presentation/news_list_page.dart';
 import '../../promos/presentation/promos_list_page.dart';
 import '../../stores/data/pickup_stores_repository.dart';
+import '../../stores/data/stores_repository.dart';
 import '../../stores/presentation/pickup_stores_page.dart';
 import '../../stores/state/store_cubit.dart';
 import '../../users/presentation/users_list_page.dart';
@@ -177,6 +179,15 @@ class _SettingsPageState extends State<SettingsPage> {
               title: 'Баннеры',
               subtitle: 'Картинки и расписание на главной',
               onTap: () => _push(context, const BannersListPage()),
+            ),
+            _AdminEntry(
+              icon: Icons.newspaper_outlined,
+              title: 'Новости',
+              subtitle: 'Раздел «Новости» в уведомлениях клиентов',
+              onTap: () => _push(
+                context,
+                NewsListPage(storesRepo: context.read<StoresRepository>()),
+              ),
             ),
             _AdminEntry(
               icon: Icons.admin_panel_settings_outlined,
