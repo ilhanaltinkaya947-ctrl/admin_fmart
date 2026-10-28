@@ -138,7 +138,12 @@ class _NewsEditPageState extends State<NewsEditPage> {
     if (date == null || !mounted) return;
     final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(current ?? now));
     if (!mounted) return;
-    final picked = DateTime(date.year, date.month, date.day, time?.hour ?? 0, time?.minute ?? 0);
+    // Time picker cancelled: «С» today = now (not 00:00, which would date
+    // the post hours back), «До» = 23:59 of that day (not a day early).
+    final today = DateTime(now.year, now.month, now.day) == DateTime(date.year, date.month, date.day);
+    final h = time?.hour ?? (isStart ? (today ? now.hour : 0) : 23);
+    final m = time?.minute ?? (isStart ? (today ? now.minute : 0) : 59);
+    final picked = DateTime(date.year, date.month, date.day, h, m);
     setState(() {
       if (isStart) {
         _startsAt = picked;
@@ -204,7 +209,22 @@ class _NewsEditPageState extends State<NewsEditPage> {
     } on NewsValidationException catch (e) {
       if (mounted) _snack(e.message, error: true);
     } catch (_) {
-      if (mounted) _snack('Не удалось сохранить');
+      if (!mounted) return;
+      if (widget.post == null) {
+        // The POST may have reached the server and only the answer got lost:
+        // a second Save would publish the post twice (review 28.10). Show the
+        // list as it is now instead of inviting a retry here.
+        final messenger = ScaffoldMessenger.of(context);
+        final nav = Navigator.of(context);
+        await context.read<NewsCubit>().load();
+        messenger.showSnackBar(const SnackBar(
+          content: Text('Нет ответа от сервера. Новость могла сохраниться: проверьте список, прежде чем создавать снова.'),
+          duration: Duration(seconds: 6),
+        ));
+        nav.pop(false);
+        return;
+      }
+      _snack('Не удалось сохранить');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -319,6 +339,13 @@ class _NewsEditPageState extends State<NewsEditPage> {
                 label: Text(s.storeName),
                 selected: _stores.contains(s.storeId),
                 onSelected: (v) => setState(() => v ? _stores.add(s.storeId) : _stores.remove(s.storeId)),
+              ),
+            // The post's stores stay visible even if the store list failed to load.
+            for (final id in _stores.where((id) => !_allStores.any((s) => s.storeId == id)))
+              FilterChip(
+                label: Text('Магазин $id'),
+                selected: true,
+                onSelected: (_) => setState(() => _stores.remove(id)),
               ),
           ]),
           const SizedBox(height: 16),

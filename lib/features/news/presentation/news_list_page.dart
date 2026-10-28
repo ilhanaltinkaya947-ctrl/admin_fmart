@@ -19,6 +19,22 @@ class NewsListPage extends StatefulWidget {
 
 class _NewsListPageState extends State<NewsListPage> {
   Map<int, String> _storeNames = const {};
+  final Set<int> _busy = {};
+
+  Future<void> _toggle(NewsPost p) async {
+    if (!_busy.add(p.id)) return; // a request for this post is already running
+    try {
+      await context.read<NewsCubit>().setActive(p, !p.active);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(p.active ? 'Не удалось скрыть новость' : 'Не удалось показать новость')),
+        );
+      }
+    } finally {
+      _busy.remove(p.id);
+    }
+  }
 
   @override
   void initState() {
@@ -104,7 +120,7 @@ class _NewsListPageState extends State<NewsListPage> {
               storeNames: _storeNames,
               onTap: () => _open(items[i]),
               onDelete: () => _delete(items[i]),
-              onToggle: () => context.read<NewsCubit>().setActive(items[i], !items[i].active),
+              onToggle: () => _toggle(items[i]),
             ),
           );
         },
