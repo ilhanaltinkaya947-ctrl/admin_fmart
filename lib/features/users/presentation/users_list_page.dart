@@ -249,8 +249,11 @@ class _UserTile extends StatelessWidget {
   String _initials(AdminUser u) {
     final fn = (u.firstName ?? '').trim();
     final ln = (u.lastName ?? '').trim();
-    final a = fn.isNotEmpty ? fn[0] : '';
-    final b = ln.isNotEmpty ? ln[0] : '';
+    // Whole characters, not code units: indexing a name that starts with an
+    // emoji took half of it and the Text threw «string is not well-formed
+    // UTF-16» (Sentry 157089965 / 157089610, 29.10).
+    final a = fn.isNotEmpty ? fn.characters.first : '';
+    final b = ln.isNotEmpty ? ln.characters.first : '';
     final init = (a + b).toUpperCase();
     if (init.isNotEmpty) return init;
     final phone = u.phone.replaceAll(RegExp(r'\D'), '');

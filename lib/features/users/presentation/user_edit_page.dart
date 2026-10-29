@@ -204,7 +204,7 @@ class _UserEditPageState extends State<UserEditPage> {
     if (e is _ValidationFailure) return e.message;
     final s = e.toString();
     if (s.contains('400')) return 'Проверь данные. Возможно, такой пользователь уже есть.';
-    return 'Не удалось сохранить. ${s.length > 120 ? s.substring(0, 120) : s}';
+    return 'Не удалось сохранить. ${s.characters.length > 120 ? s.characters.take(120).toString() : s}';
   }
 
   @override
