@@ -15,6 +15,7 @@ import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
 import '../models/payment_method_label.dart';
 import '../models/refundable.dart';
+import 'missing_item_choice_banner.dart';
 import 'substitution_sheets.dart';
 import '_sub_tokens.dart';
 import '../models/order_models.dart';
@@ -259,7 +260,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         context, repo: repo, order: _order, item: it);
     _substituteSheetOpen = false;
     if (!mounted) return;
-    if (outcome == SubstituteSheetOutcome.proposed) {
+    if (outcome == SubstituteSheetOutcome.proposed ||
+        outcome == SubstituteSheetOutcome.applied) {
+      final applied = outcome == SubstituteSheetOutcome.applied;
       await _refetchOrderNow();
       if (mounted) {
         // Branded confirmation — a green check-disc + white copy on ST.green,
@@ -269,14 +272,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(ST.rMd)),
-          content: const Row(
+          content: Row(
             children: [
-              Icon(Icons.check_circle, color: Colors.white, size: 20),
-              SizedBox(width: 10),
+              const Icon(Icons.check_circle, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Замена предложена — покупатель получит уведомление',
-                  style: TextStyle(color: Colors.white),
+                  applied
+                      ? 'Замена применена — покупатель получит уведомление'
+                      : 'Замена предложена — покупатель получит уведомление',
+                  style: const TextStyle(color: Colors.white),
                 ),
               ),
             ],
@@ -2297,7 +2302,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     if (_markingMissing) return;
     _markingMissing = true;
     try {
-      if (AdminFeatureFlags.instance.substitution) {
+      // 257: the customer asked not to be called and not to get a
+      // replacement: straight to removal (its usual confirmation).
+      if (_order.missingItemChoice == MissingItemChoice.remove) {
+        await _removeOutOfStock(item);
+      } else if (AdminFeatureFlags.instance.substitution) {
         await _openSubstitutePicker(item, outOfStock: true);
       } else {
         await _removeOutOfStock(item);
@@ -2900,6 +2909,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           if (_order.customerComment.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text('Комментарий: ${_order.customerComment}'),
+          ],
+          // 257: what the customer wants done with a missing item.
+          if (MissingItemChoice.label(_order.missingItemChoice) != null) ...[
+            const SizedBox(height: 10),
+            MissingItemChoiceBanner(choice: _order.missingItemChoice),
           ],
           const SizedBox(height: 12),
           Text('Сумма: ${formatTenge(totalAmount)}',

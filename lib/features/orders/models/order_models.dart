@@ -84,6 +84,9 @@ class Order {
   /// would think the customer lives at the shop.
   final String fulfillmentType;
   final String customerComment;
+  /// «Если товара нет в наличии» (257): call_then_replace | replace |
+  /// remove; null on orders from older customer apps.
+  final String? missingItemChoice;
   final String paymentMethod;
   final bool isPromo;
 
@@ -152,6 +155,7 @@ class Order {
     required this.deliveryAddress,
     this.fulfillmentType = 'delivery',
     required this.customerComment,
+    this.missingItemChoice,
     required this.paymentMethod,
     required this.isPromo,
     this.closed = false,
@@ -274,6 +278,7 @@ class Order {
         // simply never be delivered.
         : 'delivery',
     customerComment: j['customer_comment'] as String? ?? '',
+    missingItemChoice: j['missing_item_choice'] as String?,
     paymentMethod: j['payment_method'] as String? ?? '',
     isPromo: j['is_promo'] as bool? ?? false,
     // Server-derived: the order WAS EVER completed. Defaults to false when the
@@ -351,6 +356,7 @@ class Order {
         // fulfilled is decided at checkout and is never a local edit.
         fulfillmentType: fulfillmentType,
         customerComment: customerComment,
+        missingItemChoice: missingItemChoice,
         paymentMethod: paymentMethod,
         isPromo: isPromo,
         // Deliberately NOT overridable, same reasoning as capturedAmount: it is

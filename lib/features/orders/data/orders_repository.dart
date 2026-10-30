@@ -599,12 +599,16 @@ class OrdersRepository {
     required int itemId,
     required int substituteProductId,
     String? managerNote,
+    /// «Не дозвонился — заменить сразу» (257). The server applies it only for
+    /// orders whose customer chose «Позвонить мне».
+    bool customerUnreachable = false,
   }) async {
     try {
       final resp = await api.dio.post(
         '/gw/order/admin/orders/$orderId/items/$itemId/substitute',
         data: {
           'substitute_product_id': substituteProductId,
+          if (customerUnreachable) 'customer_unreachable': true,
           if (managerNote != null && managerNote.trim().isNotEmpty)
             'manager_note': managerNote.trim(),
         },

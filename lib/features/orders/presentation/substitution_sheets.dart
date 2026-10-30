@@ -7,10 +7,13 @@ import '../../../core/feature_flags.dart';
 import '../data/orders_repository.dart';
 import '../models/order_models.dart';
 import '_sub_tokens.dart';
+import 'missing_item_choice_banner.dart';
 
 /// Result of the substitute picker sheet, handed back to the order page so it
 /// can refetch / toast / route the empty-state remove through its own flow.
-enum SubstituteSheetOutcome { proposed, removeItemRequested, dismissed }
+/// [applied]: accepted at once by the customer's checkout choice (257) —
+/// «Заменить без звонка», or «Позвонить мне» with «Не дозвонился».
+enum SubstituteSheetOutcome { proposed, applied, removeItemRequested, dismissed }
 
 String _money(num v) {
   final n = v.round();
@@ -317,6 +320,17 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
     }
   }
 
+  // 257: «Позвонить мне» orders — the picker says they could not get through,
+  // and the server applies the replacement now instead of asking.
+  bool _unreachable = false;
+  String? get _choice => widget.order.missingItemChoice;
+  bool get _canApplyUnreachable => _choice == MissingItemChoice.callThenReplace;
+
+  /// True when sending applies the replacement at once.
+  bool get _appliesNow =>
+      _choice == MissingItemChoice.replace ||
+      (_canApplyUnreachable && _unreachable);
+
   double _refundFor(SimilarProduct p) =>
       ((_origUnitPrice - p.effectivePrice) * _qty).clamp(0, double.infinity);
 
@@ -337,14 +351,17 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
     _disarmTimer?.cancel();
     setState(() => _submitting = true);
     try {
-      await widget.repo.proposeSubstitution(
+      final res = await widget.repo.proposeSubstitution(
         orderId: widget.order.id,
         itemId: widget.item.id,
         substituteProductId: sub.id,
         managerNote: _noteCtrl.text,
+        customerUnreachable: _canApplyUnreachable && _unreachable,
       );
       if (!mounted) return;
-      Navigator.of(context).pop(SubstituteSheetOutcome.proposed);
+      Navigator.of(context).pop(res['auto_accepted'] == true
+          ? SubstituteSheetOutcome.applied
+          : SubstituteSheetOutcome.proposed);
     } on OrdersApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -463,6 +480,10 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                 Text(
                     '$_qty шт · ${_money(_origUnitPrice)} · подберём равную или дешевле',
                     style: const TextStyle(fontSize: 12, color: ST.ink2)),
+                if (MissingItemChoice.label(_choice) != null) ...[
+                  const SizedBox(height: 8),
+                  MissingItemChoiceBanner(choice: _choice),
+                ],
               ],
             ),
           ),
@@ -846,6 +867,23 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
             ],
           ),
         ),
+        if (_canApplyUnreachable)
+          Container(
+            color: ST.card,
+            child: SwitchListTile(
+              key: const ValueKey('substitute-unreachable'),
+              value: _unreachable,
+              onChanged: _submitting
+                  ? null
+                  : (v) => setState(() {
+                        _unreachable = v;
+                        _confirming = false;
+                      }),
+              title: const Text('Не дозвонился — заменить сразу'),
+              subtitle: const Text(
+                  'Покупатель просил заменить, если не дозвонимся'),
+            ),
+          ),
         // Sticky action bar — always reachable above the keyboard, so a
         // cold-aisle picker never scrolls to find "send".
         Container(
@@ -876,9 +914,13 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                         style: FilledButton.styleFrom(
                             minimumSize: const Size(0, 50)),
                         icon: const Icon(Icons.send, size: 18),
-                        label: Text(refund > 0
-                            ? 'Отправить · вернём ${_money(refund)}'
-                            : 'Отправить покупателю'),
+                        label: Text(_appliesNow
+                            ? (refund > 0
+                                ? 'Заменить · вернём ${_money(refund)}'
+                                : 'Заменить')
+                            : refund > 0
+                                ? 'Отправить · вернём ${_money(refund)}'
+                                : 'Отправить покупателю'),
                       )
                     : FilledButton.tonal(
                         onPressed: _submitting ? null : _submit,
@@ -890,7 +932,9 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                                 height: 18,
                                 child:
                                     CircularProgressIndicator(strokeWidth: 2))
-                            : const Text('Предложить замену'),
+                            : Text(_appliesNow
+                                ? 'Заменить сразу'
+                                : 'Предложить замену'),
                       ),
               ),
             ],
