@@ -364,6 +364,13 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
           : SubstituteSheetOutcome.proposed);
     } on OrdersApiException catch (e) {
       if (!mounted) return;
+      // 257 review LOW-5: a retry after a lost response on an «apply now»
+      // order — the server already put this product in the order (409
+      // «Этот товар уже в заказе»). Say «применена», not an error.
+      if (_appliesNow && e.statusCode == 409 && e.message.contains('уже в заказе')) {
+        Navigator.of(context).pop(SubstituteSheetOutcome.applied);
+        return;
+      }
       setState(() {
         _submitting = false;
         _confirming = false;
