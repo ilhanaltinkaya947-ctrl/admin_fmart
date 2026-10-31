@@ -46,6 +46,7 @@ FakeOrdersRepository _repo(String? choice) {
 void main() {
   tearDown(() => AdminFeatureFlags.instance.set(const {}));
   weighedPickerTests();
+  vendorAndEmptyTests();
 
   group('labels', () {
     test('three choices, none for older orders', () {
@@ -208,5 +209,25 @@ void weighedPickerTests() {
     await OrdersRepository(api: api).getSimilarProducts(storeId: 3, productId: 47, maxPrice: 155);
     expect(seen.single.headers['X-App-Build'], '9999');
     expect(repo, isNotNull);
+  });
+}
+
+void vendorAndEmptyTests() {
+  testWidgets('vendor (Fresh) products are never offered', (t) async {
+    final piece = {
+      'id': 9, 'product_id': 66009, 'qty': 1, 'price': '1775.00', 'total': '1775.00',
+      'product': {'name': 'Яйцо Аймар 30шт', 'in_stock': true},
+    };
+    await _openPicker(t, piece, [
+      _sim(601, 'Яйцо магазинное', 1500),
+      {..._sim(602, 'Яйцо от поставщика', 1400), 'vendor_id': 5},
+    ]);
+    expect(find.text('Яйцо магазинное'), findsOneWidget);
+    expect(find.text('Яйцо от поставщика'), findsNothing);
+  });
+
+  testWidgets('a weighed line with nothing compatible says why', (t) async {
+    await _openPicker(t, cheeseLine(), [_sim(504, 'Сыр нарезка 150 г', 140)]);
+    expect(find.text('Нет весового товара с тем же шагом, не дороже за кг'), findsOneWidget);
   });
 }

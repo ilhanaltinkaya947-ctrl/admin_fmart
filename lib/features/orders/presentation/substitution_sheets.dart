@@ -300,7 +300,8 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
       final list = await widget.repo.getSimilarProducts(
         storeId: widget.order.storeId,
         productId: widget.item.productId,
-        maxPrice: _origUnitPrice,
+        // Stored units (catalog 3d1caa6): per kg for a weighed line.
+        maxPrice: _weighedLine ? _origPerKg : _origUnitPrice,
       );
       if (!mounted) return;
       // Closest price first (smallest refund = most equivalent product), so the
@@ -339,6 +340,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
   double get _origBuffer => _parse(widget.item.bufferAmount ?? '');
 
   bool _compatible(SimilarProduct p) {
+    if (p.vendorId != null) return false;
     if (!_weighedLine) return !p.isWeighed;
     return p.isWeighed &&
         p.unitG == widget.item.unitG &&
@@ -557,7 +559,9 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
     if (_candidates.isEmpty) {
       return _centered(
         icon: Icons.search_off,
-        title: 'Нет подходящей замены в наличии',
+        title: _weighedLine
+            ? 'Нет весового товара с тем же шагом, не дороже за кг'
+            : 'Нет подходящей замены в наличии',
         subtitle: 'Можно убрать товар и вернуть деньги покупателю',
         action: FilledButton(
           onPressed: () => Navigator.of(context)
@@ -723,7 +727,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                     decoration: BoxDecoration(
                         color: ST.greenMilk,
                         borderRadius: BorderRadius.circular(6)),
-                    child: Text('−${_money(delta)}',
+                    child: Text(_weighedLine ? '−${_money(delta)}/кг' : '−${_money(delta)}',
                         style: const TextStyle(
                             color: ST.green,
                             fontWeight: FontWeight.w700,

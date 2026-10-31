@@ -465,6 +465,11 @@ class SimilarProduct {
   final int? unitG;
   final double? pricePerKg;
 
+  /// Set for a vendor's (F-Mart Fresh) product. The store does not hold
+  /// those, so the picker never offers them (257 review: the X-App-Build
+  /// header also opens the vendor gate).
+  final int? vendorId;
+
   bool get isWeighed => sellBy == 'weight';
 
   SimilarProduct({
@@ -478,6 +483,7 @@ class SimilarProduct {
     this.sellBy,
     this.unitG,
     this.pricePerKg,
+    this.vendorId,
   });
 
   /// Effective sell price = sale price when on sale, else base price. This is
@@ -501,6 +507,7 @@ class SimilarProduct {
         sellBy: j['sell_by'] as String?,
         unitG: j['unit_g'] == null ? null : _i(j['unit_g']),
         pricePerKg: j['price_per_kg'] == null ? null : _d(j['price_per_kg']),
+        vendorId: j['vendor_id'] == null ? null : _i(j['vendor_id']),
       );
 }
 
