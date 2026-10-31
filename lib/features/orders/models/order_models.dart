@@ -459,6 +459,14 @@ class SimilarProduct {
   final bool inStock;
   final String? imageUrl;
 
+  /// 257 (weighed replacements): «weight» for goods sold by weight; then
+  /// [price] is per [unitG] grams and [pricePerKg] is the sale-aware kilo price.
+  final String? sellBy;
+  final int? unitG;
+  final double? pricePerKg;
+
+  bool get isWeighed => sellBy == 'weight';
+
   SimilarProduct({
     required this.id,
     required this.name,
@@ -467,6 +475,9 @@ class SimilarProduct {
     required this.onSale,
     required this.inStock,
     this.imageUrl,
+    this.sellBy,
+    this.unitG,
+    this.pricePerKg,
   });
 
   /// Effective sell price = sale price when on sale, else base price. This is
@@ -487,6 +498,9 @@ class SimilarProduct {
         onSale: j['on_sale'] as bool? ?? false,
         inStock: j['in_stock'] as bool? ?? false,
         imageUrl: j['image_url'] as String?,
+        sellBy: j['sell_by'] as String?,
+        unitG: j['unit_g'] == null ? null : _i(j['unit_g']),
+        pricePerKg: j['price_per_kg'] == null ? null : _d(j['price_per_kg']),
       );
 }
 

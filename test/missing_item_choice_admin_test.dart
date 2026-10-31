@@ -7,6 +7,7 @@ import 'package:admin_fmart/core/storage/token_storage.dart';
 import 'package:admin_fmart/features/orders/data/orders_repository.dart';
 import 'package:admin_fmart/features/orders/models/order_models.dart';
 import 'package:admin_fmart/features/orders/presentation/missing_item_choice_banner.dart';
+import 'package:admin_fmart/features/orders/presentation/substitution_sheets.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -44,6 +45,7 @@ FakeOrdersRepository _repo(String? choice) {
 
 void main() {
   tearDown(() => AdminFeatureFlags.instance.set(const {}));
+  weighedPickerTests();
 
   group('labels', () {
     test('three choices, none for older orders', () {
@@ -115,5 +117,96 @@ void main() {
       expect(repo.removeCalls, [2]);
       await disposePage(t);
     });
+  });
+}
+
+class _SimilarRepo extends FakeOrdersRepository {
+  _SimilarRepo({required super.api, required super.detail, required this.similar});
+  final List<Map<String, dynamic>> similar;
+  @override
+  Future<List<SimilarProduct>> getSimilarProducts({
+    required int storeId,
+    required int productId,
+    required double maxPrice,
+  }) async =>
+      similar.map(SimilarProduct.fromJson).toList();
+}
+
+Map<String, dynamic> _sim(int id, String name, num price, {String? sellBy, int? unitG, num? ppk}) => {
+      'id': id, 'name': name, 'price': price, 'on_sale': false, 'in_stock': true,
+      if (sellBy != null) 'sell_by': sellBy, if (unitG != null) 'unit_g': unitG, if (ppk != null) 'price_per_kg': ppk,
+    };
+
+final _mixed = [
+  _sim(501, 'Сыр Дони весовой', 150, sellBy: 'weight', unitG: 50, ppk: 3000),        // ok
+  _sim(502, 'Сыр кусками 100 г шаг', 150, sellBy: 'weight', unitG: 100, ppk: 1500),  // other step
+  _sim(503, 'Сыр дороже за кг', 150, sellBy: 'weight', unitG: 50, ppk: 3200),        // dearer per kg
+  _sim(504, 'Сыр нарезка 150 г', 140),                                               // piece
+];
+
+Future<void> _openPicker(WidgetTester t, Map<String, dynamic> line, List<Map<String, dynamic>> similar) async {
+  t.view.physicalSize = const Size(1024, 1366);
+  t.view.devicePixelRatio = 1.0;
+  addTearDown(t.view.resetPhysicalSize);
+  final json = weighedOrderJson(items: [line])..['missing_item_choice'] = 'replace';
+  final base = fakeRepo(json);
+  final repo = _SimilarRepo(api: base.api, detail: json, similar: similar);
+  final order = Order.fromJson(json);
+  await t.pumpWidget(MaterialApp(
+    home: Scaffold(
+      body: Builder(
+        builder: (c) => TextButton(
+          onPressed: () => showSubstitutePickerSheet(c, repo: repo, order: order, item: order.items.first),
+          child: const Text('open'),
+        ),
+      ),
+    ),
+  ));
+  await t.tap(find.text('open'));
+  await settle(t);
+}
+
+void weighedPickerTests() {
+  group('weighed lines in the picker (Ilhan 31.10)', () {
+    testWidgets('a cheese line offers only weighed, same step, same-or-cheaper per kg, priced per kg',
+        (t) async {
+      await _openPicker(t, cheeseLine(), _mixed);
+      expect(find.text('Сыр Дони весовой'), findsOneWidget);
+      expect(find.text('Сыр кусками 100 г шаг'), findsNothing);
+      expect(find.text('Сыр дороже за кг'), findsNothing);
+      expect(find.text('Сыр нарезка 150 г'), findsNothing);
+      expect(find.textContaining('300 г'), findsWidgets);
+      expect(find.textContaining('/кг'), findsWidgets);
+      await t.tap(find.text('Сыр Дони весовой'));
+      await settle(t);
+      await t.tap(find.text('Заменить сразу'));
+      await t.pump();
+      // (155 − 150) × 6 + (46 − floor(46 × 150 / 155) = 44) = 32, as order-service.
+      expect(find.textContaining('вернём 32'), findsWidgets);
+    });
+
+    testWidgets('a piece line never offers a weighed product', (t) async {
+      final piece = {
+        'id': 9, 'product_id': 66009, 'qty': 1, 'price': '1775.00', 'total': '1775.00',
+        'product': {'name': 'Яйцо Аймар 30шт', 'in_stock': true},
+      };
+      await _openPicker(t, piece, _mixed);
+      expect(find.text('Сыр нарезка 150 г'), findsOneWidget);
+      expect(find.text('Сыр Дони весовой'), findsNothing);
+    });
+  });
+
+  test('similar products are asked weight-aware (X-App-Build)', () async {
+    final (repo, sent) = _capturing(const {});
+    sent.clear();
+    final api = ApiClient(baseUrl: 'http://localhost', tokenStorage: TokenStorage(), onUnauthorized: () {});
+    final seen = <RequestOptions>[];
+    api.dio.interceptors.insert(0, InterceptorsWrapper(onRequest: (o, h) {
+      seen.add(o);
+      h.resolve(Response<dynamic>(requestOptions: o, statusCode: 200, data: const []));
+    }));
+    await OrdersRepository(api: api).getSimilarProducts(storeId: 3, productId: 47, maxPrice: 155);
+    expect(seen.single.headers['X-App-Build'], '9999');
+    expect(repo, isNotNull);
   });
 }

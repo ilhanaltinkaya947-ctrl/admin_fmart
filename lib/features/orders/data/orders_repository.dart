@@ -581,6 +581,11 @@ class OrdersRepository {
         'product_id': productId,
         'max_price': maxPrice,
       },
+      // 257: weighed goods (cheese, sausage) are hidden from callers that do
+      // not declare they understand weight keys (catalog weight_view: no
+      // X-App-Build = an old customer build). The store app does understand
+      // them: the picker offers weighed replacements for weighed lines only.
+      options: Options(headers: {'X-App-Build': '9999'}),
     );
     final data = resp.data;
     final list = (data is List) ? data : const [];

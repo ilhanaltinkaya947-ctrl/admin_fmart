@@ -305,7 +305,10 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
       if (!mounted) return;
       // Closest price first (smallest refund = most equivalent product), so the
       // best swap for the customer is the picker's top tap.
-      final inStock = list.where((p) => p.inStock).toList()
+      // 257: a weighed line takes only a weighed product of the same step
+      // and a same-or-lower kilo price (the server refuses anything else); a
+      // piece line never takes a weighed one.
+      final inStock = list.where((p) => p.inStock && _compatible(p)).toList()
         ..sort((a, b) => b.effectivePrice.compareTo(a.effectivePrice));
       setState(() {
         _candidates = inStock;
@@ -331,8 +334,36 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
       _choice == MissingItemChoice.replace ||
       (_canApplyUnreachable && _unreachable);
 
-  double _refundFor(SimilarProduct p) =>
-      ((_origUnitPrice - p.effectivePrice) * _qty).clamp(0, double.infinity);
+  bool get _weighedLine => widget.item.isWeightLine;
+  double get _origPerKg => _parse(widget.item.pricePerKg ?? '');
+  double get _origBuffer => _parse(widget.item.bufferAmount ?? '');
+
+  bool _compatible(SimilarProduct p) {
+    if (!_weighedLine) return !p.isWeighed;
+    return p.isWeighed &&
+        p.unitG == widget.item.unitG &&
+        p.pricePerKg != null &&
+        p.pricePerKg! <= _origPerKg + 0.01 &&
+        p.effectivePrice <= _origUnitPrice + 0.01;
+  }
+
+  /// The price a picker compares: per kilo for weighed goods, per piece else.
+  double _shown(SimilarProduct p) =>
+      _weighedLine ? (p.pricePerKg ?? p.effectivePrice) : p.effectivePrice;
+  String _shownLabel(double v) => _weighedLine ? '${_money(v)}/кг' : _money(v);
+
+  /// Same arithmetic as order-service: the unit-price difference × qty, and
+  /// for a weighed line also the buffer difference (the buffer scales with
+  /// the price, floored).
+  double _refundFor(SimilarProduct p) {
+    final base = (_origUnitPrice - p.effectivePrice) * _qty;
+    if (!_weighedLine || _origUnitPrice <= 0) {
+      return base.clamp(0, double.infinity).toDouble();
+    }
+    var newBuffer = (_origBuffer * p.effectivePrice / _origUnitPrice).floorToDouble();
+    if (newBuffer > _origBuffer) newBuffer = _origBuffer;
+    return (base + _origBuffer - newBuffer).clamp(0, double.infinity).toDouble();
+  }
 
   Future<void> _submit() async {
     if (_submitting) return; // single-flight — a fast double-tap can't fire two POSTs
@@ -485,7 +516,9 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                         fontWeight: FontWeight.w700, fontSize: 15)),
                 const SizedBox(height: 2),
                 Text(
-                    '$_qty шт · ${_money(_origUnitPrice)} · подберём равную или дешевле',
+                    _weighedLine
+                        ? '${widget.item.orderedG ?? 0} г · ${_money(_origPerKg)}/кг · весовой, не дороже за кг'
+                        : '$_qty шт · ${_money(_origUnitPrice)} · подберём равную или дешевле',
                     style: const TextStyle(fontSize: 12, color: ST.ink2)),
                 if (MissingItemChoice.label(_choice) != null) ...[
                   const SizedBox(height: 8),
@@ -596,7 +629,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
   /// brand ring + tint, so the current choice reads at a glance.
   Widget _pickCard(SimilarProduct p, ColorScheme cs, {required bool isClosest}) {
     final selected = _selected?.id == p.id;
-    final delta = _origUnitPrice - p.effectivePrice;
+    final delta = (_weighedLine ? _origPerKg : _origUnitPrice) - _shown(p);
     return GestureDetector(
       // Changing the selection resets the arm-then-confirm — otherwise an
       // armed send from a previous card would let the next card fire on a
@@ -669,11 +702,20 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                     fontSize: 12.5, height: 1.2, fontWeight: FontWeight.w500)),
             const SizedBox(height: 4),
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(_money(p.effectivePrice),
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w800)),
-                const Spacer(),
+                // Flexible + scaleDown (257): «3 000 ₸/кг» next to a «−1 635 ₸»
+                // badge overflowed a narrow card; shrink, never clip a price.
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(_shownLabel(_shown(p)),
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w800)),
+                  ),
+                ),
+                const SizedBox(width: 4),
                 if (delta > 0)
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -783,7 +825,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                           child: _previewTile(
                             img: widget.item.product.imageUrl,
                             name: _origName,
-                            price: _origUnitPrice,
+                            price: _weighedLine ? _origPerKg : _origUnitPrice,
                             cs: cs,
                             dim: true,
                             struck: true,
@@ -806,7 +848,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                           child: _previewTile(
                             img: sub.imageUrl,
                             name: sub.name,
-                            price: sub.effectivePrice,
+                            price: _shown(sub),
                             cs: cs,
                             refund: refund,
                           ),
@@ -1016,7 +1058,7 @@ class _SubstitutePickerSheetState extends State<_SubstitutePickerSheet> {
                 fontSize: 12,
                 color: dim ? ST.ink2 : ST.ink)),
         const SizedBox(height: 2),
-        Text(_money(price),
+        Text(_weighedLine ? '${_money(price)}/кг' : _money(price),
             style: struck
                 ? const TextStyle(
                     fontSize: 12,
