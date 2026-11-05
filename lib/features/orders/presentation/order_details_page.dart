@@ -1080,6 +1080,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // there is nothing yet to explain.
     final askReason = _canRefund;
     final reasonCode = ValueNotifier<String?>(null);
+    final cancelReasonCtrl = TextEditingController();
     final result = await showDialog<_CancelPayload>(
       context: context,
       // The old body was exactly «Заказ #N будет отменён.» — it never said that
@@ -1127,6 +1128,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                     'возврат отдельно. Отменить это действие нельзя.'),
             if (askReason) ...[
               const SizedBox(height: 12),
+              // Ties the ask to the money, not an unexplained extra step —
+              // this dialog can also appear with NO dropdown at all
+              // (`pending-payment`, see [askReason]), and nothing else on
+              // screen says why this cancel is different.
+              Text(
+                'Деньги за этот заказ уже списаны — укажите причину '
+                'отмены, чтобы мы вернули их правильно.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(c).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 8),
               ValueListenableBuilder<String?>(
                 valueListenable: reasonCode,
                 builder: (_, code, __) => DropdownButtonFormField<String>(
@@ -1143,6 +1157,35 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                   onChanged: (v) => reasonCode.value = v,
                 ),
               ),
+              // «Другое» with no comment is exactly the un-analyzable
+              // free-text gap this dropdown exists to close (same rule as
+              // the refund sheet's own «Другое», a few hundred lines down).
+              // Shown for every reason, since a detail on «Товар не в
+              // наличии» etc. is still useful, but only REQUIRED for
+              // «Другое» — enforced by the confirm button below, not a
+              // snackbar after the tap.
+              ValueListenableBuilder<String?>(
+                valueListenable: reasonCode,
+                builder: (_, code, __) {
+                  if (code == null) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: TextField(
+                      controller: cancelReasonCtrl,
+                      maxLines: 2,
+                      decoration: InputDecoration(
+                        labelText: code == kOtherCancelReason
+                            ? 'Что произошло?'
+                            : 'Комментарий (необязательно)',
+                        helperText: code == kOtherCancelReason
+                            ? 'Уточните, что произошло'
+                            : null,
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                  );
+                },
+              ),
             ],
           ],
         ),
@@ -1151,23 +1194,39 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             onPressed: () => Navigator.of(c).pop(),
             child: const Text('Назад'),
           ),
-          ValueListenableBuilder<String?>(
-            valueListenable: reasonCode,
-            builder: (_, code, __) => ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
-              // Disabled, not silently optional: a reason the operator never
-              // picked would otherwise ship as a cancel with no reason at
-              // all, exactly the gap this exists to close.
-              onPressed: (askReason && code == null)
-                  ? null
-                  : () => Navigator.of(c).pop(_CancelPayload(reason: code)),
-              child: const Text('Отменить заказ'),
-            ),
+          AnimatedBuilder(
+            animation: Listenable.merge([reasonCode, cancelReasonCtrl]),
+            builder: (_, __) {
+              final code = reasonCode.value;
+              final note = cancelReasonCtrl.text.trim();
+              // «Другое» with no note is the un-analyzable gap this dropdown
+              // exists to close — the SAME rule as the refund sheet's own
+              // «Другое» a few hundred lines down, just enforced by staying
+              // disabled instead of a snackbar after the tap.
+              final missingReason = askReason &&
+                  (code == null || (code == kOtherCancelReason && note.isEmpty));
+              return ElevatedButton(
+                style:
+                    ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
+                // Disabled, not silently optional: a reason the operator never
+                // picked would otherwise ship as a cancel with no reason at
+                // all, exactly the gap this exists to close.
+                onPressed: missingReason
+                    ? null
+                    : () => Navigator.of(c).pop(_CancelPayload(
+                          reason: code == null
+                              ? null
+                              : (note.isEmpty ? code : '$code · $note'),
+                        )),
+                child: const Text('Отменить заказ'),
+              );
+            },
           ),
         ],
       ),
     );
     reasonCode.dispose();
+    cancelReasonCtrl.dispose();
 
     if (result == null) return;
     await _performCancel(reason: result.reason);

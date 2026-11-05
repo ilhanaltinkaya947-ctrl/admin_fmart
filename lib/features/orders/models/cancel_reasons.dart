@@ -16,5 +16,12 @@ const List<String> cancelReasons = <String>[
   'Покупатель попросил отменить',
   'Не дозвонились до покупателя',
   'Долгая доставка',
-  'Другое',
+  kOtherCancelReason,
 ];
+
+/// The one reason that is useless without a comment — ux review: a manager
+/// under pressure reaches for the no-further-questions option first, and
+/// that is exactly the un-analyzable gap this whole picker exists to close.
+/// The confirm button in `order_details_page.dart` stays disabled until this
+/// reason has a non-empty note next to it.
+const String kOtherCancelReason = 'Другое';

@@ -32,7 +32,7 @@ void main() {
 
     test('the confirm button is disabled until a reason is picked', () {
       expect(
-        page.contains('askReason && code == null'),
+        page.contains('onPressed: missingReason'),
         isTrue,
         reason: 'an operator must not be able to cancel a paid order '
             'with no reason recorded',
@@ -41,6 +41,19 @@ void main() {
 
     test('the picked reason reaches cancelOrder', () {
       expect(page.contains('_performCancel(reason: result.reason)'), isTrue);
+    });
+
+    test('"Другое" cannot be confirmed with no comment', () {
+      // ux-flow-designer review: a rushed manager reaches for the
+      // no-further-questions option first, which is exactly the
+      // un-analyzable gap this dropdown exists to close.
+      expect(
+        page.contains(
+            '(code == null || (code == kOtherCancelReason && note.isEmpty))'),
+        isTrue,
+        reason: '"Другое" with an empty note must not confirm — same rule '
+            'the refund sheet already enforces for its own "Другое"',
+      );
     });
   });
 }
