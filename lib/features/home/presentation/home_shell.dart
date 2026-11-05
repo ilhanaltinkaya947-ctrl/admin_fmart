@@ -157,7 +157,13 @@ class _HomeShellState extends State<HomeShell> {
         return const NavigationDestination(
           icon: Icon(Icons.dashboard_outlined),
           selectedIcon: Icon(Icons.dashboard),
-          label: 'Сегодня',
+          // 'Сегодня' (7 chars) wraps mid-word at 10 destinations / phone
+          // width ("Сегод" / "ня" on two lines) — measured: 7+ Cyrillic
+          // chars wraps at ~37-39px per destination, 6 or fewer stays on
+          // one line. Same fix applied below to every other 7-char label
+          // that was ALSO silently wrapping (История, Клиенты, Скрытые,
+          // Заплан. — the dot alone didn't make that last one short enough).
+          label: 'Сегод.',
         );
       case _Section.newOrders:
         // Wrap the icon in a ValueListenableBuilder so the badge count
@@ -178,19 +184,19 @@ class _HomeShellState extends State<HomeShell> {
         return const NavigationDestination(
           icon: Icon(Icons.schedule_outlined),
           selectedIcon: Icon(Icons.schedule),
-          label: 'Заплан.',
+          label: 'Запл.',
         );
       case _Section.orderHistory:
         return const NavigationDestination(
           icon: Icon(Icons.history_outlined),
           selectedIcon: Icon(Icons.history),
-          label: 'История',
+          label: 'Истор.',
         );
       case _Section.customers:
         return const NavigationDestination(
           icon: Icon(Icons.people_outline),
           selectedIcon: Icon(Icons.people),
-          label: 'Клиенты',
+          label: 'Клиен.',
         );
       case _Section.reports:
         return const NavigationDestination(
@@ -208,7 +214,7 @@ class _HomeShellState extends State<HomeShell> {
         return const NavigationDestination(
           icon: Icon(Icons.visibility_off_outlined),
           selectedIcon: Icon(Icons.visibility_off),
-          label: 'Скрытые',
+          label: 'Скрыт.',
         );
       case _Section.morningCheck:
         return const NavigationDestination(

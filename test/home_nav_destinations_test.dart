@@ -20,9 +20,16 @@ void main() {
   /// Mirrors the phone bar's list in home_shell.dart. Kept deliberately
   /// literal: if someone edits the shell, this test must be edited too, which
   /// is the point — it forces the count to be considered.
+  // Every label here is <= 6 characters. Measured (05.11): a 7-character
+  // Cyrillic label wraps mid-word at 10 destinations / ~37-39px per
+  // destination ("Сегодня" -> "Сегод" / "ня" on two lines) — this hit
+  // "Сегодня", "История", "Клиенты", "Скрытые" AND the already-abbreviated
+  // "Заплан." (7 chars incl. the dot), none of which the test below had
+  // caught because wrapping lays out without throwing. 6 characters is the
+  // longest that stayed single-line in that same measurement.
   const phoneBarLabels = <String>[
-    'Сегодня', 'Новые', 'Заплан.', 'История', 'Клиенты',
-    'Отчёты', 'Отзывы', 'Слоты', 'Скрытые', 'Настр.',
+    'Сегод.', 'Новые', 'Запл.', 'Истор.', 'Клиен.',
+    'Отчёты', 'Отзывы', 'Слоты', 'Скрыт.', 'Настр.',
   ];
 
   /// Admin configuration screens. These live in Настройки, NOT the bar.
@@ -84,6 +91,27 @@ void main() {
       greaterThanOrEqualTo(35.0),
       reason: 'each destination was ${cell.toStringAsFixed(1)}px',
     );
+
+    // A label that wraps lays out fine (no exception) but reads as broken
+    // mid-word, e.g. "Сегод" / "ня" — this is how that bug survived the
+    // test above. All ten labels must render on ONE line; the unselected
+    // ones share one render height, so a wrapped label stands out as a
+    // taller box than its siblings at the same index-0-unselected row.
+    final heights = <String, double>{
+      for (final l in phoneBarLabels)
+        l: (find.text(l).evaluate().single.renderObject as RenderBox)
+            .size
+            .height,
+    };
+    final oneLine = heights.values.reduce((a, b) => a < b ? a : b);
+    for (final entry in heights.entries) {
+      expect(
+        entry.value,
+        oneLine,
+        reason: '"${entry.key}" rendered taller than the shortest label '
+            '(${entry.value} vs $oneLine) — it wrapped to a second line',
+      );
+    }
 
     var exceptions = 0;
     for (var i = 0; i < 10; i++) {
