@@ -1081,8 +1081,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     final askReason = _canRefund;
     final reasonCode = ValueNotifier<String?>(null);
     final cancelReasonCtrl = TextEditingController();
-    final result = await showDialog<_CancelPayload>(
-      context: context,
+    // Same guard `_pickupAdvance`'s confirm dialog sets: without it, the 8s
+    // poll can swap `_order` under an open dialog whose `askReason` was read
+    // from the status as it was when the dialog opened (flutter-critic,
+    // 6fd815f review) — a payment webhook landing mid-dialog would then ship
+    // a cancel with no reason on an order that is, by the time «Отменить
+    // заказ» is actually tapped, already paid. try/finally: anything that
+    // throws between the two must not leave this stuck true.
+    _confirmOpen = true;
+    final _CancelPayload? result;
+    try {
+      result = await showDialog<_CancelPayload>(
+        context: context,
       // The old body was exactly «Заказ #N будет отменён.» — it never said that
       // MONEY MOVES. On delivery that was merely thin. On pickup it is a live
       // refund-after-collection door: «Готов к выдаче» spans two physically
@@ -1224,7 +1234,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           ),
         ],
       ),
-    );
+      );
+    } finally {
+      _confirmOpen = false;
+    }
     reasonCode.dispose();
     cancelReasonCtrl.dispose();
 

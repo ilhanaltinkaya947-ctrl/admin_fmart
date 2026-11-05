@@ -43,6 +43,17 @@ void main() {
       expect(page.contains('_performCancel(reason: result.reason)'), isTrue);
     });
 
+    test('the 8s poll cannot swap the order under the open dialog', () {
+      // flutter-critic (6fd815f): askReason is read once, before the dialog
+      // opens; without this guard a webhook landing mid-dialog could ship a
+      // now-actually-paid cancel with reason: null.
+      final i = page.indexOf('Future<void> _cancelOrder()');
+      final j = page.indexOf('Future<void> _performCancel(', i);
+      final body = page.substring(i, j);
+      expect(body.contains('_confirmOpen = true;'), isTrue);
+      expect(body.contains('_confirmOpen = false;'), isTrue);
+    });
+
     test('"Другое" cannot be confirmed with no comment', () {
       // ux-flow-designer review: a rushed manager reaches for the
       // no-further-questions option first, which is exactly the
