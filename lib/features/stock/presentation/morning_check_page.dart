@@ -144,26 +144,52 @@ class _MorningCheckPageState extends State<MorningCheckPage> {
               title: 'Сегодня проверять нечего',
             );
           }
-          return ListView.separated(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-            itemCount: list.items.length + 1,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (_, i) {
-              if (i == 0) {
-                return MorningCheckHeader(
-                  storeName: widget.storeName,
-                  remaining: list.remaining,
-                );
-              }
-              final item = list.items[i - 1];
-              return MorningCheckRow(
+          // Catalog's own guess («не продавался 7 дней») sits ABOVE the
+          // picker-reported holds: the manager is standing in the shop, and
+          // the suspects are the ones worth a glance at the shelf right now.
+          // Split by `kind`, not a second endpoint — missing `kind` on an
+          // older server defaults to "hidden", so that server shows exactly
+          // what it always has, no suspect block at all.
+          final suspects = list.items.where((i) => i.isSuspect).toList();
+          final hidden = list.items.where((i) => !i.isSuspect).toList();
+
+          Widget row(MorningCheckItem item, {required bool suspect}) =>
+              MorningCheckRow(
                 key: ValueKey('morning-row-${item.productId}'),
                 item: item,
+                suspect: suspect,
                 busy: _busy.contains(item.productId),
                 onAnswer: (present) => _answer(item, present),
               );
-            },
+
+          List<Widget> interspersed(List<Widget> rows) => [
+                for (var i = 0; i < rows.length; i++) ...[
+                  rows[i],
+                  if (i != rows.length - 1) const Divider(height: 1),
+                ],
+              ];
+
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            children: [
+              MorningCheckHeader(
+                storeName: widget.storeName,
+                remaining: list.remaining,
+              ),
+              const Divider(height: 1),
+              if (suspects.isNotEmpty) ...[
+                const _SectionLabel('Проверьте на полке'),
+                ...interspersed(
+                    [for (final it in suspects) row(it, suspect: true)]),
+                if (hidden.isNotEmpty) const Divider(height: 1),
+              ],
+              if (hidden.isNotEmpty) ...[
+                if (suspects.isNotEmpty) const _SectionLabel('Остальное'),
+                ...interspersed(
+                    [for (final it in hidden) row(it, suspect: false)]),
+              ],
+            ],
           );
         }),
       ),
@@ -221,9 +247,11 @@ class MorningCheckHeader extends StatelessWidget {
   }
 }
 
-/// One product: when it was hidden, the two answers, and what the answer did.
+/// One product: when it was hidden (or why it's a suspect), the two answers,
+/// and what the answer did.
 class MorningCheckRow extends StatelessWidget {
   final MorningCheckItem item;
+  final bool suspect;
   final bool busy;
   final ValueChanged<bool> onAnswer;
 
@@ -232,12 +260,14 @@ class MorningCheckRow extends StatelessWidget {
     required this.item,
     required this.busy,
     required this.onAnswer,
+    this.suspect = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.onSurfaceVariant;
-    final outcome = morningCheckOutcome(item);
+    final outcome =
+        suspect ? morningCheckSuspectOutcome(item) : morningCheckOutcome(item);
     final held = item.heldAt;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
@@ -254,7 +284,18 @@ class MorningCheckRow extends StatelessWidget {
                   item.name.isEmpty ? 'Товар ${item.productId}' : item.name,
                   style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w500),
                 ),
-                if (held != null) ...[
+                // A suspect was never hidden — [held] would be the server's
+                // stamp, not this product's, so show catalog's own reason
+                // instead («Не продавался 7 дней»).
+                if (suspect) ...[
+                  if (item.reason != null) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      item.reason!,
+                      style: TextStyle(fontSize: 12.5, color: muted),
+                    ),
+                  ],
+                ] else if (held != null) ...[
                   const SizedBox(height: 3),
                   Text(
                     'скрыт с ${formatAlmaty(held)}',
@@ -295,7 +336,9 @@ class MorningCheckRow extends StatelessWidget {
                       onTap: () => onAnswer(true),
                     ),
                     _AnswerButton(
-                      label: 'Нет, ещё нет',
+                      // A suspect was never actually hidden, so «ещё нет»
+                      // (implying it already was) is wrong for it.
+                      label: suspect ? 'Нет' : 'Нет, ещё нет',
                       tone: Colors.red,
                       selected: item.answer == false,
                       enabled: !busy,
@@ -313,6 +356,29 @@ class MorningCheckRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A plain heading between the two blocks — «Проверьте на полке» above the
+/// suspects, «Остальное» above the picker-reported holds. Only shown when
+/// both blocks are non-empty; a single block needs no heading of its own.
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }

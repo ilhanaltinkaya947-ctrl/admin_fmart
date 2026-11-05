@@ -1,0 +1,46 @@
+// Sweep 31.10 #4: 6 of 42 paid orders at Адырбекова were cancelled 7-33 min
+// after the store accepted, 84 K, and nobody could tell whether it was
+// missing items or a bad phone call — there was no reason at all.
+//
+// `_cancelOrder` is not widget-tested directly (it needs the full order
+// page's auth/store/repo context, like the rest of this file); the pattern
+// this repo uses instead for that page is a source-anchored assertion, same
+// as `refund_button_test.dart`'s round-6 group.
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  final page = File(
+    'lib/features/orders/presentation/order_details_page.dart',
+  ).readAsStringSync();
+
+  group('cancelling a PAID order asks why', () {
+    test('a reason is required only when money actually moved', () {
+      final i = page.indexOf('Future<void> _cancelOrder()');
+      final j = page.indexOf('Future<void> _performCancel(', i);
+      expect(i, greaterThan(-1));
+      expect(j, greaterThan(i));
+      final body = page.substring(i, j);
+      expect(
+        body.contains('askReason = _canRefund'),
+        isTrue,
+        reason: 'a pending-payment cancel never moved money; '
+            'it must not demand a reason',
+      );
+    });
+
+    test('the confirm button is disabled until a reason is picked', () {
+      expect(
+        page.contains('askReason && code == null'),
+        isTrue,
+        reason: 'an operator must not be able to cancel a paid order '
+            'with no reason recorded',
+      );
+    });
+
+    test('the picked reason reaches cancelOrder', () {
+      expect(page.contains('_performCancel(reason: result.reason)'), isTrue);
+    });
+  });
+}

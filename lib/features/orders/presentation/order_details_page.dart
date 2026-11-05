@@ -26,6 +26,7 @@ import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../models/refund_button.dart';
+import '../models/cancel_reasons.dart';
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -1071,7 +1072,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // this stops the call, which is what matters if the button is ever
     // rebuilt from a stale frame or reached from a future call site.
     if (_actionLoading || _handingOver || _saving) return;
-    final confirm = await showDialog<bool>(
+    // Only a PAID order (money provably moved, same flag the confirm text
+    // below reads) asks why. Sweep 31.10 #4: 6 of 42 paid orders at
+    // Адырбекова were cancelled 7–33 min after the store accepted, 84 K, and
+    // nobody could tell whether it was missing items or something else — see
+    // `cancel_reasons.dart`. A `pending-payment` cancel never moved money, so
+    // there is nothing yet to explain.
+    final askReason = _canRefund;
+    final reasonCode = ValueNotifier<String?>(null);
+    final result = await showDialog<_CancelPayload>(
       context: context,
       // The old body was exactly «Заказ #N будет отменён.» — it never said that
       // MONEY MOVES. On delivery that was merely thin. On pickup it is a live
@@ -1116,24 +1125,52 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 : 'Заказ не отмечен как оплаченный, поэтому возврат не '
                     'создаётся. Если деньги всё же списались, оформите '
                     'возврат отдельно. Отменить это действие нельзя.'),
+            if (askReason) ...[
+              const SizedBox(height: 12),
+              ValueListenableBuilder<String?>(
+                valueListenable: reasonCode,
+                builder: (_, code, __) => DropdownButtonFormField<String>(
+                  value: code,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Причина отмены',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final r in cancelReasons)
+                      DropdownMenuItem(value: r, child: Text(r)),
+                  ],
+                  onChanged: (v) => reasonCode.value = v,
+                ),
+              ),
+            ],
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(c).pop(false),
+            onPressed: () => Navigator.of(c).pop(),
             child: const Text('Назад'),
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('Отменить заказ'),
+          ValueListenableBuilder<String?>(
+            valueListenable: reasonCode,
+            builder: (_, code, __) => ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
+              // Disabled, not silently optional: a reason the operator never
+              // picked would otherwise ship as a cancel with no reason at
+              // all, exactly the gap this exists to close.
+              onPressed: (askReason && code == null)
+                  ? null
+                  : () => Navigator.of(c).pop(_CancelPayload(reason: code)),
+              child: const Text('Отменить заказ'),
+            ),
           ),
         ],
       ),
     );
+    reasonCode.dispose();
 
-    if (confirm != true) return;
-    await _performCancel();
+    if (result == null) return;
+    await _performCancel(reason: result.reason);
   }
 
   /// The cancel call, after its confirmation. Shared by «Отменить заказ» and
@@ -3435,6 +3472,11 @@ String _tovarWord(int n) {
     default:
       return 'товаров';
   }
+}
+
+class _CancelPayload {
+  final String? reason;
+  _CancelPayload({this.reason});
 }
 
 class _RefundPayload {

@@ -17,7 +17,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Map<String, dynamic> _row(int id, {Object? answer, Object? stock1c = 3, String? held = '2026-10-25T13:05:00Z'}) => {
+Map<String, dynamic> _row(int id,
+        {Object? answer,
+        Object? stock1c = 3,
+        String? held = '2026-10-25T13:05:00Z',
+        String? kind,
+        String? reason}) =>
+    {
       'product_id': id,
       'name': 'Товар $id',
       'image_url': null,
@@ -26,6 +32,8 @@ Map<String, dynamic> _row(int id, {Object? answer, Object? stock1c = 3, String? 
       'lapses_at': '2026-10-28T13:05:00Z',
       'answer': answer,
       'answered_at': answer == null ? null : '2026-10-26T03:10:00Z',
+      if (kind != null) 'kind': kind,
+      if (reason != null) 'reason': reason,
     };
 
 Map<String, dynamic> _list(List<Map<String, dynamic>> items, {bool enabled = true}) =>
@@ -104,6 +112,34 @@ void main() {
       expect(morningCheckOutcome(i(answer: true)), 'снова виден в приложении');
       expect(morningCheckOutcome(i(answer: true, q: 0)), 'в 1С 0: появится после исправления остатка в 1С');
       expect(morningCheckOutcome(i(answer: false)), 'скрыт ещё на день, спросим завтра');
+    });
+
+    test('kind defaults to hidden (an older server never sends it)', () {
+      final i = MorningCheckItem.tryFromJson(_row(1))!;
+      expect(i.kind, 'hidden');
+      expect(i.isSuspect, isFalse);
+      expect(i.reason, isNull);
+    });
+
+    test('a suspect row carries its kind and reason', () {
+      final i = MorningCheckItem.tryFromJson(
+          _row(2, kind: 'suspect', reason: 'Не продавался 7 дней'))!;
+      expect(i.isSuspect, isTrue);
+      expect(i.reason, 'Не продавался 7 дней');
+    });
+
+    test('an unknown kind falls back to hidden, not a crash', () {
+      final i = MorningCheckItem.tryFromJson(_row(3, kind: 'something-new'))!;
+      expect(i.isSuspect, isFalse);
+    });
+
+    test('a suspect answer reads differently from a hidden one', () {
+      MorningCheckItem i({Object? answer}) => MorningCheckItem.tryFromJson(
+          _row(1, answer: answer, kind: 'suspect'))!;
+      expect(morningCheckSuspectOutcome(i()), isNull);
+      expect(morningCheckSuspectOutcome(i(answer: true)),
+          'отмечено: спросим снова через 2 недели');
+      expect(morningCheckSuspectOutcome(i(answer: false)), 'скрыт, спросим завтра');
     });
   });
 
@@ -186,6 +222,42 @@ void main() {
       await t.pumpAndSettle();
       expect(find.text('Магазин 4'), findsOneWidget);
       expect(find.text('Магазин 3'), findsNothing);
+    });
+
+    testWidgets('suspects show in their own block above the hidden ones', (t) async {
+      final server = _Server(_list([
+        _row(1), // hidden, unanswered
+        _row(2, kind: 'suspect', reason: 'Не продавался 7 дней'),
+      ]));
+      await _pump(t, server.repo());
+      expect(find.text('Проверьте на полке'), findsOneWidget);
+      expect(find.text('Остальное'), findsOneWidget);
+      expect(find.text('Не продавался 7 дней'), findsOneWidget);
+      // The suspect row offers «Нет», not «Нет, ещё нет» — it was never
+      // actually hidden, so "ещё" would be wrong.
+      expect(
+          find.descendant(
+              of: find.byKey(const ValueKey('morning-row-2')),
+              matching: find.byKey(const ValueKey('morning-Нет'))),
+          findsOneWidget);
+      expect(
+          find.descendant(
+              of: find.byKey(const ValueKey('morning-row-1')),
+              matching: find.byKey(const ValueKey('morning-Нет, ещё нет'))),
+          findsOneWidget);
+
+      await t.tap(find.descendant(
+          of: find.byKey(const ValueKey('morning-row-2')),
+          matching: find.byKey(const ValueKey('morning-Да, есть'))));
+      await t.pumpAndSettle();
+      expect(server.sent.last.data, {'store_id': 3, 'product_id': 2, 'present': true});
+      expect(find.text('отмечено: спросим снова через 2 недели'), findsOneWidget);
+    });
+
+    testWidgets('no suspects, no section headings — same as before', (t) async {
+      await _pump(t, _Server(_list([_row(1), _row(2)])).repo());
+      expect(find.text('Проверьте на полке'), findsNothing);
+      expect(find.text('Остальное'), findsNothing);
     });
 
     testWidgets('empty and switched off', (t) async {

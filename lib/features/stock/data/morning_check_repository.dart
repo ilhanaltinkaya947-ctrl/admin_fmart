@@ -24,6 +24,19 @@ class MorningCheckItem {
   final bool? answer;
   final DateTime? answeredAt;
 
+  /// "hidden" (the picker reported it missing — the row above) or
+  /// "suspect" (catalog's own guess, e.g. «не продавался 7 дней»: the
+  /// product was never actually hidden, so [heldAt] is meaningless for it).
+  /// Missing on an older server = "hidden": that server never sends anything
+  /// else, so defaulting here is the whole backward-compat story.
+  final String kind;
+
+  /// Why catalog flagged a suspect, e.g. «Не продавался 7 дней». Null for a
+  /// normal hidden row.
+  final String? reason;
+
+  bool get isSuspect => kind == 'suspect';
+
   const MorningCheckItem({
     required this.productId,
     required this.name,
@@ -33,6 +46,8 @@ class MorningCheckItem {
     required this.lapsesAt,
     required this.answer,
     required this.answeredAt,
+    this.kind = 'hidden',
+    this.reason,
   });
 
   /// Tolerant, like [HeldProduct.tryFromJson]: one bad row must not blank the
@@ -44,6 +59,7 @@ class MorningCheckItem {
     final q = j['stock_1c'];
     final a = j['answer'];
     final img = j['image_url']?.toString();
+    final reason = j['reason']?.toString();
     return MorningCheckItem(
       productId: id,
       name: (j['name'] ?? '').toString(),
@@ -53,6 +69,8 @@ class MorningCheckItem {
       lapsesAt: _date(j['lapses_at']),
       answer: a is bool ? a : null,
       answeredAt: _date(j['answered_at']),
+      kind: j['kind']?.toString() == 'suspect' ? 'suspect' : 'hidden',
+      reason: (reason == null || reason.isEmpty) ? null : reason,
     );
   }
 
@@ -136,7 +154,7 @@ String formatAlmaty(DateTime t) {
   return '${two(a.day)}.${two(a.month)} ${two(a.hour)}:${two(a.minute)}';
 }
 
-/// The line under a row once it has an answer; null while unanswered.
+/// The line under a HIDDEN row once it has an answer; null while unanswered.
 String? morningCheckOutcome(MorningCheckItem i) {
   if (i.answer == true) {
     return i.stock1c == 0
@@ -144,5 +162,15 @@ String? morningCheckOutcome(MorningCheckItem i) {
         : 'снова виден в приложении';
   }
   if (i.answer == false) return 'скрыт ещё на день, спросим завтра';
+  return null;
+}
+
+/// The line under a SUSPECT row once it has an answer. «Да» never hid the
+/// product, so it only records the check (catalog won't ask again for 14
+/// days); «Нет» places the same hold a picker's «нет» does, same as the
+/// hidden row above.
+String? morningCheckSuspectOutcome(MorningCheckItem i) {
+  if (i.answer == true) return 'отмечено: спросим снова через 2 недели';
+  if (i.answer == false) return 'скрыт, спросим завтра';
   return null;
 }
