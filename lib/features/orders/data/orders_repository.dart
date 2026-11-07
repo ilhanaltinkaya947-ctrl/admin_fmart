@@ -206,7 +206,8 @@ class OrdersRepository {
   /// Release an off-hours SCHEDULED order early — moves it out of the
   /// `scheduled` holding status into the normal fulfillment flow (paid /
   /// processing) so the picker can start assembling it before the 09:00
-  /// auto-release worker fires. Backend endpoint added in task #229.
+  /// auto-release worker fires. Contract D (07.11, order-service c5466c8):
+  /// POST, no body; 200 {success, message}; 409 when no longer scheduled.
   Future<SimpleActionResponse> releaseOrder({required int orderId}) async {
     try {
       final resp =

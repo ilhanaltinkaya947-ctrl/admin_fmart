@@ -3,6 +3,8 @@
 import 'dart:io';
 
 import 'package:admin_fmart/core/services/staff_push.dart';
+import 'package:admin_fmart/features/orders/data/orders_repository.dart';
+import 'package:dio/dio.dart';
 import 'package:admin_fmart/features/orders/models/order_models.dart';
 import 'package:admin_fmart/features/orders/models/refund_state.dart';
 import 'package:flutter/material.dart';
@@ -60,6 +62,23 @@ class _LedgerRepo extends FakeOrdersRepository {
         oosProductIds: oosProductIds);
     ledger = ledgerAfterRefund;
     return r;
+  }
+}
+
+/// «Выпустить» answers as the test says.
+class _ReleaseRepo extends FakeOrdersRepository {
+  _ReleaseRepo({required super.api, required super.detail});
+  OrdersApiException? releaseError;
+  int releaseCalls = 0;
+
+  @override
+  Future<SimpleActionResponse> releaseOrder({required int orderId}) async {
+    releaseCalls++;
+    final e = releaseError;
+    if (e != null) throw e;
+    detail = {...detail, 'status': 'paid'};
+    return SimpleActionResponse(
+        success: true, message: 'Заказ выпущен и передан в сборку');
   }
 }
 
@@ -443,6 +462,79 @@ void main() {
       expect(find.text('Возврат оформлен'), findsOneWidget);
       expect(find.byKey(const ValueKey('refund-state-line')), findsNothing);
       await disposePage(t);
+    });
+  });
+
+  // ---------------------------------------------------------------- 4. release
+  group('contract D: «Выпустить»', () {
+    test('POST /gw/order/admin/orders/{id}/release, no body', () async {
+      final base = fakeRepo(weighedOrderJson());
+      final sent = <RequestOptions>[];
+      base.api.dio.interceptors.insert(0, InterceptorsWrapper(onRequest: (o, h) {
+        sent.add(o);
+        h.resolve(Response(
+            requestOptions: o,
+            statusCode: 200,
+            data: {'success': true, 'message': 'Заказ уже выпущен'}));
+      }));
+      final repo = OrdersRepository(api: base.api);
+      final r = await repo.releaseOrder(orderId: 100123);
+      expect(sent.single.method, 'POST');
+      expect(sent.single.path, '/gw/order/admin/orders/100123/release');
+      expect(sent.single.data, isNull);
+      expect(r.success, isTrue);
+      expect(r.message, 'Заказ уже выпущен');
+    });
+
+    Map<String, dynamic> scheduled() => {
+          ...weighedOrderJson(status: 'scheduled'),
+          'scheduled_for_at': '2026-11-08T04:00:00Z',
+        };
+    final releaseButton = find.text('Выпустить заказ');
+
+    Future<void> tapRelease(WidgetTester t) async {
+      await scrollTo(t, releaseButton);
+      await t.tap(releaseButton);
+      await settle(t);
+      await t.tap(find.text('Выпустить').last);
+      await settle(t);
+    }
+
+    testWidgets('200: the server message, the order reloads as paid', (t) async {
+      final base = fakeRepo(scheduled());
+      final repo = _ReleaseRepo(api: base.api, detail: scheduled());
+      await pumpOrderPage(t, repo, role: 'manager');
+      await tapRelease(t);
+      expect(repo.releaseCalls, 1);
+      expect(find.text('Заказ выпущен и передан в сборку'), findsOneWidget);
+      expect(find.text('Выпустить заказ'), findsNothing);
+      await disposePage(t);
+    });
+
+    testWidgets('409: the server words, no «Повторить», the order reloads',
+        (t) async {
+      final base = fakeRepo(scheduled());
+      final repo = _ReleaseRepo(api: base.api, detail: scheduled())
+        ..releaseError = OrdersApiException(
+            'Заказ уже не ждёт выпуска. Обновите экран заказа.',
+            statusCode: 409);
+      await pumpOrderPage(t, repo, role: 'manager');
+      repo.detail = {...weighedOrderJson(status: 'canceled')};
+      final before = repo.getCalls;
+      await tapRelease(t);
+      expect(find.text('Заказ уже не ждёт выпуска. Обновите экран заказа.'),
+          findsOneWidget);
+      expect(find.text('Повторить'), findsNothing,
+          reason: 'a retry of a 409 can only fail again');
+      expect(repo.getCalls, greaterThan(before));
+      expect(find.text('Выпустить заказ'), findsNothing);
+      await disposePage(t);
+    });
+
+    test('no dash in the release fallback copy', () {
+      final page = File('lib/features/orders/presentation/order_details_page.dart')
+          .readAsStringSync();
+      expect(page.contains("'Заказ выпущен — передан в сборку'"), isFalse);
     });
   });
 

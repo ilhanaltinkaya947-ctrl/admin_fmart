@@ -1542,7 +1542,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 child: Text(
                   res.message.isNotEmpty
                       ? res.message
-                      : 'Заказ выпущен — передан в сборку',
+                      : 'Заказ выпущен и передан в сборку',
                   style: const TextStyle(color: Colors.white),
                 ),
               ),
@@ -1558,6 +1558,22 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       }
     } on OrdersApiException catch (e) {
       if (!mounted) return;
+      if (e.statusCode == 409) {
+        // Contract D: 409 «Заказ уже не ждёт выпуска. Обновите экран заказа.»
+        // The order is no longer scheduled (canceled, or moved on). A retry
+        // can only fail again, so show the server's words and reload instead.
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message)),
+        );
+        try {
+          final fresh = await repo.getOrderById(
+            storeId: _order.storeId,
+            orderId: _order.id,
+          );
+          if (mounted && fresh != null) setState(() => _order = fresh);
+        } catch (_) {/* the 8 s poll reconciles */}
+        return;
+      }
       _showErrorWithRetry(e.message, _releaseOrder);
     } catch (_) {
       if (!mounted) return;
