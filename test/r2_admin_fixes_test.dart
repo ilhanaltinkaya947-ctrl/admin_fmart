@@ -454,7 +454,21 @@ void main() {
       await disposePage(t);
     });
 
-    testWidgets('older server (no refund_state): today\'s toast', (t) async {
+    testWidgets('a refund tapped during a payment-service outage (key sent, '
+        'value null) still waits, never «оформлен» (critic r2 MED-1)',
+        (t) async {
+      final detail = {...weighedOrderJson(status: 'processing'),
+          'refund_state': null, 'refund_state_updated_at': null};
+      final repo = fakeRepo(detail);
+      await pumpOrderPage(t, repo, role: 'admin');
+      await tapRefund(t);
+      expect(repo.refundCalls, 1);
+      expect(find.text('Возврат оформлен'), findsNothing);
+      expect(find.text('Возврат в обработке'), findsWidgets);
+      await disposePage(t);
+    });
+
+        testWidgets('older server (no refund_state): today\'s toast', (t) async {
       final repo = fakeRepo(order('processing', null, null));
       await pumpOrderPage(t, repo, role: 'admin');
       await tapRefund(t);

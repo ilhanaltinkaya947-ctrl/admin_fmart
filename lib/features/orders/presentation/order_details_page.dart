@@ -136,7 +136,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// The server accepted a refund. Start waiting for the bank's answer. A
   /// no-op when the server does not send refund_state (today's behaviour).
   void _startRefundWait(String key) {
-    _refundStateSeen |= _order.refundState != null;
+    _refundStateSeen |= _order.refundStateSupported;
     if (!_refundStateSeen) return;
     _refundLedgerFresh = false;
     _refundWaitLedgerSeq = _refundsLoadSeq + 1;
@@ -545,7 +545,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       setState(() {
         _dropStalePreviews(fresh);
         _order = fresh;
-        _refundStateSeen |= fresh.refundState != null;
+        _refundStateSeen |= fresh.refundStateSupported;
         _reconcileRefundWait();
         if (statusChanged) {
           // The status changed under us (e.g. a consumer-driven transition

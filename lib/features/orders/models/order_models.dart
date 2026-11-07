@@ -118,6 +118,11 @@ class Order {
 
   /// When [refundState] last changed, server clock. Null when absent.
   final DateTime? refundStateUpdatedAt;
+
+  /// The server sends the `refund_state` KEY (contract C), even if its value
+  /// is null. Present-but-null = payment-service did not answer in time; only
+  /// a missing key means an older order-service.
+  final bool refundStateSupported;
   final DateTime createdAt;
   final DateTime updatedAt;
   // Set only when status == 'scheduled'. ISO UTC string of the next
@@ -174,6 +179,7 @@ class Order {
     this.weightRefundAmount,
     this.refundState,
     this.refundStateUpdatedAt,
+    this.refundStateSupported = false,
     required this.createdAt,
     required this.updatedAt,
     this.scheduledForAt,
@@ -305,6 +311,7 @@ class Order {
     weightSettled: j['weight_settled'] is bool ? j['weight_settled'] as bool : null,
     weightRefundAmount: j['weight_refund_amount']?.toString(),
     refundState: normaliseRefundState(j['refund_state']),
+    refundStateSupported: j.containsKey('refund_state'),
     refundStateUpdatedAt: j['refund_state_updated_at'] == null
         ? null
         : DateTime.tryParse(j['refund_state_updated_at'].toString()),
@@ -389,6 +396,7 @@ class Order {
         // must not erase what the bank said.
         refundState: refundState,
         refundStateUpdatedAt: refundStateUpdatedAt,
+        refundStateSupported: refundStateSupported,
         createdAt: createdAt,
         updatedAt: updatedAt,
         scheduledForAt: scheduledForAt,
