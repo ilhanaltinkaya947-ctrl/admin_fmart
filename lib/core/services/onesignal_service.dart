@@ -2,6 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
+import 'morning_check_push.dart';
+import 'staff_push.dart';
+
 class OneSignalService {
   Future<void> init() async {
     // слушаем уведомления в foreground
@@ -24,11 +27,16 @@ class OneSignalService {
         },
       ));
 
+      final data = event.notification.additionalData ?? <String, dynamic>{};
+
       // не блокируем показ — пусть покажется системно, если хочешь
       event.preventDefault();
-      event.notification.display();
+      // 07.11 (contract B): a push that is not a new order is NOT shown by
+      // iOS in the foreground. The system banner would play the staff push
+      // sound (the siren file) for «Клиент подтвердил заказ»; the app shows
+      // its own quiet banner instead.
+      if (shouldDisplayForegroundPush(data)) event.notification.display();
 
-      final data = event.notification.additionalData ?? <String, dynamic>{};
       // Title and body ride along for the quiet banner (contract B): a push
       // that is not a new order shows the server's own text, no siren.
       await onForegroundNotification?.call(

@@ -17,6 +17,12 @@ bool isNewOrderPush(Map<String, dynamic> data) {
   return kind == null || kind == 'new_order';
 }
 
+/// Whether iOS should present a foreground push itself (banner + sound).
+/// A new order (or a push with no kind) and the morning check: yes, as in
+/// 1.2.7. Anything else: no, the app shows a quiet banner of its own.
+bool shouldDisplayForegroundPush(Map<String, dynamic> data) =>
+    data['type'] == 'morning_check' || isNewOrderPush(data);
+
 /// The normalised `data.kind`, or null when the push has none.
 String? staffPushKind(Map<String, dynamic> data) {
   final raw = data['kind'];

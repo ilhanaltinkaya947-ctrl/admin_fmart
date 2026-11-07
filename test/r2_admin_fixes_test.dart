@@ -34,6 +34,38 @@ class _StatusRepo extends FakeOrdersRepository {
       ]);
 }
 
+/// A refund ledger the test controls (GET /admin/orders/{id}/refunds).
+class _LedgerRepo extends FakeOrdersRepository {
+  _LedgerRepo({required super.api, required super.detail});
+  List<RefundHistoryEntry> ledger = const [];
+  List<RefundHistoryEntry> ledgerAfterRefund = const [];
+
+  @override
+  Future<List<RefundHistoryEntry>> getRefundHistory({required int orderId}) async =>
+      ledger;
+
+  @override
+  Future<SimpleActionResponse> refundOrder({
+    required int orderId,
+    required double amount,
+    required String reason,
+    required String idempotencyKey,
+    List<int> oosProductIds = const [],
+  }) async {
+    final r = await super.refundOrder(
+        orderId: orderId,
+        amount: amount,
+        reason: reason,
+        idempotencyKey: idempotencyKey,
+        oosProductIds: oosProductIds);
+    ledger = ledgerAfterRefund;
+    return r;
+  }
+}
+
+RefundHistoryEntry _row(int id, DateTime at) => RefundHistoryEntry(
+    id: id, amount: 100, reason: 'Жалоба клиента', createdBy: 1, createdAt: at);
+
 _StatusRepo _statusRepo(Map<String, dynamic> detail) {
   final base = fakeRepo(detail);
   return _StatusRepo(api: base.api, detail: detail);
@@ -133,6 +165,20 @@ void main() {
       expect(h, contains('if (isNewOrder) newOrderDialogGuard.markShown(orderId);'));
       expect(RegExp(r'^\s*_newOrderCounter\.bump\(\);', multiLine: true)
           .hasMatch(h), isFalse, reason: 'an unconditional bump is back');
+    });
+
+    test('iOS presents only a new order or the morning check in the '
+        'foreground (no siren sound for a quiet kind)', () {
+      expect(shouldDisplayForegroundPush({'order_id': 1}), isTrue);
+      expect(shouldDisplayForegroundPush({'kind': 'new_order'}), isTrue);
+      expect(shouldDisplayForegroundPush({'type': 'morning_check'}), isTrue);
+      expect(shouldDisplayForegroundPush({'kind': 'customer_confirmed'}), isFalse);
+      final svc =
+          File('lib/core/services/onesignal_service.dart').readAsStringSync();
+      expect(svc, contains(
+          'if (shouldDisplayForegroundPush(data)) event.notification.display();'));
+      expect(RegExp(r'^\s*event\.notification\.display\(\);', multiLine: true)
+          .hasMatch(svc), isFalse, reason: 'an unconditional display() is back');
     });
 
     test('the push title and body reach the foreground handler', () {
@@ -250,9 +296,19 @@ void main() {
           'Возврат в обработке');
       expect(
           refundStateViewAfterTap(
-              state: null, updatedAt: null, awaiting: true, awaitingSince: null),
+              state: null, updatedAt: null, awaiting: false, awaitingSince: null),
           isNull,
           reason: 'older server: today\'s behaviour');
+      expect(refundWaitSettled(state: null, updatedAt: null, awaitingSince: t0),
+          isFalse, reason: 'an outage (field left out) must not end the wait');
+      expect(
+          refundStateViewAfterTap(
+                  state: null, updatedAt: null, awaiting: true, awaitingSince: t0)!
+              .text,
+          'Возврат в обработке');
+      expect(refundWaitBaseline(t0, [t1]), t1);
+      expect(refundWaitBaseline(t1, [t0]), t1);
+      expect(refundWaitBaseline(null, const []), isNull);
       expect(refundWaitSettled(state: 'pending', updatedAt: t1, awaitingSince: t0),
           isFalse);
       expect(refundWaitSettled(state: 'failed', updatedAt: t1, awaitingSince: t0),
@@ -335,6 +391,43 @@ void main() {
 
       // The bank answered on the new refund.
       repo.detail = order('refunded', 'done', '2026-11-07T11:00:00Z');
+      await t.pump(const Duration(seconds: 9));
+      await settle(t);
+      expect(find.descendant(of: line, matching: find.text('Возврат оформлен')),
+          findsOneWidget);
+      await disposePage(t);
+    });
+
+    testWidgets('an earlier refund\'s done, newer than the old baseline but '
+        'older than THIS refund\'s ledger row, does not count (critic MED-2)',
+        (t) async {
+      final detail = order('partially-refunded', 'done', '2026-11-07T09:00:00Z');
+      final base = fakeRepo(detail);
+      final repo = _LedgerRepo(api: base.api, detail: detail)
+        ..ledger = [_row(1, DateTime.utc(2026, 11, 7, 8, 59))]
+        ..ledgerAfterRefund = [
+          _row(2, DateTime.utc(2026, 11, 7, 10, 30)),
+          _row(1, DateTime.utc(2026, 11, 7, 8, 59)),
+        ];
+      await pumpOrderPage(t, repo, role: 'admin');
+      await tapRefund(t);
+      final line = find.byKey(const ValueKey('refund-state-line'));
+      // Refund A finished at 10:00 before any poll; B's request row is not
+      // created yet, so payment-service still says done@10:00.
+      repo.detail = order('refunded', 'done', '2026-11-07T10:00:00Z');
+      await t.pump(const Duration(seconds: 9));
+      await settle(t);
+      await scrollTo(t, line);
+      expect(find.descendant(of: line, matching: find.text('Возврат в обработке')),
+          findsOneWidget);
+      // payment-service briefly down: the field is left out. Keep waiting.
+      repo.detail = order('refunded', null, null);
+      await t.pump(const Duration(seconds: 9));
+      await settle(t);
+      expect(find.descendant(of: line, matching: find.text('Возврат в обработке')),
+          findsOneWidget);
+      // B is done.
+      repo.detail = order('refunded', 'done', '2026-11-07T10:31:00Z');
       await t.pump(const Duration(seconds: 9));
       await settle(t);
       expect(find.descendant(of: line, matching: find.text('Возврат оформлен')),

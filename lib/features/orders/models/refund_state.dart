@@ -54,6 +54,24 @@ RefundStateView? refundStateView(String? state) {
   }
 }
 
+/// The baseline a `done` must move past: the later of the server's
+/// refund_state_updated_at before the tap and the newest refund ledger row
+/// (order_refunds.created_at, written by the refund call itself). The ledger
+/// row closes a gap: payment-service reports the WORST request with the newest
+/// timestamp, and the new refund's request row is created later by the queue
+/// consumer. Until then an earlier refund's `done` would otherwise read as
+/// this one's.
+DateTime? refundWaitBaseline(
+  DateTime? beforeTap,
+  Iterable<DateTime> ledgerCreatedAt,
+) {
+  var b = beforeTap;
+  for (final c in ledgerCreatedAt) {
+    if (b == null || c.isAfter(b)) b = c;
+  }
+  return b;
+}
+
 /// What the page should show after the manager tapped a refund (or a cancel
 /// that refunds), while it waits for the server to report on THAT refund.
 ///
@@ -64,15 +82,19 @@ RefundStateView? refundStateView(String? state) {
 /// time, never with the iPad clock, so a wrong device clock cannot keep the
 /// line stuck.
 ///
-/// Returns null when the server does not send `refund_state` at all.
+/// Returns null when the server does not send `refund_state` at all. While
+/// awaiting, a null state is a short payment-service outage (order-service
+/// leaves the field out then), so the line keeps saying «в обработке».
 RefundStateView? refundStateViewAfterTap({
   required String? state,
   required DateTime? updatedAt,
   required bool awaiting,
   required DateTime? awaitingSince,
 }) {
-  if (state == null) return null;
   if (!awaiting) return refundStateView(state);
+  if (state == null) {
+    return const RefundStateView(kRefundPendingText, RefundStateTone.pending);
+  }
   final moved = updatedAt != null &&
       (awaitingSince == null || updatedAt.isAfter(awaitingSince));
   if (!moved) {
@@ -84,13 +106,15 @@ RefundStateView? refundStateViewAfterTap({
 
 /// True once the wait after a tap is over: the server reported on the new
 /// refund (moved past the baseline) with a final word, `done`, `failed` or
-/// `unknown`.
+/// `unknown`. A null state never ends the wait: the wait only starts when the
+/// server sends the field, so null here is a passing outage, and ending the
+/// wait on it would let an OLD `done` read as this refund's.
 bool refundWaitSettled({
   required String? state,
   required DateTime? updatedAt,
   required DateTime? awaitingSince,
 }) {
-  if (state == null) return true; // older server: nothing to wait for
+  if (state == null) return false;
   final moved = updatedAt != null &&
       (awaitingSince == null || updatedAt.isAfter(awaitingSince));
   return moved && (state == 'done' || state == 'failed' || state == 'unknown');

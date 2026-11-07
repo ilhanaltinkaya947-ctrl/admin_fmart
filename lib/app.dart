@@ -344,7 +344,9 @@ class _AppState extends State<App> with WidgetsBindingObserver {
         body: body,
         orderId: orderId,
       )),
-      duration: const Duration(seconds: 6),
+      // 4 s like the morning banner: snackbars queue on the root messenger,
+      // and an order screen's own toast must not wait behind a stack of these.
+      duration: const Duration(seconds: 4),
       behavior: SnackBarBehavior.floating,
       action: orderId == null
           ? null

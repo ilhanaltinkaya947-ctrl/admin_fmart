@@ -113,6 +113,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // attempt of each refund key, so a retry of the same refund keeps it.
   bool _refundAwaiting = false;
   DateTime? _refundAwaitingSince;
+  // True once this page has seen the server send refund_state. A refund
+  // tapped during a short payment-service outage (field left out) still waits.
+  bool _refundStateSeen = false;
+  // The refund ledger must be re-read AFTER the tap before the wait may end:
+  // its newest row is part of the baseline (see refundWaitBaseline).
+  int _refundsLoadSeq = 0;
+  int _refundWaitLedgerSeq = 0;
+  bool _refundLedgerFresh = true;
+
+  DateTime? get _refundBaselineNow => refundWaitBaseline(
+        _refundAwaitingSince,
+        _refunds.map((r) => r.createdAt),
+      );
   final Map<String, DateTime?> _refundBaselines = {};
 
   /// Remember the server's refund timestamp before this refund's first
@@ -123,29 +136,35 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// The server accepted a refund. Start waiting for the bank's answer. A
   /// no-op when the server does not send refund_state (today's behaviour).
   void _startRefundWait(String key) {
-    if (_order.refundState == null) return;
+    _refundStateSeen |= _order.refundState != null;
+    if (!_refundStateSeen) return;
+    _refundLedgerFresh = false;
+    _refundWaitLedgerSeq = _refundsLoadSeq + 1;
     _refundAwaiting = true;
     _refundAwaitingSince = _refundBaselines[key];
   }
 
   /// Stop waiting once the server gave a final word on the new refund.
   void _reconcileRefundWait() {
-    if (!_refundAwaiting) return;
+    if (!_refundAwaiting || !_refundLedgerFresh) return;
     if (refundWaitSettled(
       state: _order.refundState,
       updatedAt: _order.refundStateUpdatedAt,
-      awaitingSince: _refundAwaitingSince,
+      awaitingSince: _refundBaselineNow,
     )) {
       _refundAwaiting = false;
       _refundAwaitingSince = null;
     }
   }
 
-  RefundStateView? get _refundStateView => refundStateViewAfterTap(
+  RefundStateView? get _refundStateView => _refundAwaiting &&
+          !_refundLedgerFresh
+      ? const RefundStateView(kRefundPendingText, RefundStateTone.pending)
+      : refundStateViewAfterTap(
         state: _order.refundState,
         updatedAt: _order.refundStateUpdatedAt,
         awaiting: _refundAwaiting,
-        awaitingSince: _refundAwaitingSince,
+        awaitingSince: _refundBaselineNow,
       );
 
   // Live polling of the order while the detail page is open. Picks up
@@ -526,6 +545,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       setState(() {
         _dropStalePreviews(fresh);
         _order = fresh;
+        _refundStateSeen |= fresh.refundState != null;
         _reconcileRefundWait();
         if (statusChanged) {
           // The status changed under us (e.g. a consumer-driven transition
@@ -542,6 +562,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           }
         }
       });
+      // Waiting on a refund and the ledger was not re-read since the tap
+      // (the load right after it was skipped or failed): read it now.
+      if (_refundAwaiting && !_refundLedgerFresh) unawaited(_loadRefunds());
       if (statusChanged) {
         // Refresh the timeline so the new transition appears below. The
         // status badge at the top already reflects server truth.
@@ -555,12 +578,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
   Future<void> _loadRefunds() async {
     if (_refundsLoading) return;
+    final seq = ++_refundsLoadSeq;
     setState(() => _refundsLoading = true);
     try {
       final repo = context.read<OrdersRepository>();
       final list = await repo.getRefundHistory(orderId: _order.id);
       if (!mounted) return;
-      setState(() => _refunds = list);
+      setState(() {
+        _refunds = list;
+        // A load that STARTED after the refund went out holds its ledger row.
+        if (seq >= _refundWaitLedgerSeq) _refundLedgerFresh = true;
+        _reconcileRefundWait();
+      });
     } catch (_) {
       // Non-blocking — admin can still issue another refund; we just
       // skip showing history if the GET fails.
@@ -1358,13 +1387,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       if (res.success && isRefund) {
         setState(() {
           _startRefundWait(refundKey);
-          _reconcileRefundWait();
         });
+        // The ledger row of this refund is the wait's baseline.
+        _loadRefunds();
       }
       final String text;
       if (!res.success) {
         text = res.message.isNotEmpty ? res.message : 'Не удалось отменить';
-      } else if (isRefund && _order.refundState != null) {
+      } else if (isRefund && _refundAwaiting) {
         text = _refundStateView?.text ?? kRefundPendingText;
       } else {
         text = res.message.isNotEmpty
@@ -1419,13 +1449,13 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         _order = fresh!;
         if (s != 'canceled') {
           _startRefundWait('cancel:${fresh.id}');
-          _reconcileRefundWait();
         }
       });
+      if (s != 'canceled') _loadRefunds();
       final String text;
       if (s == 'canceled') {
         text = 'Заказ отменён';
-      } else if (_order.refundState != null) {
+      } else if (_refundAwaiting) {
         text = _refundStateView?.text ?? kRefundPendingText;
       } else {
         text = 'Оформлен возврат';
@@ -2944,7 +2974,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         _loadRefunds();
         // Contract C: the server queued the refund, the bank has not answered
         // yet. Never «Возврат оформлен» here when the server can tell us more.
-        if (_order.refundState != null) {
+        if (_refundAwaiting) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text(kRefundPendingText)),
           );
