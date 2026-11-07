@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
-import 'morning_check_push.dart';
 import 'staff_push.dart';
 
 class OneSignalService {
