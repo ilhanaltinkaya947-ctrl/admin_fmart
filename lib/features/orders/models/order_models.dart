@@ -1,3 +1,6 @@
+import 'refund_state.dart';
+
+
 class OrdersPage {
   final Pagination pagination;
   final List<Order> items;
@@ -107,6 +110,14 @@ class Order {
   /// Money already returned for weight, settle + manual «Разница по весу», as
   /// the server's money string. Null when absent.
   final String? weightRefundAmount;
+
+  /// Contract C (07.11): the latest payment-service refund_requests status for
+  /// this order, `none | pending | deferred | done | failed | unknown`. Null
+  /// when the key is absent (an older order-service): keep today's behaviour.
+  final String? refundState;
+
+  /// When [refundState] last changed, server clock. Null when absent.
+  final DateTime? refundStateUpdatedAt;
   final DateTime createdAt;
   final DateTime updatedAt;
   // Set only when status == 'scheduled'. ISO UTC string of the next
@@ -161,6 +172,8 @@ class Order {
     this.closed = false,
     this.weightSettled,
     this.weightRefundAmount,
+    this.refundState,
+    this.refundStateUpdatedAt,
     required this.createdAt,
     required this.updatedAt,
     this.scheduledForAt,
@@ -291,6 +304,10 @@ class Order {
     // crash the order screen.
     weightSettled: j['weight_settled'] is bool ? j['weight_settled'] as bool : null,
     weightRefundAmount: j['weight_refund_amount']?.toString(),
+    refundState: normaliseRefundState(j['refund_state']),
+    refundStateUpdatedAt: j['refund_state_updated_at'] == null
+        ? null
+        : DateTime.tryParse(j['refund_state_updated_at'].toString()),
     createdAt: DateTime.tryParse(j['created_at']?.toString() ?? '') ?? DateTime.now(),
     updatedAt: DateTime.tryParse(j['updated_at']?.toString() ?? '') ?? DateTime.now(),
     pickupHoldUntil: j['pickup_hold_until'] != null
@@ -368,6 +385,10 @@ class Order {
         // make a settled order look unsettled and re-open the weight fields.
         weightSettled: weightSettled,
         weightRefundAmount: weightRefundAmount,
+        // Server facts, carried: an optimistic status change after a refund
+        // must not erase what the bank said.
+        refundState: refundState,
+        refundStateUpdatedAt: refundStateUpdatedAt,
         createdAt: createdAt,
         updatedAt: updatedAt,
         scheduledForAt: scheduledForAt,
@@ -906,8 +927,14 @@ String orderStatusRu(String code, {String fulfillmentType = 'delivery'}) {
 ///
 /// 'partially-refunded' allows forward progress so the admin can still
 /// fulfill the remaining (non-refunded) items of the order.
+///
+/// 07.11 (HIGH-1): 'pending-payment' NEVER offers 'paid'. Only the bank (the
+/// payment webhook, auto-heal, the ops «✅ Оплачен» button) may say money
+/// landed. A manager who picked «Оплачен» on an order whose Halyk sheet was
+/// abandoned sent goods out with no money. The only manual move INTO 'paid'
+/// left is releasing a 'scheduled' order, which was paid before it was parked.
 const Map<String, Set<String>> kAdminAllowedTransitions = {
-  'pending-payment': {'paid', 'payment-failed', 'canceled'},
+  'pending-payment': {'payment-failed', 'canceled'},
   'paid': {'processing', 'canceled'},
   'processing': {'ready-for-delivery', 'canceled'},
   'ready-for-delivery': {'delivering'},
@@ -1153,8 +1180,29 @@ Set<String> adminAllowedTransitions(
 
   final deny = kFulfillmentTransitionDeny[fulfillment]?[key] ?? const <String>{};
   final allow = kFulfillmentTransitionAllow[fulfillment]?[key] ?? const <String>{};
-  return {...base.where((t) => !deny.contains(t)), ...allow};
+  final out = {...base.where((t) => !deny.contains(t)), ...allow};
+  // Belt and braces for HIGH-1: whatever the maps above say now or after a
+  // future edit, no status but 'scheduled' (already paid, only parked) may be
+  // moved to 'paid' by hand.
+  if (!kManualPaidFrom.contains(key)) out.remove('paid');
+  return out;
 }
+
+/// The only statuses a person may move to 'paid' by hand. A 'scheduled' order
+/// was paid before it was parked for the morning; nothing else may be marked
+/// paid without the bank saying so.
+const Set<String> kManualPaidFrom = {'scheduled'};
+
+/// True when the app may send this status change at all. The dropdown already
+/// filters to [adminAllowedTransitions]; this is the same rule checked again
+/// at the moment of sending, so a stale selection cannot slip through.
+bool isAdminTransitionAllowed(
+  String from,
+  String to, {
+  String fulfillmentType = 'delivery',
+}) =>
+    adminAllowedTransitions(from, fulfillmentType: fulfillmentType)
+        .contains(to.toLowerCase().trim());
 
 
 class OrderEvent {

@@ -9,6 +9,7 @@ import 'core/api/api_client.dart';
 import 'core/api/api_config.dart';
 import 'core/services/new_order_counter.dart';
 import 'core/services/morning_check_push.dart';
+import 'core/services/staff_push.dart';
 import 'core/services/new_order_dialog_guard.dart';
 import 'core/services/onesignal_service.dart';
 import 'core/services/order_watcher.dart';
@@ -149,12 +150,22 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   }
 
   void _setupOneSignalForegroundHandler() {
-    widget.oneSignalService.onForegroundNotification = (data) async {
+    widget.oneSignalService.onForegroundNotification =
+        (data, {title, body}) async {
       // 26.10: the morning stock question is not an order. No siren, no
       // counter, no «Новый заказ» dialog: a quiet banner instead. Must stay
       // the FIRST thing here, before anything an order push does.
       if (isMorningCheckPush(data)) {
         _showMorningCheckBanner(data);
+        return;
+      }
+      // 07.11 (contract B): only `kind == new_order` (or no kind at all, an
+      // older server) rings. «Клиент подтвердил заказ», a status change, a
+      // refund: a quiet banner and a list refresh. No counter bump, and no
+      // markShown either, so the poller still rings when the order really
+      // turns paid.
+      if (!isNewOrderPush(data)) {
+        await _showQuietStaffPush(data, title: title, body: body);
         return;
       }
       // Bump the unread counter immediately — even if the dialog can't
@@ -287,12 +298,16 @@ class _AppState extends State<App> with WidgetsBindingObserver {
         _openMorningCheck();
         return;
       }
-      _newOrderCounter.bump();
+      // 07.11 (contract B): a tapped push that is not a new order still opens
+      // its order, but it is not counted as a new one and does not tell the
+      // poller the order has rung: the real «Новый заказ» may still be ahead.
+      final isNewOrder = isNewOrderPush(data);
+      if (isNewOrder) _newOrderCounter.bump();
       final int? orderId = widget.oneSignalService.tryExtractOrderId(data);
       if (orderId == null) return;
       // The operator is opening this order: the poller must not ring for it
       // again on resume.
-      newOrderDialogGuard.markShown(orderId);
+      if (isNewOrder) newOrderDialogGuard.markShown(orderId);
 
       final navCtx = _navKey.currentContext;
       final navReady = _navKey.currentState != null && navCtx != null;
@@ -304,6 +319,40 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       }
       await _openOrderById(orderId);
     };
+  }
+
+  /// Foreground staff push that is not a new order (contract B): a banner with
+  /// the push's own text, a quiet list refresh, never a siren or a dialog.
+  Future<void> _showQuietStaffPush(
+    Map<String, dynamic> data, {
+    String? title,
+    String? body,
+  }) async {
+    final orderId = widget.oneSignalService.tryExtractOrderId(data);
+    final storeId = await _prefsStorage.getSelectedStoreId();
+    final ctx = _navKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    if (storeId != null) {
+      unawaited(ctx.read<OrdersCubit>().refreshQuietly(storeId: storeId));
+    }
+    final messenger = ScaffoldMessenger.maybeOf(ctx);
+    if (messenger == null) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text(quietStaffPushText(
+        data,
+        title: title,
+        body: body,
+        orderId: orderId,
+      )),
+      duration: const Duration(seconds: 6),
+      behavior: SnackBarBehavior.floating,
+      action: orderId == null
+          ? null
+          : SnackBarAction(
+              label: 'Открыть',
+              onPressed: () => unawaited(_openOrderById(orderId)),
+            ),
+    ));
   }
 
   /// Foreground morning check push: a banner, never blocking, never ringing.

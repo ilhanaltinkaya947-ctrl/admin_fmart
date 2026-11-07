@@ -66,7 +66,7 @@ void main() {
     // passed all 22 tests green. Written out longhand so a delivery regression
     // has to survive a literal diff.
     const goldenDelivery = <String, Set<String>>{
-      'pending-payment': {'paid', 'payment-failed', 'canceled'},
+      'pending-payment': {'payment-failed', 'canceled'},
       'paid': {'processing', 'canceled'},
       'processing': {'ready-for-delivery', 'canceled'},
       'ready-for-delivery': {'delivering'},

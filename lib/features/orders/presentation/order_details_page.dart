@@ -15,6 +15,7 @@ import '../../delivery/models/delivery_models.dart';
 import '../data/orders_repository.dart';
 import '../models/payment_method_label.dart';
 import '../models/refundable.dart';
+import '../models/refund_state.dart';
 import 'missing_item_choice_banner.dart';
 import 'substitution_sheets.dart';
 import '_sub_tokens.dart';
@@ -105,6 +106,47 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // Refetched after every refund the admin applies via _openRefundSheet.
   List<RefundHistoryEntry> _refunds = const [];
   bool _refundsLoading = false;
+
+  // Contract C (07.11): after the manager taps a refund (or a cancel that
+  // refunds), «Возврат в обработке» stays until the server reports on THAT
+  // refund. The baseline is the refund_state_updated_at seen before the first
+  // attempt of each refund key, so a retry of the same refund keeps it.
+  bool _refundAwaiting = false;
+  DateTime? _refundAwaitingSince;
+  final Map<String, DateTime?> _refundBaselines = {};
+
+  /// Remember the server's refund timestamp before this refund's first
+  /// attempt. Call BEFORE the network call.
+  void _noteRefundBaseline(String key) =>
+      _refundBaselines.putIfAbsent(key, () => _order.refundStateUpdatedAt);
+
+  /// The server accepted a refund. Start waiting for the bank's answer. A
+  /// no-op when the server does not send refund_state (today's behaviour).
+  void _startRefundWait(String key) {
+    if (_order.refundState == null) return;
+    _refundAwaiting = true;
+    _refundAwaitingSince = _refundBaselines[key];
+  }
+
+  /// Stop waiting once the server gave a final word on the new refund.
+  void _reconcileRefundWait() {
+    if (!_refundAwaiting) return;
+    if (refundWaitSettled(
+      state: _order.refundState,
+      updatedAt: _order.refundStateUpdatedAt,
+      awaitingSince: _refundAwaitingSince,
+    )) {
+      _refundAwaiting = false;
+      _refundAwaitingSince = null;
+    }
+  }
+
+  RefundStateView? get _refundStateView => refundStateViewAfterTap(
+        state: _order.refundState,
+        updatedAt: _order.refundStateUpdatedAt,
+        awaiting: _refundAwaiting,
+        awaitingSince: _refundAwaitingSince,
+      );
 
   // Live polling of the order while the detail page is open. Picks up
   // server-side status changes (courier flips to "delivering", payment
@@ -484,6 +526,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       setState(() {
         _dropStalePreviews(fresh);
         _order = fresh;
+        _reconcileRefundWait();
         if (statusChanged) {
           // The status changed under us (e.g. a consumer-driven transition
           // landed during a poll). If the operator's pending dropdown
@@ -629,6 +672,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     final status = (_selectedStatus ?? '').trim();
     if (status.isEmpty) {
       setState(() => _error = 'Выбери статус');
+      return;
+    }
+    // 07.11 (HIGH-1): the dropdown offers only allowed moves, but the order
+    // can change under it (poll, push). Check again against the CURRENT
+    // status, so an unpaid order can never be sent to «Оплачен» from here.
+    if (!isAdminTransitionAllowed(_order.status, status,
+        fulfillmentType: _order.fulfillmentType)) {
+      setState(() {
+        _selectedStatus = null;
+        _error = 'Этот статус сейчас выбрать нельзя. Обновите экран.';
+      });
       return;
     }
 
@@ -1261,6 +1315,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         _performCancel(reason: reason, oosProductIds: oosProductIds);
 
     HapticFeedback.mediumImpact();
+    final refundKey = 'cancel:${_order.id}';
+    _noteRefundBaseline(refundKey);
     setState(() {
       _actionLoading = true;
       _error = null;
@@ -1297,12 +1353,26 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       }
       final isRefund = _order.status == 'refunded' ||
           _order.status == 'partially-refunded';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(res.message.isNotEmpty
+      // Contract C: a cancel that refunded says «Возврат в обработке» until
+      // the bank answers, whatever the server's own message says.
+      if (res.success && isRefund) {
+        setState(() {
+          _startRefundWait(refundKey);
+          _reconcileRefundWait();
+        });
+      }
+      final String text;
+      if (!res.success) {
+        text = res.message.isNotEmpty ? res.message : 'Не удалось отменить';
+      } else if (isRefund && _order.refundState != null) {
+        text = _refundStateView?.text ?? kRefundPendingText;
+      } else {
+        text = res.message.isNotEmpty
             ? res.message
-            : (res.success
-                ? (isRefund ? 'Оформлен возврат' : 'Заказ отменён')
-                : 'Не удалось отменить'))),
+            : (isRefund ? 'Оформлен возврат' : 'Заказ отменён');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(text)),
       );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
@@ -1345,10 +1415,24 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     final s = fresh?.status.toLowerCase();
     final done = s == 'canceled' || s == 'refunded' || s == 'partially-refunded';
     if (fresh != null && done) {
-      setState(() => _order = fresh!);
+      setState(() {
+        _order = fresh!;
+        if (s != 'canceled') {
+          _startRefundWait('cancel:${fresh.id}');
+          _reconcileRefundWait();
+        }
+      });
+      final String text;
+      if (s == 'canceled') {
+        text = 'Заказ отменён';
+      } else if (_order.refundState != null) {
+        text = _refundStateView?.text ?? kRefundPendingText;
+      } else {
+        text = 'Оформлен возврат';
+      }
       _timelineKey.currentState?.refresh();
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(s == 'canceled' ? 'Заказ отменён' : 'Оформлен возврат'),
+        content: Text(text),
       ));
     } else {
       _showError('Не удалось проверить результат. Обновите экран.');
@@ -2808,6 +2892,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     List<int> oosProductIds = const [],
   }) async {
     HapticFeedback.mediumImpact();
+    _noteRefundBaseline(idempotencyKey);
     setState(() {
       _actionLoading = true;
       _error = null;
@@ -2849,11 +2934,22 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         final newStatus = (priorRefunded + amount + 0.0001 >= orderTotal)
             ? 'refunded'
             : 'partially-refunded';
-        setState(() => _order = _order.copyWith(status: newStatus));
+        setState(() {
+          _order = _order.copyWith(status: newStatus);
+          _startRefundWait(idempotencyKey);
+        });
         _timelineKey.currentState?.refresh();
         // Refetch the history so the just-applied refund row appears
         // in the RefundHistorySection.
         _loadRefunds();
+        // Contract C: the server queued the refund, the bank has not answered
+        // yet. Never «Возврат оформлен» here when the server can tell us more.
+        if (_order.refundState != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text(kRefundPendingText)),
+          );
+          return;
+        }
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Возврат оформлен' : 'Не удалось оформить возврат'))),
@@ -3248,6 +3344,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           // been refunded at least once. Each row shows the amount,
           // reason, who did it, and when. Useful for audit when multiple
           // partial refunds happen.
+          // Contract C: what the bank said about the latest refund.
+          if (_refundStateView != null) ...[
+            const SizedBox(height: 16),
+            _RefundStateLine(view: _refundStateView!),
+          ],
           if (_orderEverRefunded) ...[
             const SizedBox(height: 16),
             _RefundHistorySection(
@@ -3584,6 +3685,54 @@ String _pluralItems(int n) {
 /// Append-only refund history. Reads /admin/orders/{id}/refunds and
 /// renders newest-first. Loading state is a thin progress strip — the
 /// section is non-critical so we never block the page on it.
+/// One line under the actions: «Возврат в обработке», «Возврат оформлен» or
+/// «Возврат требует проверки…», from the server's refund_state (contract C).
+class _RefundStateLine extends StatelessWidget {
+  final RefundStateView view;
+  const _RefundStateLine({required this.view});
+
+  @override
+  Widget build(BuildContext context) {
+    final (Color bg, Color fg, IconData icon) = switch (view.tone) {
+      RefundStateTone.done => (
+          const Color(0xFFE8F5E9),
+          const Color(0xFF2E7D32),
+          Icons.check_circle_outline,
+        ),
+      RefundStateTone.pending => (
+          const Color(0xFFFFF8E1),
+          const Color(0xFF8D6E00),
+          Icons.hourglass_top,
+        ),
+      RefundStateTone.problem => (
+          const Color(0xFFFFEBEE),
+          const Color(0xFFC62828),
+          Icons.error_outline,
+        ),
+    };
+    return Container(
+      key: const ValueKey('refund-state-line'),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: fg, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              view.text,
+              style: TextStyle(color: fg, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _RefundHistorySection extends StatelessWidget {
   final List<RefundHistoryEntry> items;
   final bool loading;

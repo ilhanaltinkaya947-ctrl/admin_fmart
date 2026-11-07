@@ -307,7 +307,7 @@ void main() {
 
     test('foreground: no counter, no siren, no dialog for a morning push', () {
       final src = File('lib/app.dart').readAsStringSync();
-      final h = handler(src, 'onForegroundNotification = (data) async {');
+      final h = handler(src, 'onForegroundNotification =');
       final branch = h.indexOf('if (isMorningCheckPush(data))');
       expect(branch, greaterThan(-1));
       final ret = h.indexOf('return;', branch);

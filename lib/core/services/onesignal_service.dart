@@ -29,7 +29,13 @@ class OneSignalService {
       event.notification.display();
 
       final data = event.notification.additionalData ?? <String, dynamic>{};
-      await onForegroundNotification?.call(data);
+      // Title and body ride along for the quiet banner (contract B): a push
+      // that is not a new order shows the server's own text, no siren.
+      await onForegroundNotification?.call(
+        data,
+        title: event.notification.title,
+        body: event.notification.body,
+      );
     });
 
     // Notification TAP (open) handler. Fires when staff tap a push while the
@@ -100,6 +106,10 @@ class OneSignalService {
     return null;
   }
 
-  Future<void> Function(Map<String, dynamic> data)? onForegroundNotification;
+  Future<void> Function(
+    Map<String, dynamic> data, {
+    String? title,
+    String? body,
+  })? onForegroundNotification;
   Future<void> Function(Map<String, dynamic> data)? onNotificationClick;
 }
