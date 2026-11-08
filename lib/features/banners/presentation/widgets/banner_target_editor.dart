@@ -60,6 +60,24 @@ class _BannerTargetEditorState extends State<BannerTargetEditor> {
   }
 
   Future<void> _addToCollection() async {
+    // A shop's own list REPLACES the shared one there: offer to start from a
+    // copy, or one extra gift set would leave that shop with a single product.
+    final shared = t.lists['all'] ?? const <PickedProduct>[];
+    if (_scope != 'all' && (t.lists[_scope] ?? const []).isEmpty && shared.isNotEmpty) {
+      final copy = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Свой список магазина'),
+          content: const Text('Свой список заменит общий в этом магазине. Начать с копии общего списка?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('Начать с пустого')),
+            ElevatedButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('Скопировать общий')),
+          ],
+        ),
+      );
+      if (copy == null || !mounted) return;
+      if (copy) _changed(() => t.lists[_scope] = [...shared]);
+    }
     final list = t.lists.putIfAbsent(_scope, () => <PickedProduct>[]);
     final got = await Navigator.of(context).push<List<PickedProduct>>(MaterialPageRoute(
       builder: (_) => BannerProductPickerPage(repo: widget.repo, multi: true, already: list, storeNames: _storeNames),
@@ -115,7 +133,7 @@ class _BannerTargetEditorState extends State<BannerTargetEditor> {
       case BannerActionKind.deals:
         return _hint('Откроется раздел «Акции» выбранного покупателем магазина.');
       case BannerActionKind.info:
-        return const SizedBox.shrink(); // the info page editor sits below
+        return _hint('Откроется страница с текстом, картинками и, если нужно, кнопкой. Заполните её ниже.');
       case BannerActionKind.product:
         final p = t.product;
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -152,11 +170,13 @@ class _BannerTargetEditorState extends State<BannerTargetEditor> {
         ]);
       case BannerActionKind.shelf:
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _hint('Откроется сезонная полка целиком. Пока полки с этим ключом нет в магазине, баннер там не покажется.'),
+          _hint('Откроется сезонная полка целиком, например «Новогодние подарки». '
+              'В магазине, где полка сейчас не идёт, баннер не покажется.'),
           TextField(
             controller: _shelf,
             onChanged: (v) => _changed(() => t.shelfKey = v.trim()),
-            decoration: const InputDecoration(labelText: 'Ключ полки', hintText: 'new_year_2027', border: OutlineInputBorder()),
+            decoration: const InputDecoration(
+                labelText: 'Код полки (даёт техподдержка)', hintText: 'new_year_2027', border: OutlineInputBorder()),
           ),
         ]);
       case BannerActionKind.collection:
@@ -222,6 +242,11 @@ class _BannerTargetEditorState extends State<BannerTargetEditor> {
                 tooltip: 'Выше',
                 icon: const Icon(Icons.arrow_upward, size: 18),
                 onPressed: i == 0 ? null : () => _changed(() => list.insert(i - 1, list.removeAt(i))),
+              ),
+              IconButton(
+                tooltip: 'Ниже',
+                icon: const Icon(Icons.arrow_downward, size: 18),
+                onPressed: i == list.length - 1 ? null : () => _changed(() => list.insert(i + 1, list.removeAt(i))),
               ),
               IconButton(
                 tooltip: 'Убрать',

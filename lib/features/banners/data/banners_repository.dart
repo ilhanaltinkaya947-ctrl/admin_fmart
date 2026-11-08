@@ -355,6 +355,22 @@ class BannersRepository {
         .toList();
   }
 
+  /// Names (and pictures) of a saved banner's products, so a reopened banner
+  /// reads as names. Missing ids are simply absent.
+  Future<Map<int, BannerProductHit>> productNames(List<int> ids) async {
+    if (ids.isEmpty) return const {};
+    final resp = await api.dio.get('$_adminPath/targets/products', queryParameters: {'ids': ids.take(200).join(',')});
+    return {
+      for (final m in asJsonList(resp.data))
+        if (m['id'] is num)
+          (m['id'] as num).toInt(): BannerProductHit(
+            id: (m['id'] as num).toInt(),
+            name: '${m['name'] ?? ''}',
+            imageUrl: m['image_url'] as String?,
+          ),
+    };
+  }
+
   Future<List<BannerCategory>> categories() async {
     final resp = await api.dio.get('$_adminPath/targets/categories');
     return asJsonList(resp.data)

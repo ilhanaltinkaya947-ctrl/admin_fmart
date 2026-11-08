@@ -72,8 +72,11 @@ class _BannerInfoEditorState extends State<BannerInfoEditor> {
     setState(() => _uploading = true);
     try {
       final url = await widget.repo.uploadInfoImage(file);
-      if (!mounted) return;
-      _changed(() => d.blocks.add(InfoBlockDraft(InfoBlockKind.image, url: url)));
+      // Into the draft first: this editor may have scrolled out of the list
+      // (and been disposed) while the upload ran; the page is still open.
+      d.blocks.add(InfoBlockDraft(InfoBlockKind.image, url: url));
+      widget.onChanged();
+      if (mounted) setState(() {});
     } on BannerValidationException catch (e) {
       if (mounted) _snack(e.message);
     } catch (_) {
@@ -215,9 +218,30 @@ class _BannerInfoEditorState extends State<BannerInfoEditor> {
               onPressed: i == 0 ? null : () => _changed(() => d.blocks.insert(i - 1, d.blocks.removeAt(i))),
             ),
             IconButton(
+              tooltip: 'Ниже',
+              icon: const Icon(Icons.arrow_downward, size: 18),
+              onPressed: i == d.blocks.length - 1
+                  ? null
+                  : () => _changed(() => d.blocks.insert(i + 1, d.blocks.removeAt(i))),
+            ),
+            IconButton(
               tooltip: 'Удалить блок',
               icon: const Icon(Icons.delete_outline, size: 18),
-              onPressed: () => _changed(() => d.blocks.removeAt(i)),
+              onPressed: () {
+                final removed = d.blocks[i];
+                _changed(() => d.blocks.removeAt(i));
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: const Text('Блок удалён'),
+                  action: SnackBarAction(
+                    label: 'Вернуть',
+                    onPressed: () {
+                      d.blocks.insert(i.clamp(0, d.blocks.length), removed);
+                      widget.onChanged();
+                      if (mounted) setState(() {});
+                    },
+                  ),
+                ));
+              },
             ),
           ]),
           if (b.kind == InfoBlockKind.image)

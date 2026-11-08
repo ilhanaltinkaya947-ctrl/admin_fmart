@@ -11,7 +11,7 @@ enum BannerActionKind {
   category('category', 'Категория'),
   deals('deals', 'Акции'),
   search('search', 'Поиск'),
-  info('info', 'Страница'),
+  info('info', 'Инфо-страница'),
   shelf('shelf', 'Сезонная полка');
 
   const BannerActionKind(this.wire, this.label);
@@ -32,6 +32,8 @@ class PickedProduct {
   final String name;
   final String? imageUrl;
   const PickedProduct({required this.id, this.name = '', this.imageUrl});
+
+  PickedProduct named(String n, String? image) => PickedProduct(id: id, name: n, imageUrl: image ?? imageUrl);
 
   String get label => name.isEmpty ? 'Товар $id' : name;
 }
@@ -89,6 +91,26 @@ class BannerTarget {
     }
   }
 
+  /// Every product id this target names (to look their names up).
+  List<int> productIds() => [
+        if (kind == BannerActionKind.product && product != null) product!.id,
+        if (kind == BannerActionKind.collection)
+          for (final l in lists.values) for (final p in l) p.id,
+      ];
+
+  /// Puts names on products known only by id.
+  void applyNames(Map<int, ({String name, String? image})> names) {
+    PickedProduct fill(PickedProduct p) {
+      final n = names[p.id];
+      return (n == null || p.name.isNotEmpty) ? p : p.named(n.name, n.image);
+    }
+
+    if (product != null) product = fill(product!);
+    for (final k in lists.keys.toList()) {
+      lists[k] = [for (final p in lists[k]!) fill(p)];
+    }
+  }
+
   /// A first, local check before the round trip; the server has the last word.
   String? localError() {
     switch (kind) {
@@ -101,7 +123,7 @@ class BannerTarget {
       case BannerActionKind.search:
         return query.trim().length < 2 ? 'Текст поиска: минимум 2 символа' : null;
       case BannerActionKind.shelf:
-        return RegExp(r'^[a-z0-9_]{1,40}$').hasMatch(shelfKey.trim()) ? null : 'Полка: ключ вида new_year_2027';
+        return RegExp(r'^[a-z0-9_]{1,40}$').hasMatch(shelfKey.trim()) ? null : 'Неверный код полки';
       default:
         return null;
     }

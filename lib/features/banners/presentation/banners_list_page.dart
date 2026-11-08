@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../stores/data/stores_repository.dart';
 import '../data/banner_action_draft.dart';
 import '../data/banner_models.dart';
 import '../data/banners_repository.dart';
@@ -22,6 +23,7 @@ class _BannersListPageState extends State<BannersListPage> {
   /// 08.11: impressions and taps per banner, last 30 days. Empty while
   /// loading or when the read failed (the list never waits for it).
   Map<int, BannerStats> _stats = const {};
+  Map<int, String> _storeNames = const {};
 
   @override
   void initState() {
@@ -30,8 +32,16 @@ class _BannersListPageState extends State<BannersListPage> {
       if (mounted) {
         context.read<BannersCubit>().load();
         _loadStats();
+        _loadStoreNames();
       }
     });
+  }
+
+  Future<void> _loadStoreNames() async {
+    try {
+      final s = await context.read<StoresRepository>().getStores();
+      if (mounted) setState(() => _storeNames = {for (final x in s) x.storeId: x.storeName});
+    } catch (_) {/* numbers stay */}
   }
 
   Future<void> _loadStats() async {
@@ -281,6 +291,7 @@ class _BannersListPageState extends State<BannersListPage> {
                     index: i,
                     banner: b,
                     stats: _stats[b.id],
+                    storeNames: _storeNames,
                     onEdit: () => _openEdit(banner: b),
                     onDelete: () => _confirmDelete(b),
                   ),
@@ -325,6 +336,7 @@ class _BannerTile extends StatelessWidget {
   final int index;
   final BannerItem banner;
   final BannerStats? stats;
+  final Map<int, String> storeNames;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
@@ -334,6 +346,7 @@ class _BannerTile extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     this.stats,
+    this.storeNames = const {},
   });
 
   @override
@@ -424,7 +437,7 @@ class _BannerTile extends StatelessWidget {
                       ],
                       const SizedBox(height: 4),
                       Text(
-                        bannerActionSummary(banner),
+                        bannerActionSummary(banner, storeNames: storeNames),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -433,10 +446,10 @@ class _BannerTile extends StatelessWidget {
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
-                      if (stats != null && (stats!.impressions > 0 || stats!.taps > 0)) ...[
+                      if (stats != null) ...[
                         const SizedBox(height: 2),
                         Text(
-                          bannerStatsLine(stats!),
+                          bannerStatsLine(stats!, tappable: banner.actionKind != BannerActionKind.none),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant),
@@ -520,7 +533,7 @@ class _StatusChip extends StatelessWidget {
 
 
 /// One line under the banner: what a tap opens, and where it shows.
-String bannerActionSummary(BannerItem b) {
+String bannerActionSummary(BannerItem b, {Map<int, String> storeNames = const {}}) {
   final a = b.action ?? const <String, dynamic>{};
   final what = switch (b.actionKind) {
     BannerActionKind.none => 'Без действия',
@@ -528,25 +541,27 @@ String bannerActionSummary(BannerItem b) {
     BannerActionKind.collection => () {
         final lists = a['product_ids'] is Map ? (a['product_ids'] as Map) : const {};
         final all = lists['all'] is List ? (lists['all'] as List).length : 0;
+        final own = lists.keys.where((k) => k != 'all').length;
         final title = (a['title_ru'] as String?) ?? 'Подборка';
-        return '$title · $all тов.${lists.length > (lists.containsKey('all') ? 1 : 0) ? ' + списки магазинов' : ''}';
+        final count = all > 0 ? '$all тов.' : 'без общего списка';
+        return '$title · $count${own > 0 ? ' + свои списки: $own' : ''}';
       }(),
     BannerActionKind.category => 'Категория № ${a['category_id'] ?? ''}',
     BannerActionKind.deals => 'Открывает «Акции»',
     BannerActionKind.search => 'Поиск «${a['query'] ?? ''}»',
     BannerActionKind.info => 'Страница «${a['title_ru'] ?? ''}»',
-    BannerActionKind.shelf => 'Полка ${a['key'] ?? ''}',
+    BannerActionKind.shelf => 'Сезонная полка ${a['key'] ?? ''}',
   };
-  final where = b.storeIds.isEmpty ? '' : ' · магазины ${b.storeIds.join(', ')}';
+  final where = b.storeIds.isEmpty ? '' : ' · ${b.storeIds.map((id) => storeNames[id] ?? 'магазин $id').join(', ')}';
   final hours = (b.dailyFrom != null || b.dailyTo != null)
-      ? ' · ${b.dailyFrom ?? '00:00'} до ${b.dailyTo ?? '24:00'}'
+      ? ' ·${b.dailyFrom != null ? ' с ${b.dailyFrom}' : ''}${b.dailyTo != null ? ' до ${b.dailyTo}' : ''}'
       : '';
-  final build = b.minAppBuild != null ? ' · с ${b.minAppBuild}' : '';
+  final build = b.minAppBuild != null ? ' · только 2.0.9 и новее' : '';
   return '$what$where$hours$build';
 }
 
-/// «Показы 1 234 · Нажатия 56 · 4,5 %» (30 days).
-String bannerStatsLine(BannerStats s) {
+/// «За 30 дней (приложение 2.0.9+): показы 1 234 · нажатия 56 · нажимают 4,5 %».
+String bannerStatsLine(BannerStats s, {bool tappable = true}) {
   String n(int v) {
     final str = '$v';
     final out = StringBuffer();
@@ -557,7 +572,9 @@ String bannerStatsLine(BannerStats s) {
     return out.toString();
   }
 
+  if (s.impressions == 0 && s.taps == 0) return 'За 30 дней: пока нет показов';
   final rate = s.rate;
-  final r = rate == null ? '' : ' · ${rate.toStringAsFixed(1).replaceAll('.', ',')}\u00A0%';
-  return 'За 30 дней: показы ${n(s.impressions)} · нажатия ${n(s.taps)}$r';
+  final r = (!tappable || rate == null) ? '' : ' · нажимают ${rate.toStringAsFixed(1).replaceAll('.', ',')}\u00A0%';
+  final taps = tappable ? ' · нажатия ${n(s.taps)}' : '';
+  return 'За 30 дней (приложение 2.0.9+): показы ${n(s.impressions)}$taps$r';
 }

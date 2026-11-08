@@ -22,7 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// A repository whose transport answers from [answer] and records requests.
 class _Wire {
   final List<RequestOptions> sent = [];
-  Response<dynamic> Function(RequestOptions o)? answer;
+  Response<dynamic>? Function(RequestOptions o)? answer;
 
   BannersRepository repo() {
     final api = ApiClient(baseUrl: 'http://localhost', tokenStorage: TokenStorage(), onUnauthorized: () {});
@@ -181,7 +181,7 @@ void main() {
     test('local checks before the round trip', () {
       expect(BannerTarget(kind: BannerActionKind.product).localError(), 'Выберите товар');
       expect(BannerTarget(kind: BannerActionKind.search, query: 'a').localError(), contains('минимум 2'));
-      expect(BannerTarget(kind: BannerActionKind.shelf, shelfKey: 'New Year').localError(), contains('ключ'));
+      expect(BannerTarget(kind: BannerActionKind.shelf, shelfKey: 'New Year').localError(), 'Неверный код полки');
       expect(BannerInfoDraft().localError(), 'Страница: заполните заголовок');
       expect(BannerInfoDraft(titleRu: 'X').localError(), 'Страница: блок 1 пустой');
     });
@@ -203,9 +203,13 @@ void main() {
       expect(b.actionKind, BannerActionKind.shelf);
       expect(b.storeIds, [3]);
       expect((b.dailyFrom, b.dailyTo, b.minAppBuild), ('19:00', null, 265));
-      expect(bannerActionSummary(b), 'Полка new_year_2027 · магазины 3 · 19:00 до 24:00 · с 265');
+      expect(bannerActionSummary(b, storeNames: {3: 'Фиркан Сити'}),
+          'Сезонная полка new_year_2027 · Фиркан Сити · с 19:00 · только 2.0.9 и новее');
       expect(bannerStatsLine(const BannerStats(impressions: 12345, taps: 617)),
-          'За 30 дней: показы 12 345 · нажатия 617 · 5,0 %');
+          'За 30 дней (приложение 2.0.9+): показы 12\u00A0345 · нажатия 617 · нажимают 5,0\u00A0%');
+      expect(bannerStatsLine(const BannerStats(impressions: 40), tappable: false),
+          'За 30 дней (приложение 2.0.9+): показы 40');
+      expect(bannerStatsLine(const BannerStats()), 'За 30 дней: пока нет показов');
     });
   });
 
@@ -262,6 +266,145 @@ void main() {
       expect(keys(patch.data), isNot(contains('action_type')));
       expect(field(patch.data, 'title'), 'Сыр');
       expect(field(patch.data, 'min_app_build'), '265');
+    });
+
+    BannerItem existing({String actionType = 'none', Map<String, dynamic>? action, int? floor}) => BannerItem(
+          id: 7,
+          imageUrl: '',
+          sortOrder: 0,
+          active: true,
+          createdAt: DateTime(2026),
+          updatedAt: DateTime(2026),
+          actionType: actionType,
+          action: action,
+          minAppBuild: floor,
+        );
+
+    void tall(WidgetTester t) {
+      t.view.physicalSize = const Size(1200, 3200);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+    }
+
+    testWidgets('a plain banner that gains an action gets «только новые версии» by default', (t) async {
+      tall(t);
+      await t.pumpWidget(app(BannerEditPage(banner: existing()), _Wire().repo()));
+      await t.tap(find.byKey(const ValueKey('banner-kind-deals')));
+      await t.pump();
+      expect(t.widget<SwitchListTile>(find.byKey(const ValueKey('banner-only-new'))).value, isTrue);
+    });
+
+    testWidgets('back to «Только картинка»: the version limit goes too', (t) async {
+      tall(t);
+      final w = _Wire();
+      await t.pumpWidget(app(BannerEditPage(banner: existing(actionType: 'deals', floor: 265)), w.repo()));
+      await t.tap(find.byKey(const ValueKey('banner-kind-none')));
+      await t.pump();
+      await t.ensureVisible(find.byKey(const ValueKey('banner-save')));
+      await t.tap(find.byKey(const ValueKey('banner-save')));
+      await t.pumpAndSettle();
+      final patch = w.sent.firstWhere((o) => o.method == 'PATCH');
+      expect(field(patch.data, 'min_app_build'), 'null');
+      expect(field(patch.data, 'action_type'), 'none');
+    });
+
+    testWidgets('a script-set floor (270) is kept on save', (t) async {
+      tall(t);
+      final w = _Wire();
+      await t.pumpWidget(app(BannerEditPage(banner: existing(actionType: 'deals', floor: 270)), w.repo()));
+      await t.ensureVisible(find.byKey(const ValueKey('banner-save')));
+      await t.tap(find.byKey(const ValueKey('banner-save')));
+      await t.pumpAndSettle();
+      expect(field(w.sent.firstWhere((o) => o.method == 'PATCH').data, 'min_app_build'), '270');
+    });
+
+    testWidgets('leaving with changes asks first; without changes it just goes', (t) async {
+      tall(t);
+      final w = _Wire();
+      await t.pumpWidget(BlocProvider(
+        create: (_) => BannersCubit(repo: w.repo()),
+        child: MaterialApp(
+          home: Builder(
+            builder: (c) => TextButton(
+              onPressed: () => Navigator.of(c).push(MaterialPageRoute(builder: (_) => BlocProvider.value(
+                    value: c.read<BannersCubit>(),
+                    child: BannerEditPage(banner: existing()),
+                  ))),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await t.tap(find.text('open'));
+      await t.pumpAndSettle();
+      await t.pageBack();
+      await t.pumpAndSettle();
+      expect(find.byType(BannerEditPage), findsNothing, reason: 'nothing changed: no question');
+      await t.tap(find.text('open'));
+      await t.pumpAndSettle();
+      await t.enterText(find.widgetWithText(TextField, 'Название (для админки)'), 'Новое');
+      await t.pageBack();
+      await t.pumpAndSettle();
+      expect(find.text('Выйти без сохранения?'), findsOneWidget);
+      await t.tap(find.text('Остаться'));
+      await t.pumpAndSettle();
+      expect(find.byType(BannerEditPage), findsOneWidget);
+      await t.pageBack();
+      await t.pumpAndSettle();
+      await t.tap(find.text('Выйти'));
+      await t.pumpAndSettle();
+      expect(find.byType(BannerEditPage), findsNothing);
+    });
+
+    testWidgets('a changed action that no chosen shop can show: asks before saving', (t) async {
+      tall(t);
+      final w = _Wire()
+        ..answer = (o) => o.path.endsWith('check-action')
+            ? Response<dynamic>(requestOptions: o, statusCode: 200, data: {
+                'ok': true,
+                'checked': 'action',
+                'stores': [
+                  {'store_id': 3, 'store_name': 'Фиркан Сити', 'orderable': 0, 'total': 1},
+                ],
+              })
+            : Response<dynamic>(requestOptions: o, statusCode: 200, data: <String, dynamic>{
+                'id': 7,
+                'image_url': 'x',
+                'sort_order': 0,
+                'active': true,
+                'created_at': '2026-11-08T10:00:00Z',
+                'updated_at': '2026-11-08T10:00:00Z',
+              });
+      await t.pumpWidget(app(BannerEditPage(banner: existing()), w.repo()));
+      await t.tap(find.byKey(const ValueKey('banner-kind-shelf')));
+      await t.pump();
+      await t.ensureVisible(find.byKey(const ValueKey('banner-save')));
+      await t.tap(find.byKey(const ValueKey('banner-save')));
+      await t.pumpAndSettle();
+      expect(find.text('Баннер сейчас нигде не покажется'), findsOneWidget);
+      await t.tap(find.text('Вернуться'));
+      await t.pumpAndSettle();
+      expect(w.sent.where((o) => o.method == 'PATCH'), isEmpty);
+      expect(find.text('Фиркан Сити: полка здесь сейчас не идёт, баннер не покажется'), findsOneWidget);
+    });
+
+    testWidgets('a reopened collection reads as names, not numbers', (t) async {
+      tall(t);
+      final w = _Wire()
+        ..answer = (o) => o.path.endsWith('targets/products')
+            ? Response<dynamic>(requestOptions: o, statusCode: 200, data: [
+                {'id': 5, 'name': 'Набор Рахат', 'image_url': null, 'stores': []},
+              ])
+            : null;
+      await t.pumpWidget(app(
+          BannerEditPage(
+              banner: existing(actionType: 'collection', action: {
+            'product_ids': {'all': [5]}
+          })),
+          w.repo()));
+      await t.pumpAndSettle();
+      expect(find.text('Набор Рахат'), findsOneWidget);
+      expect(w.sent.first.queryParameters['ids'], '5');
     });
 
     testWidgets('preview: «Смотреть» on a sell banner, «Подробнее» on a page, nothing without an action', (t) async {

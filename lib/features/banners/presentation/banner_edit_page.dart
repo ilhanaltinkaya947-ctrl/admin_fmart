@@ -66,6 +66,12 @@ class _BannerEditPageState extends State<BannerEditPage> {
   bool _checking = false;
   BannerCheckResult? _check;
   String? _checkError;
+  int _checkGen = 0;
+  bool _storesFailed = false;
+
+  /// What the form held when it opened; leaving with anything else asks.
+  late String _initialSnapshot;
+  bool _leaving = false;
 
   BannersRepository get _repo => context.read<BannersCubit>().repo;
 
@@ -86,17 +92,96 @@ class _BannerEditPageState extends State<BannerEditPage> {
       _dailyFrom = _tod(b.dailyFrom);
       _dailyTo = _tod(b.dailyTo);
       _onlyNew = b.minAppBuild != null;
-      _onlyNewTouched = true;
+      // A banner that already has an action keeps its own choice; a plain
+      // one that GAINS an action gets the new-builds default (contract §3).
+      _onlyNewTouched = b.minAppBuild != null || b.actionKind != BannerActionKind.none;
       _action = BannerActionDraft.fromJson(b.actionType, b.action);
+      _loadNames();
     } else {
       _action = BannerActionDraft();
       _actionDirty = true;
     }
+    _loadStores();
+    _initialSnapshot = _snapshot();
+  }
+
+  void _loadStores() {
     try {
       context.read<StoresRepository>().getStores().then((s) {
-        if (mounted) setState(() => _allStores = s);
-      }).catchError((_) {});
+        if (mounted) setState(() {
+          _allStores = s;
+          _storesFailed = false;
+        });
+      }).catchError((_) {
+        if (mounted) setState(() => _storesFailed = true);
+      });
     } catch (_) {/* no stores repository above (tests) */}
+  }
+
+  /// A reopened banner knows its products and category by number only:
+  /// fetch their names so the lists read as names.
+  Future<void> _loadNames() async {
+    final targets = [_action.target, _action.info.cta];
+    final ids = {for (final t in targets) ...t.productIds()}.toList();
+    try {
+      if (ids.isNotEmpty) {
+        final names = await _repo.productNames(ids);
+        final m = {for (final e in names.entries) e.key: (name: e.value.name, image: e.value.imageUrl)};
+        for (final t in targets) {
+          t.applyNames(m);
+        }
+      }
+      if (targets.any((t) => t.kind == BannerActionKind.category && t.categoryId != null && t.categoryName.isEmpty)) {
+        final cats = {for (final c in await _repo.categories()) c.id: c.name};
+        for (final t in targets) {
+          if (t.categoryId != null && t.categoryName.isEmpty) t.categoryName = cats[t.categoryId] ?? '';
+        }
+      }
+    } catch (_) {/* numbers stay; nothing is lost */}
+    if (mounted) setState(() {});
+  }
+
+  /// Everything the save would send, as one string (leave-without-saving).
+  String _snapshot() => [
+        _titleCtrl.text,
+        _positionCtrl.text,
+        _badgeRuCtrl.text,
+        _badgeKkCtrl.text,
+        _active,
+        _startsAt,
+        _endsAt,
+        _startsCleared,
+        _endsCleared,
+        ([..._stores]..sort()).join(','),
+        _hhmm(_dailyFrom),
+        _hhmm(_dailyTo),
+        _onlyNew,
+        _pickedImage?.path,
+        _action.kind.wire,
+        _action.payload().toString(),
+      ].join('|');
+
+  Future<void> _maybeLeave() async {
+    if (_snapshot() == _initialSnapshot) {
+      _leaving = true;
+      Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Выйти без сохранения?'),
+        content: const Text('Изменения пропадут.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('Остаться')),
+          TextButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('Выйти')),
+        ],
+      ),
+    );
+    if (leave == true && mounted) {
+      _leaving = true;
+      Navigator.of(context).pop();
+    }
   }
 
   static TimeOfDay? _tod(String? hhmm) {
@@ -120,6 +205,7 @@ class _BannerEditPageState extends State<BannerEditPage> {
   }
 
   void _actionChanged() {
+    if (!mounted) return;
     setState(() {
       _actionDirty = true;
       _check = null;
@@ -130,12 +216,15 @@ class _BannerEditPageState extends State<BannerEditPage> {
     });
   }
 
-  Future<void> _runCheck() async {
+  /// «Проверить»: the server's per-shop availability. Returns the result
+  /// (null on a local or server refusal, which is shown inline).
+  Future<BannerCheckResult?> _runCheck() async {
     final local = _action.localError();
     if (local != null) {
       setState(() => _checkError = local);
-      return;
+      return null;
     }
+    final gen = ++_checkGen;
     setState(() {
       _checking = true;
       _check = null;
@@ -143,14 +232,47 @@ class _BannerEditPageState extends State<BannerEditPage> {
     });
     try {
       final r = await _repo.checkAction(_action.kind.wire, _action.payload());
-      if (mounted) setState(() => _check = r);
+      // A newer edit or check started meanwhile: this answer is stale.
+      if (!mounted || gen != _checkGen) return null;
+      setState(() => _check = r);
+      return r;
     } on BannerValidationException catch (e) {
-      if (mounted) setState(() => _checkError = e.message);
+      if (mounted && gen == _checkGen) setState(() => _checkError = e.message);
+      return null;
     } catch (_) {
-      if (mounted) setState(() => _checkError = 'Не удалось проверить: нет связи с сервером');
+      if (mounted && gen == _checkGen) setState(() => _checkError = 'Не удалось проверить: нет связи с сервером');
+      return null;
     } finally {
-      if (mounted) setState(() => _checking = false);
+      if (mounted && gen == _checkGen) setState(() => _checking = false);
     }
+  }
+
+  /// The shops this banner is for (all when none is picked).
+  bool _targets(int storeId) => _stores.isEmpty || _stores.contains(storeId);
+
+  /// Why the banner would not show right now, from this form alone.
+  List<String> _localReasons() {
+    String d(DateTime x) => _fmt(x);
+    final now = DateTime.now();
+    final out = <String>[];
+    if (!_active) out.add('Выключен переключатель «Показывать на главной»');
+    if (_endsAt != null && !_endsAt!.isAfter(now)) out.add('Показ закончился ${d(_endsAt!)}');
+    if (_startsAt != null && _startsAt!.isAfter(now)) out.add('Показ начнётся ${d(_startsAt!)}');
+    if (_dailyFrom != null || _dailyTo != null) {
+      final t = now.hour * 60 + now.minute;
+      final f = _dailyFrom == null ? null : _dailyFrom!.hour * 60 + _dailyFrom!.minute;
+      final u = _dailyTo == null ? null : _dailyTo!.hour * 60 + _dailyTo!.minute;
+      final inside = f != null && u != null
+          ? (f <= u ? (t >= f && t < u) : (t >= f || t < u))
+          : (f != null ? t >= f : t < u!);
+      if (!inside) {
+        out.add('Сейчас не время показа: ${_hhmm(_dailyFrom) == null ? '' : 'с ${_hhmm(_dailyFrom)} '}'
+                '${_hhmm(_dailyTo) == null ? '' : 'до ${_hhmm(_dailyTo)}'}'
+            .trim());
+      }
+    }
+    if (_onlyNew && _action.kind != BannerActionKind.none) out.add('Только в приложении 2.0.9 и новее');
+    return out;
   }
 
   Future<void> _pickDaily({required bool from}) async {
@@ -307,6 +429,31 @@ class _BannerEditPageState extends State<BannerEditPage> {
     }
 
     final hasAction = _action.kind != BannerActionKind.none;
+    // A sell banner that no targeted shop can show right now: say so first.
+    // Only for a new or changed action: an untouched one never blocks a save.
+    if (hasAction && _actionDirty) {
+      final r = await _runCheck();
+      if (!mounted) return;
+      if (r == null && _checkError != null && !_checkError!.startsWith('Не удалось проверить')) {
+        _error(_checkError!);
+        return;
+      }
+      final shown = r?.stores.where((s) => _targets(s.storeId)).toList() ?? const <BannerStoreCheck>[];
+      if (r != null && r.stores.isNotEmpty && shown.every((s) => s.orderable == 0)) {
+        final go = await showDialog<bool>(
+          context: context,
+          builder: (c) => AlertDialog(
+            title: const Text('Баннер сейчас нигде не покажется'),
+            content: const Text('Ни в одном выбранном магазине сейчас нечего открыть по этому баннеру. Сохранить всё равно?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('Вернуться')),
+              TextButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('Сохранить')),
+            ],
+          ),
+        );
+        if (go != true || !mounted) return;
+      }
+    }
     final extras = BannerExtras(
       storeIds: _stores.toList(),
       dailyFrom: _hhmm(_dailyFrom),
@@ -314,7 +461,9 @@ class _BannerEditPageState extends State<BannerEditPage> {
       // A badge only shows on a banner that opens something (08.11).
       badgeRu: hasAction ? _badgeRuCtrl.text : '',
       badgeKk: hasAction ? _badgeKkCtrl.text : '',
-      minAppBuild: _onlyNew ? kBannerActionsMinBuild : null,
+      // No action: no version limit (the switch is hidden then). A floor a
+      // script set (e.g. 270) is kept while the switch stays on.
+      minAppBuild: (hasAction && _onlyNew) ? (widget.banner?.minAppBuild ?? kBannerActionsMinBuild) : null,
       sendAction: _actionDirty,
       actionType: _action.kind.wire,
       action: _action.payload(),
@@ -350,15 +499,14 @@ class _BannerEditPageState extends State<BannerEditPage> {
         );
       }
       if (!mounted) return;
+      _leaving = true;
       Navigator.of(context).pop(true);
     } on BannerValidationException catch (e) {
       if (!mounted) return;
       _error(e.message);
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось сохранить')),
-      );
+      _error('Нет связи с сервером. Перед повтором обновите список: баннер мог сохраниться.');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -380,257 +528,319 @@ class _BannerEditPageState extends State<BannerEditPage> {
     final isNew = widget.banner == null;
     final kind = _action.kind;
     final hasAction = kind != BannerActionKind.none;
-    return Scaffold(
-      appBar: AppBar(title: Text(isNew ? 'Новый баннер' : 'Редактирование')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          _ImagePickerCard(
-            picked: _pickedImage,
-            existingUrl: widget.banner?.imageUrl,
-            onPick: _pick,
-            kind: kind,
-            badge: _badgeRuCtrl.text,
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF3E0),
-              borderRadius: BorderRadius.circular(10),
+    return PopScope(
+      canPop: _leaving,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _maybeLeave();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(isNew ? 'Новый баннер' : 'Редактирование'),
+          actions: [
+            TextButton(
+              onPressed: _saving ? null : _save,
+              child: const Text('Сохранить'),
             ),
-            child: Row(
-              children: [
-                const Icon(Icons.info_outline, size: 18, color: Color(0xFFEE6F00)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Рекомендуемый размер: 1300 × 800. '
-                    'Соотношение сторон 1.5–1.7. Лишнее обрежется.'
-                    '${hasAction ? ' Справа внизу будет кнопка «${bannerPillText(kind)}», '
-                        'не ставьте туда текст.' : ''}',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade800),
-                  ),
-                ),
-              ],
+          ],
+        ),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            // 1. The picture as the app draws it, with its badge.
+            _ImagePickerCard(
+              picked: _pickedImage,
+              existingUrl: widget.banner?.imageUrl,
+              onPick: _pick,
+              kind: kind,
+              badge: _badgeRuCtrl.text,
             ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _titleCtrl,
-            maxLength: 60,
-            decoration: const InputDecoration(
-              labelText: 'Название (для админки)',
-              border: OutlineInputBorder(),
-              counterText: '',
-            ),
-          ),
-          _section('Что откроется при нажатии',
-              'Без действия баннер просто картинка. Ссылки на сайты не поддерживаются.'),
-          BannerTargetEditor(
-            key: const ValueKey('banner-target'),
-            target: _action.target,
-            kinds: BannerActionKind.values,
-            repo: _repo,
-            stores: _allStores,
-            onChanged: _actionChanged,
-          ),
-          if (kind == BannerActionKind.info) ...[
             const SizedBox(height: 8),
-            BannerInfoEditor(
-              info: _action.info,
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF3E0),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, size: 18, color: Color(0xFFEE6F00)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Рекомендуемый размер: 1300 × 800. '
+                      'Соотношение сторон 1.5–1.7. Лишнее обрежется.'
+                      '${hasAction ? ' Справа внизу будет кнопка «${bannerPillText(kind)}», '
+                          'слева вверху метка: не ставьте туда текст.' : ''}',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade800),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _titleCtrl,
+              maxLength: 60,
+              decoration: const InputDecoration(
+                labelText: 'Название (для админки)',
+                border: OutlineInputBorder(),
+                counterText: '',
+              ),
+            ),
+            // 2. What a tap opens.
+            _section('Что откроется при нажатии',
+                'Без действия баннер просто картинка. Ссылки на сайты не поддерживаются.'),
+            BannerTargetEditor(
+              key: const ValueKey('banner-target'),
+              target: _action.target,
+              kinds: BannerActionKind.values,
               repo: _repo,
               stores: _allStores,
               onChanged: _actionChanged,
-              heroFile: _pickedImage,
-              heroUrl: widget.banner?.imageUrl,
             ),
-          ],
-          if (hasAction) ...[
-            const SizedBox(height: 10),
+            if (kind == BannerActionKind.info) ...[
+              const SizedBox(height: 8),
+              BannerInfoEditor(
+                info: _action.info,
+                repo: _repo,
+                stores: _allStores,
+                onChanged: _actionChanged,
+                heroFile: _pickedImage,
+                heroUrl: widget.banner?.imageUrl,
+              ),
+            ],
+            if (hasAction) ...[
+              _section('Метка на баннере', 'Необязательно. Коротко: «−20%», «Новинка».'),
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _badgeRuCtrl,
+                    maxLength: 24,
+                    onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(labelText: 'Метка', border: OutlineInputBorder(), counterText: ''),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _badgeKkCtrl,
+                    maxLength: 24,
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
+                      labelText: 'Метка (KK)',
+                      border: const OutlineInputBorder(),
+                      counterText: '',
+                      helperText: kkMissing(_badgeRuCtrl.text, _badgeKkCtrl.text) == null ? null : 'Нет KK',
+                      helperStyle: const TextStyle(color: Color(0xFFB26A00)),
+                    ),
+                  ),
+                ),
+              ]),
+            ],
+            // 3. Where and when.
+            _section('Где и когда'),
+            SwitchListTile(
+              value: _active,
+              onChanged: (v) => setState(() => _active = v),
+              title: const Text('Показывать на главной'),
+              contentPadding: EdgeInsets.zero,
+            ),
+            const Text('Магазины', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 2),
+            Text('Без выбора баннер виден во всех магазинах.', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+            const SizedBox(height: 6),
+            Wrap(spacing: 8, runSpacing: 6, children: [
+              ChoiceChip(
+                label: const Text('Все магазины'),
+                selected: _stores.isEmpty,
+                onSelected: (_) => setState(_stores.clear),
+              ),
+              for (final s in _allStores)
+                FilterChip(
+                  label: Text(s.storeName),
+                  selected: _stores.contains(s.storeId),
+                  onSelected: (v) => setState(() => v ? _stores.add(s.storeId) : _stores.remove(s.storeId)),
+                ),
+              for (final id in _stores.where((id) => !_allStores.any((s) => s.storeId == id)))
+                FilterChip(
+                  label: Text('Магазин $id'),
+                  selected: true,
+                  onSelected: (_) => setState(() => _stores.remove(id)),
+                ),
+            ]),
+            if (_storesFailed)
+              TextButton.icon(
+                onPressed: _loadStores,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Не удалось загрузить магазины. Повторить'),
+              ),
+            const SizedBox(height: 12),
+            _ScheduleRow(
+              label: 'Начало показа',
+              value: _startsAt == null ? null : _fmt(_startsAt!),
+              onPick: () => _pickDateTime(isStart: true),
+              onClear: _startsAt == null && !_startsCleared
+                  ? null
+                  : () => setState(() {
+                        _startsAt = null;
+                        _startsCleared = true;
+                      }),
+            ),
+            const SizedBox(height: 8),
+            _ScheduleRow(
+              label: 'Конец показа',
+              value: _endsAt == null ? null : _fmt(_endsAt!),
+              onPick: () => _pickDateTime(isStart: false),
+              onClear: _endsAt == null && !_endsCleared
+                  ? null
+                  : () => setState(() {
+                        _endsAt = null;
+                        _endsCleared = true;
+                      }),
+            ),
+            if (_windowError() != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _windowError()!,
+                style: const TextStyle(color: Color(0xFFD32F2F), fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Text('Часы показа каждый день (время Алматы). Без времени: весь день.',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+            const SizedBox(height: 6),
+            Row(children: [
+              Expanded(
+                child: _ScheduleRow(
+                  label: 'С',
+                  value: _hhmm(_dailyFrom),
+                  onPick: () => _pickDaily(from: true),
+                  onClear: _dailyFrom == null ? null : () => setState(() => _dailyFrom = null),
+                  icon: Icons.schedule,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _ScheduleRow(
+                  label: 'До',
+                  value: _hhmm(_dailyTo),
+                  onPick: () => _pickDaily(from: false),
+                  onClear: _dailyTo == null ? null : () => setState(() => _dailyTo = null),
+                  icon: Icons.schedule,
+                ),
+              ),
+            ]),
+            if (_dailyError() != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(_dailyError()!, style: const TextStyle(color: Color(0xFFD32F2F), fontSize: 12)),
+              ),
+            if (hasAction)
+              SwitchListTile(
+                key: const ValueKey('banner-only-new'),
+                contentPadding: EdgeInsets.zero,
+                value: _onlyNew,
+                onChanged: (v) => setState(() {
+                  _onlyNew = v;
+                  _onlyNewTouched = true;
+                }),
+                title: const Text('Только новые версии приложения'),
+                subtitle: Text(_onlyNew
+                    ? 'Покажется с версии 2.0.9 (сборка $kBannerActionsMinBuild). В старых версиях нажать на баннер нельзя, поэтому там его не будет.'
+                    : 'Старые версии покажут его просто картинкой, без нажатия.'),
+              ),
+            // 4. Where it shows right now.
+            _section('Где баннер покажется сейчас'),
+            for (final r in _localReasons())
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(children: [
+                  const Icon(Icons.info_outline, size: 18, color: Color(0xFFB26A00)),
+                  const SizedBox(width: 6),
+                  Expanded(child: Text(r)),
+                ]),
+              ),
             Row(children: [
               OutlinedButton.icon(
                 key: const ValueKey('banner-check'),
-                onPressed: _checking ? null : _runCheck,
+                onPressed: (!hasAction || _checking) ? null : _runCheck,
                 icon: _checking
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.fact_check_outlined),
-                label: const Text('Проверить'),
+                label: const Text('Проверить по магазинам'),
               ),
             ]),
+            if (!hasAction)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('Картинку без действия проверять не нужно.', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+              ),
             if (_checkError != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(_checkError!, style: const TextStyle(color: Color(0xFFD32F2F))),
               ),
-            if (_check != null) _CheckResult(result: _check!),
-            _section('Метка на баннере', 'Необязательно. Коротко: «−20%», «Новинка». Видна только на баннере с действием.'),
-            Row(children: [
-              Expanded(
-                child: TextField(
-                  controller: _badgeRuCtrl,
-                  maxLength: 24,
-                  onChanged: (_) => setState(() {}),
-                  decoration: const InputDecoration(labelText: 'Метка', border: OutlineInputBorder(), counterText: ''),
-                ),
+            if (_check != null) _CheckResult(result: _check!, targeted: _targets, shelf: kind == BannerActionKind.shelf),
+            // 5. Position.
+            const SizedBox(height: 20),
+            TextField(
+              controller: _positionCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Позиция (1 — самый первый)',
+                helperText: 'Оставьте пустым, чтобы баннер встал в конец',
+                border: OutlineInputBorder(),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _badgeKkCtrl,
-                  maxLength: 24,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    labelText: 'Метка (KK)',
-                    border: const OutlineInputBorder(),
-                    counterText: '',
-                    helperText: kkMissing(_badgeRuCtrl.text, _badgeKkCtrl.text) == null ? null : 'Нет KK',
-                    helperStyle: const TextStyle(color: Color(0xFFB26A00)),
-                  ),
-                ),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 50,
+              child: ElevatedButton.icon(
+                key: const ValueKey('banner-save'),
+                onPressed: _saving ? null : _save,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.save),
+                label: const Text('Сохранить'),
               ),
-            ]),
-            SwitchListTile(
-              key: const ValueKey('banner-only-new'),
-              contentPadding: EdgeInsets.zero,
-              value: _onlyNew,
-              onChanged: (v) => setState(() {
-                _onlyNew = v;
-                _onlyNewTouched = true;
-              }),
-              title: const Text('Только новые версии приложения'),
-              subtitle: Text(_onlyNew
-                  ? 'Покажется с версии 2.0.9 (сборка $kBannerActionsMinBuild). В старых версиях нажать на баннер нельзя, поэтому там его не будет.'
-                  : 'Старые версии покажут его просто картинкой, без нажатия.'),
             ),
           ],
-          _section('Магазины', 'Без выбора баннер виден во всех магазинах.'),
-          Wrap(spacing: 8, runSpacing: 6, children: [
-            ChoiceChip(
-              label: const Text('Все магазины'),
-              selected: _stores.isEmpty,
-              onSelected: (_) => setState(_stores.clear),
-            ),
-            for (final s in _allStores)
-              FilterChip(
-                label: Text(s.storeName),
-                selected: _stores.contains(s.storeId),
-                onSelected: (v) => setState(() => v ? _stores.add(s.storeId) : _stores.remove(s.storeId)),
-              ),
-            for (final id in _stores.where((id) => !_allStores.any((s) => s.storeId == id)))
-              FilterChip(
-                label: Text('Магазин $id'),
-                selected: true,
-                onSelected: (_) => setState(() => _stores.remove(id)),
-              ),
-          ]),
-          const SizedBox(height: 8),
-          SwitchListTile(
-            value: _active,
-            onChanged: (v) => setState(() => _active = v),
-            title: const Text('Показывать на главной'),
-            contentPadding: EdgeInsets.zero,
-          ),
-          TextField(
-            controller: _positionCtrl,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Позиция (1 — самый первый)',
-              helperText: 'Оставьте пустым, чтобы баннер встал в конец',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          _section('Показ по расписанию', 'Необязательно. Без дат баннер показывается пока включён переключатель выше.'),
-          _ScheduleRow(
-            label: 'Начало показа',
-            value: _startsAt == null ? null : _fmt(_startsAt!),
-            onPick: () => _pickDateTime(isStart: true),
-            onClear: _startsAt == null && !_startsCleared
-                ? null
-                : () => setState(() {
-                      _startsAt = null;
-                      _startsCleared = true;
-                    }),
-          ),
-          const SizedBox(height: 8),
-          _ScheduleRow(
-            label: 'Конец показа',
-            value: _endsAt == null ? null : _fmt(_endsAt!),
-            onPick: () => _pickDateTime(isStart: false),
-            onClear: _endsAt == null && !_endsCleared
-                ? null
-                : () => setState(() {
-                      _endsAt = null;
-                      _endsCleared = true;
-                    }),
-          ),
-          if (_windowError() != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              _windowError()!,
-              style: const TextStyle(color: Color(0xFFD32F2F), fontSize: 12),
-            ),
-          ],
-          _section('Часы показа каждый день', 'Время Алматы. Например «с 19:00» для вечерней скидки. Без времени: весь день.'),
-          Row(children: [
-            Expanded(
-              child: _ScheduleRow(
-                label: 'С',
-                value: _hhmm(_dailyFrom),
-                onPick: () => _pickDaily(from: true),
-                onClear: _dailyFrom == null ? null : () => setState(() => _dailyFrom = null),
-                icon: Icons.schedule,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _ScheduleRow(
-                label: 'До',
-                value: _hhmm(_dailyTo),
-                onPick: () => _pickDaily(from: false),
-                onClear: _dailyTo == null ? null : () => setState(() => _dailyTo = null),
-                icon: Icons.schedule,
-              ),
-            ),
-          ]),
-          if (_dailyError() != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(_dailyError()!, style: const TextStyle(color: Color(0xFFD32F2F), fontSize: 12)),
-            ),
-          const SizedBox(height: 24),
-          SizedBox(
-            height: 50,
-            child: ElevatedButton.icon(
-              key: const ValueKey('banner-save'),
-              onPressed: _saving ? null : _save,
-              icon: _saving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Icon(Icons.save),
-              label: const Text('Сохранить'),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 }
 
-/// «Проверить»: per shop, how many of the products a customer can order now.
+/// «Проверить»: per shop, whether a customer there can open the banner now.
 class _CheckResult extends StatelessWidget {
-  const _CheckResult({required this.result});
+  const _CheckResult({required this.result, required this.targeted, this.shelf = false});
   final BannerCheckResult result;
+  final bool Function(int storeId) targeted;
+  final bool shelf;
+
+  String _line(BannerStoreCheck s) {
+    if (!targeted(s.storeId)) return '${s.storeName}: не выбран для этого баннера';
+    if (s.orderable == 0) {
+      return shelf
+          ? '${s.storeName}: полка здесь сейчас не идёт, баннер не покажется'
+          : '${s.storeName}: сейчас не продаётся, баннер не покажется';
+    }
+    if (shelf) return '${s.storeName}: полка идёт';
+    if (s.total == 1) return '${s.storeName}: товар в продаже';
+    return '${s.storeName}: в продаже ${s.orderable} из ${s.total}';
+  }
 
   @override
   Widget build(BuildContext context) {
     if (result.stores.isEmpty) {
       return const Padding(
         padding: EdgeInsets.only(top: 8),
-        child: Text('Всё в порядке', style: TextStyle(color: Color(0xFF2E7D32))),
+        child: Text('Это действие работает во всех магазинах, проверка по магазинам не нужна',
+            style: TextStyle(color: Color(0xFF2E7D32))),
       );
     }
     return Padding(
@@ -642,15 +852,19 @@ class _CheckResult extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Row(children: [
-              Icon(s.orderable > 0 ? Icons.check_circle : Icons.remove_circle_outline,
-                  size: 18, color: s.orderable > 0 ? const Color(0xFF2E7D32) : const Color(0xFFC62828)),
+              Icon(
+                !targeted(s.storeId)
+                    ? Icons.block
+                    : (s.orderable > 0 ? Icons.check_circle : Icons.remove_circle_outline),
+                size: 18,
+                color: !targeted(s.storeId)
+                    ? Colors.grey
+                    : (s.orderable > 0 ? const Color(0xFF2E7D32) : const Color(0xFFC62828)),
+              ),
               const SizedBox(width: 6),
               Expanded(
-                child: Text(
-                  s.orderable > 0
-                      ? '${s.storeName}: в продаже ${s.orderable} из ${s.total}'
-                      : '${s.storeName}: сейчас не продаётся, баннер там не покажется',
-                ),
+                child: Text(_line(s),
+                    style: TextStyle(color: targeted(s.storeId) ? null : Colors.grey.shade600)),
               ),
             ]),
           ),
