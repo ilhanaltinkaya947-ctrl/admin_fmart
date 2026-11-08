@@ -42,6 +42,7 @@ class _StubRepo implements BannersRepository {
     bool active = true,
     DateTime? startsAt,
     DateTime? endsAt,
+    BannerExtras extras = const BannerExtras(),
   }) async =>
       throw UnimplementedError();
 
@@ -57,6 +58,7 @@ class _StubRepo implements BannersRepository {
     bool? clearStartsAt,
     DateTime? endsAt,
     bool? clearEndsAt,
+    BannerExtras? extras,
   }) async =>
       throw UnimplementedError();
 

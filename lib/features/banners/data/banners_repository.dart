@@ -2,9 +2,101 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import 'dart:convert';
+
 import '../../../core/api/api_client.dart';
 import '../../../core/api/safe_response.dart';
+import 'banner_action_draft.dart';
 import 'banner_models.dart';
+
+/// 08.11: everything the editor sends besides the image and the old fields:
+/// stores, daily hours, badges, the build floor and (when [sendAction]) the
+/// action. On an update every field is sent; "null" is the server's clear
+/// token (FastAPI turns an empty form value into "not sent").
+class BannerExtras {
+  const BannerExtras({
+    this.storeIds = const [],
+    this.dailyFrom,
+    this.dailyTo,
+    this.badgeRu = '',
+    this.badgeKk = '',
+    this.minAppBuild,
+    this.sendAction = false,
+    this.actionType = 'none',
+    this.action,
+  });
+
+  final List<int> storeIds;
+  final String? dailyFrom;
+  final String? dailyTo;
+  final String badgeRu;
+  final String badgeKk;
+  final int? minAppBuild;
+
+  /// Send action_type + action. False on an edit that did not touch them, so
+  /// a title change never re-validates an untouched action.
+  final bool sendAction;
+  final String actionType;
+  final Map<String, dynamic>? action;
+
+  Map<String, dynamic> form({required bool forUpdate}) {
+    String? orNull(String? v) => (v == null || v.trim().isEmpty) ? (forUpdate ? 'null' : null) : v.trim();
+    final stores = ([...storeIds]..sort()).join(',');
+    final f = <String, dynamic>{
+      'store_ids': stores.isEmpty ? (forUpdate ? 'null' : null) : stores,
+      'daily_from': orNull(dailyFrom),
+      'daily_to': orNull(dailyTo),
+      'badge_ru': orNull(badgeRu),
+      'badge_kk': orNull(badgeKk),
+      'min_app_build': minAppBuild == null ? (forUpdate ? 'null' : null) : '$minAppBuild',
+      if (sendAction) 'action_type': actionType,
+      if (sendAction) 'action': action == null ? '{}' : jsonEncode(action),
+    };
+    f.removeWhere((_, v) => v == null);
+    return f;
+  }
+}
+
+/// One store's answer to «Проверить»: how many of the products are orderable now.
+class BannerStoreCheck {
+  final int storeId;
+  final String storeName;
+  final int orderable;
+  final int total;
+  const BannerStoreCheck({required this.storeId, required this.storeName, required this.orderable, required this.total});
+}
+
+class BannerCheckResult {
+  final String? checked; // "action" | "cta" | null (nothing store bound)
+  final List<BannerStoreCheck> stores;
+  const BannerCheckResult({this.checked, this.stores = const []});
+}
+
+class BannerProductHit {
+  final int id;
+  final String name;
+  final String? imageUrl;
+  final List<int> stores;
+  const BannerProductHit({required this.id, required this.name, this.imageUrl, this.stores = const []});
+
+  PickedProduct get picked => PickedProduct(id: id, name: name, imageUrl: imageUrl);
+}
+
+class BannerCategory {
+  final int id;
+  final String name;
+  final int? parentId;
+  const BannerCategory({required this.id, required this.name, this.parentId});
+}
+
+class BannerStats {
+  final int impressions;
+  final int taps;
+  const BannerStats({this.impressions = 0, this.taps = 0});
+
+  /// Tap rate in percent, null without impressions.
+  double? get rate => impressions == 0 ? null : taps * 100 / impressions;
+}
 
 /// Wraps catalog-service /admin/banners endpoints.
 ///
@@ -108,8 +200,10 @@ class BannersRepository {
     bool active = true,
     DateTime? startsAt,
     DateTime? endsAt,
+    BannerExtras extras = const BannerExtras(),
   }) async {
     final formData = FormData.fromMap({
+      ...extras.form(forUpdate: false),
       'image': await MultipartFile.fromFile(
         imageFile.path,
         filename: imageFile.uri.pathSegments.last,
@@ -144,8 +238,9 @@ class BannersRepository {
     bool? clearStartsAt,
     DateTime? endsAt,
     bool? clearEndsAt,
+    BannerExtras? extras,
   }) async {
-    final form = <String, dynamic>{};
+    final form = <String, dynamic>{...?extras?.form(forUpdate: true)};
     if (imageFile != null) {
       form['image'] = await MultipartFile.fromFile(
         imageFile.path,
@@ -221,10 +316,93 @@ class BannersRepository {
     );
   }
 
+  /// «Проверить»: the server's own validation plus, per store, how many of
+  /// the products are orderable right now. A refusal is a
+  /// [BannerValidationException] carrying the server's plain reason.
+  Future<BannerCheckResult> checkAction(String actionType, Map<String, dynamic>? action) async {
+    try {
+      final resp = await api.dio.post('$_adminPath/check-action',
+          data: {'action_type': actionType, 'action': action ?? <String, dynamic>{}});
+      final m = resp.data is Map ? (resp.data as Map).cast<String, dynamic>() : const <String, dynamic>{};
+      return BannerCheckResult(
+        checked: m['checked'] as String?,
+        stores: [
+          for (final s in (m['stores'] is List ? m['stores'] as List : const []))
+            if (s is Map)
+              BannerStoreCheck(
+                storeId: (s['store_id'] as num?)?.toInt() ?? 0,
+                storeName: '${s['store_name'] ?? ''}',
+                orderable: (s['orderable'] as num?)?.toInt() ?? 0,
+                total: (s['total'] as num?)?.toInt() ?? 0,
+              ),
+        ],
+      );
+    } on DioException catch (e) {
+      throw _mapValidationError(e);
+    }
+  }
+
+  Future<List<BannerProductHit>> searchProducts(String q) async {
+    final resp = await api.dio.get('$_adminPath/targets/products', queryParameters: {'q': q.trim()});
+    return asJsonList(resp.data)
+        .map((m) => BannerProductHit(
+              id: (m['id'] as num?)?.toInt() ?? 0,
+              name: '${m['name'] ?? ''}',
+              imageUrl: m['image_url'] as String?,
+              stores: [for (final x in (m['stores'] is List ? m['stores'] as List : const [])) if (x is num) x.toInt()],
+            ))
+        .where((h) => h.id > 0)
+        .toList();
+  }
+
+  Future<List<BannerCategory>> categories() async {
+    final resp = await api.dio.get('$_adminPath/targets/categories');
+    return asJsonList(resp.data)
+        .map((m) => BannerCategory(
+              id: (m['id'] as num?)?.toInt() ?? 0,
+              name: '${m['name'] ?? ''}',
+              parentId: (m['parent_id'] as num?)?.toInt(),
+            ))
+        .where((c) => c.id > 0)
+        .toList();
+  }
+
+  /// A picture for an info page. Returns its URL (our own storage).
+  Future<String> uploadInfoImage(File file) async {
+    try {
+      final resp = await api.dio.post('$_adminPath/info-image',
+          data: FormData.fromMap({
+            'image': await MultipartFile.fromFile(file.path, filename: file.uri.pathSegments.last),
+          }));
+      final url = resp.data is Map ? (resp.data as Map)['url'] : null;
+      if (url is! String || url.isEmpty) throw BannerValidationException('Не удалось загрузить картинку');
+      return url;
+    } on DioException catch (e) {
+      throw _mapValidationError(e);
+    }
+  }
+
+  /// Impressions and taps per banner over the last [days] days.
+  Future<Map<int, BannerStats>> stats({int days = 30}) async {
+    final resp = await api.dio.get('$_adminPath/stats', queryParameters: {'days': days});
+    return {
+      for (final m in asJsonList(resp.data))
+        if (m['banner_id'] is num)
+          (m['banner_id'] as num).toInt(): BannerStats(
+            impressions: (m['impressions'] as num?)?.toInt() ?? 0,
+            taps: (m['taps'] as num?)?.toInt() ?? 0,
+          ),
+    };
+  }
+
   Exception _mapValidationError(DioException e) {
     final detail = e.response?.data;
     if (detail is Map && detail['detail'] is String) {
       return BannerValidationException(detail['detail'] as String);
+    }
+    // FastAPI's own 422 (a field of the wrong shape): say it plainly.
+    if (e.response?.statusCode == 422) {
+      return BannerValidationException('Сервер не принял данные формы. Проверьте поля и попробуйте снова.');
     }
     return e;
   }

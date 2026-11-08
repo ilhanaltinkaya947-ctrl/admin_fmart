@@ -1,3 +1,5 @@
+import 'banner_action_draft.dart';
+
 /// A home-page banner as returned by catalog-service.
 ///
 /// `startsAt` / `endsAt` are the publish window. Both null means "live while
@@ -15,6 +17,20 @@ class BannerItem {
   final DateTime createdAt;
   final DateTime updatedAt;
 
+  /// Store targeting (null/empty = every store) and the daily window,
+  /// Almaty wall clock "HH:MM" (null = all day). Set by scripts until 1.2.9.
+  final List<int> storeIds;
+  final String? dailyFrom;
+  final String? dailyTo;
+
+  /// 08.11 banner actions: what a tap opens ("none" = a plain picture), its
+  /// payload, the badge and the app build floor.
+  final String actionType;
+  final Map<String, dynamic>? action;
+  final String? badgeRu;
+  final String? badgeKk;
+  final int? minAppBuild;
+
   const BannerItem({
     required this.id,
     required this.imageUrl,
@@ -26,7 +42,17 @@ class BannerItem {
     this.title,
     this.startsAt,
     this.endsAt,
+    this.storeIds = const [],
+    this.dailyFrom,
+    this.dailyTo,
+    this.actionType = 'none',
+    this.action,
+    this.badgeRu,
+    this.badgeKk,
+    this.minAppBuild,
   });
+
+  BannerActionKind get actionKind => BannerActionKind.fromWire(actionType);
 
   factory BannerItem.fromJson(Map<String, dynamic> json) {
     return BannerItem(
@@ -50,7 +76,25 @@ class BannerItem {
       updatedAt:
           DateTime.tryParse(json['updated_at'] as String? ?? '') ??
               DateTime.now(),
+      storeIds: [
+        for (final x in (json['store_ids'] is List ? json['store_ids'] as List : const []))
+          if (x is num) x.toInt(),
+      ],
+      dailyFrom: _hhmm(json['daily_from']),
+      dailyTo: _hhmm(json['daily_to']),
+      actionType: (json['action_type'] as String?) ?? 'none',
+      action: json['action'] is Map ? (json['action'] as Map).cast<String, dynamic>() : null,
+      badgeRu: json['badge_ru'] as String?,
+      badgeKk: json['badge_kk'] as String?,
+      minAppBuild: (json['min_app_build'] as num?)?.toInt(),
     );
+  }
+
+  /// "19:00:00" -> "19:00"; anything else -> null.
+  static String? _hhmm(dynamic v) {
+    if (v is! String) return null;
+    final m = RegExp(r'^(\d{1,2}):(\d{2})').firstMatch(v);
+    return m == null ? null : '${m.group(1)!.padLeft(2, '0')}:${m.group(2)}';
   }
 
   static DateTime? _tryParse(dynamic value) {

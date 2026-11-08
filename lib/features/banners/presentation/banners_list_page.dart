@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../data/banner_action_draft.dart';
 import '../data/banner_models.dart';
 import '../data/banners_repository.dart';
 import '../state/banners_cubit.dart';
@@ -18,12 +19,26 @@ class BannersListPage extends StatefulWidget {
 }
 
 class _BannersListPageState extends State<BannersListPage> {
+  /// 08.11: impressions and taps per banner, last 30 days. Empty while
+  /// loading or when the read failed (the list never waits for it).
+  Map<int, BannerStats> _stats = const {};
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<BannersCubit>().load();
+      if (mounted) {
+        context.read<BannersCubit>().load();
+        _loadStats();
+      }
     });
+  }
+
+  Future<void> _loadStats() async {
+    try {
+      final s = await context.read<BannersCubit>().repo.stats(days: 30);
+      if (mounted) setState(() => _stats = s);
+    } catch (_) {/* the counters are optional; the list stays */}
   }
 
   Future<void> _openEdit({BannerItem? banner}) async {
@@ -89,7 +104,9 @@ class _BannersListPageState extends State<BannersListPage> {
       builder: (_) => const Center(child: CircularProgressIndicator()),
     );
     try {
-      final repo = context.read<BannersRepository>();
+      // The repository is not provided above this page; the cubit owns it
+      // (reading it from context threw, and every zip upload failed).
+      final repo = context.read<BannersCubit>().repo;
       final result = await repo.bulkUploadZip(zipFile: File(path));
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
@@ -154,7 +171,10 @@ class _BannersListPageState extends State<BannersListPage> {
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: () => context.read<BannersCubit>().load(),
+            onPressed: () {
+              context.read<BannersCubit>().load();
+              _loadStats();
+            },
           ),
         ],
       ),
@@ -260,6 +280,7 @@ class _BannersListPageState extends State<BannersListPage> {
                   child: _BannerTile(
                     index: i,
                     banner: b,
+                    stats: _stats[b.id],
                     onEdit: () => _openEdit(banner: b),
                     onDelete: () => _confirmDelete(b),
                   ),
@@ -303,6 +324,7 @@ class _BannersListPageState extends State<BannersListPage> {
 class _BannerTile extends StatelessWidget {
   final int index;
   final BannerItem banner;
+  final BannerStats? stats;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
@@ -311,6 +333,7 @@ class _BannerTile extends StatelessWidget {
     required this.banner,
     required this.onEdit,
     required this.onDelete,
+    this.stats,
   });
 
   @override
@@ -399,16 +422,24 @@ class _BannerTile extends StatelessWidget {
                           ),
                         ),
                       ],
-                      if ((banner.linkUrl ?? '').isNotEmpty) ...[
-                        const SizedBox(height: 4),
+                      const SizedBox(height: 4),
+                      Text(
+                        bannerActionSummary(banner),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: banner.actionKind == BannerActionKind.none ? FontWeight.normal : FontWeight.w600,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      if (stats != null && (stats!.impressions > 0 || stats!.taps > 0)) ...[
+                        const SizedBox(height: 2),
                         Text(
-                          banner.linkUrl!,
+                          bannerStatsLine(stats!),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
+                          style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant),
                         ),
                       ],
                     ],
@@ -485,4 +516,48 @@ class _StatusChip extends StatelessWidget {
       ),
     );
   }
+}
+
+
+/// One line under the banner: what a tap opens, and where it shows.
+String bannerActionSummary(BannerItem b) {
+  final a = b.action ?? const <String, dynamic>{};
+  final what = switch (b.actionKind) {
+    BannerActionKind.none => 'Без действия',
+    BannerActionKind.product => 'Товар № ${a['product_id'] ?? ''}',
+    BannerActionKind.collection => () {
+        final lists = a['product_ids'] is Map ? (a['product_ids'] as Map) : const {};
+        final all = lists['all'] is List ? (lists['all'] as List).length : 0;
+        final title = (a['title_ru'] as String?) ?? 'Подборка';
+        return '$title · $all тов.${lists.length > (lists.containsKey('all') ? 1 : 0) ? ' + списки магазинов' : ''}';
+      }(),
+    BannerActionKind.category => 'Категория № ${a['category_id'] ?? ''}',
+    BannerActionKind.deals => 'Открывает «Акции»',
+    BannerActionKind.search => 'Поиск «${a['query'] ?? ''}»',
+    BannerActionKind.info => 'Страница «${a['title_ru'] ?? ''}»',
+    BannerActionKind.shelf => 'Полка ${a['key'] ?? ''}',
+  };
+  final where = b.storeIds.isEmpty ? '' : ' · магазины ${b.storeIds.join(', ')}';
+  final hours = (b.dailyFrom != null || b.dailyTo != null)
+      ? ' · ${b.dailyFrom ?? '00:00'} до ${b.dailyTo ?? '24:00'}'
+      : '';
+  final build = b.minAppBuild != null ? ' · с ${b.minAppBuild}' : '';
+  return '$what$where$hours$build';
+}
+
+/// «Показы 1 234 · Нажатия 56 · 4,5 %» (30 days).
+String bannerStatsLine(BannerStats s) {
+  String n(int v) {
+    final str = '$v';
+    final out = StringBuffer();
+    for (var i = 0; i < str.length; i++) {
+      if (i > 0 && (str.length - i) % 3 == 0) out.write('\u00A0');
+      out.write(str[i]);
+    }
+    return out.toString();
+  }
+
+  final rate = s.rate;
+  final r = rate == null ? '' : ' · ${rate.toStringAsFixed(1).replaceAll('.', ',')}\u00A0%';
+  return 'За 30 дней: показы ${n(s.impressions)} · нажатия ${n(s.taps)}$r';
 }

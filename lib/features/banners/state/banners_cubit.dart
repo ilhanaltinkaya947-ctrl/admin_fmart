@@ -63,6 +63,7 @@ class BannersCubit extends Cubit<BannersState> {
     bool active = true,
     DateTime? startsAt,
     DateTime? endsAt,
+    BannerExtras extras = const BannerExtras(),
   }) async {
     final created = await repo.create(
       imageFile: imageFile,
@@ -72,6 +73,7 @@ class BannersCubit extends Cubit<BannersState> {
       active: active,
       startsAt: startsAt,
       endsAt: endsAt,
+      extras: extras,
     );
     await load();
     return created;
@@ -88,6 +90,7 @@ class BannersCubit extends Cubit<BannersState> {
     bool? clearStartsAt,
     DateTime? endsAt,
     bool? clearEndsAt,
+    BannerExtras? extras,
   }) async {
     final updated = await repo.update(
       id: id,
@@ -100,6 +103,7 @@ class BannersCubit extends Cubit<BannersState> {
       clearStartsAt: clearStartsAt,
       endsAt: endsAt,
       clearEndsAt: clearEndsAt,
+      extras: extras,
     );
     await load();
     return updated;

@@ -1,14 +1,19 @@
 import 'dart:io';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../stores/data/stores_repository.dart';
+import '../../stores/models/store_models.dart';
+import '../data/banner_action_draft.dart';
 import '../data/banner_models.dart';
 import '../data/banners_repository.dart';
 import '../state/banners_cubit.dart';
+import 'widgets/banner_app_preview.dart';
+import 'widgets/banner_info_editor.dart';
+import 'widgets/banner_target_editor.dart';
 
 /// Create or edit a single banner.
 ///
@@ -16,6 +21,15 @@ import '../state/banners_cubit.dart';
 /// also enforces dimensions/ratio (1.5–1.7) and returns 400 with a Russian
 /// message if the image is wrong size — that surfaces here as a snackbar
 /// without crashing.
+///
+/// 08.11 banner actions: what a tap opens (product, collection, category,
+/// «Акции», search, an info page, the seasonal shelf), the badge, stores,
+/// daily hours, the new-builds-only switch, «Проверить» per shop and a
+/// preview of the slide and the info page as the customer app draws them.
+/// Every refusal is the server's own plain sentence.
+/// The first customer build that opens banner actions (2.0.9+265).
+const int kBannerActionsMinBuild = 265;
+
 class BannerEditPage extends StatefulWidget {
   final BannerItem? banner;
   const BannerEditPage({super.key, this.banner});
@@ -26,8 +40,9 @@ class BannerEditPage extends StatefulWidget {
 
 class _BannerEditPageState extends State<BannerEditPage> {
   final _titleCtrl = TextEditingController();
-  final _linkCtrl = TextEditingController();
   final _positionCtrl = TextEditingController();
+  final _badgeRuCtrl = TextEditingController();
+  final _badgeKkCtrl = TextEditingController();
   bool _active = true;
   File? _pickedImage;
   bool _saving = false;
@@ -39,27 +54,112 @@ class _BannerEditPageState extends State<BannerEditPage> {
   bool _startsCleared = false;
   bool _endsCleared = false;
 
+  // 08.11 banner actions.
+  late BannerActionDraft _action;
+  bool _actionDirty = false;
+  final Set<int> _stores = {};
+  List<StoreDto> _allStores = const [];
+  TimeOfDay? _dailyFrom;
+  TimeOfDay? _dailyTo;
+  bool _onlyNew = false;
+  bool _onlyNewTouched = false;
+  bool _checking = false;
+  BannerCheckResult? _check;
+  String? _checkError;
+
+  BannersRepository get _repo => context.read<BannersCubit>().repo;
+
   @override
   void initState() {
     super.initState();
     final b = widget.banner;
     if (b != null) {
       _titleCtrl.text = b.title ?? '';
-      _linkCtrl.text = b.linkUrl ?? '';
       // Shown 1-based to match the list row. Stored 0-based.
       _positionCtrl.text = '${b.sortOrder + 1}';
       _active = b.active;
       _startsAt = b.startsAt;
       _endsAt = b.endsAt;
+      _badgeRuCtrl.text = b.badgeRu ?? '';
+      _badgeKkCtrl.text = b.badgeKk ?? '';
+      _stores.addAll(b.storeIds);
+      _dailyFrom = _tod(b.dailyFrom);
+      _dailyTo = _tod(b.dailyTo);
+      _onlyNew = b.minAppBuild != null;
+      _onlyNewTouched = true;
+      _action = BannerActionDraft.fromJson(b.actionType, b.action);
+    } else {
+      _action = BannerActionDraft();
+      _actionDirty = true;
     }
+    try {
+      context.read<StoresRepository>().getStores().then((s) {
+        if (mounted) setState(() => _allStores = s);
+      }).catchError((_) {});
+    } catch (_) {/* no stores repository above (tests) */}
   }
+
+  static TimeOfDay? _tod(String? hhmm) {
+    if (hhmm == null) return null;
+    final p = hhmm.split(':');
+    if (p.length < 2) return null;
+    final h = int.tryParse(p[0]);
+    final m = int.tryParse(p[1]);
+    return (h == null || m == null) ? null : TimeOfDay(hour: h, minute: m);
+  }
+
+  static String? _hhmm(TimeOfDay? t) =>
+      t == null ? null : '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
   @override
   void dispose() {
-    _titleCtrl.dispose();
-    _linkCtrl.dispose();
-    _positionCtrl.dispose();
+    for (final c in [_titleCtrl, _positionCtrl, _badgeRuCtrl, _badgeKkCtrl]) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  void _actionChanged() {
+    setState(() {
+      _actionDirty = true;
+      _check = null;
+      _checkError = null;
+      // A banner that opens something should not reach builds that cannot
+      // open it (they would show it as a dead picture). On by default.
+      if (!_onlyNewTouched) _onlyNew = _action.kind != BannerActionKind.none;
+    });
+  }
+
+  Future<void> _runCheck() async {
+    final local = _action.localError();
+    if (local != null) {
+      setState(() => _checkError = local);
+      return;
+    }
+    setState(() {
+      _checking = true;
+      _check = null;
+      _checkError = null;
+    });
+    try {
+      final r = await _repo.checkAction(_action.kind.wire, _action.payload());
+      if (mounted) setState(() => _check = r);
+    } on BannerValidationException catch (e) {
+      if (mounted) setState(() => _checkError = e.message);
+    } catch (_) {
+      if (mounted) setState(() => _checkError = 'Не удалось проверить: нет связи с сервером');
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  Future<void> _pickDaily({required bool from}) async {
+    final t = await showTimePicker(
+      context: context,
+      initialTime: (from ? _dailyFrom : _dailyTo) ?? const TimeOfDay(hour: 19, minute: 0),
+    );
+    if (t == null || !mounted) return;
+    setState(() => from ? _dailyFrom = t : _dailyTo = t);
   }
 
   Future<void> _pickDateTime({required bool isStart}) async {
@@ -98,6 +198,13 @@ class _BannerEditPageState extends State<BannerEditPage> {
   String? _windowError() {
     if (_startsAt != null && _endsAt != null && !_endsAt!.isAfter(_startsAt!)) {
       return 'Дата окончания должна быть позже даты начала';
+    }
+    return null;
+  }
+
+  String? _dailyError() {
+    if (_dailyFrom != null && _dailyTo != null && _dailyFrom == _dailyTo) {
+      return 'Время «с» и «до» должно отличаться';
     }
     return null;
   }
@@ -159,44 +266,29 @@ class _BannerEditPageState extends State<BannerEditPage> {
     setState(() => _pickedImage = file);
   }
 
+  void _error(String m) => ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(m), backgroundColor: const Color(0xFFD32F2F)),
+      );
+
   Future<void> _save() async {
     if (_saving) return;
 
     // For new banners, an image is required. For edits the image is optional.
     final isNew = widget.banner == null;
     if (isNew && _pickedImage == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Выберите изображение')),
-      );
+      _error('Выберите изображение');
       return;
     }
-
-    // Normalise + light-validate the link URL: prefix https:// if the
-    // operator typed "google.com" without a scheme, and reject obvious
-    // garbage so customers don't tap dead banners. Empty link is fine —
-    // banner without a tap target is supported.
-    final rawLink = _linkCtrl.text.trim();
-    String? normalisedLink;
-    if (rawLink.isNotEmpty) {
-      var l = rawLink;
-      if (!l.startsWith('http://') && !l.startsWith('https://')) {
-        l = 'https://$l';
-      }
-      final uri = Uri.tryParse(l);
-      if (uri == null || !uri.hasAuthority || (uri.host).isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ссылка указана некорректно')),
-        );
+    if (_actionDirty) {
+      final err = _action.localError();
+      if (err != null) {
+        _error(err);
         return;
       }
-      normalisedLink = l;
     }
-
-    final windowErr = _windowError();
+    final windowErr = _windowError() ?? _dailyError();
     if (windowErr != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(windowErr), backgroundColor: const Color(0xFFD32F2F)),
-      );
+      _error(windowErr);
       return;
     }
 
@@ -207,49 +299,61 @@ class _BannerEditPageState extends State<BannerEditPage> {
     if (rawPosition.isNotEmpty) {
       final parsed = int.tryParse(rawPosition);
       if (parsed == null || parsed < 1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Позиция должна быть целым числом от 1')),
-        );
+        _error('Позиция должна быть целым числом от 1');
         return;
       }
       // The field is 1-based for the operator; sort_order is 0-based.
       position = parsed - 1;
     }
 
+    final hasAction = _action.kind != BannerActionKind.none;
+    final extras = BannerExtras(
+      storeIds: _stores.toList(),
+      dailyFrom: _hhmm(_dailyFrom),
+      dailyTo: _hhmm(_dailyTo),
+      // A badge only shows on a banner that opens something (08.11).
+      badgeRu: hasAction ? _badgeRuCtrl.text : '',
+      badgeKk: hasAction ? _badgeKkCtrl.text : '',
+      minAppBuild: _onlyNew ? kBannerActionsMinBuild : null,
+      sendAction: _actionDirty,
+      actionType: _action.kind.wire,
+      action: _action.payload(),
+    );
+
     setState(() => _saving = true);
     try {
       final cubit = context.read<BannersCubit>();
+      // The link field is gone (08.11): links are actions now. Not sending
+      // link_url keeps whatever a script set (the gift banner's shelf link).
       if (isNew) {
         await cubit.create(
           imageFile: _pickedImage!,
           title: _titleCtrl.text.trim(),
-          linkUrl: normalisedLink ?? '',
           sortOrder: position,
           active: _active,
           startsAt: _startsAt,
           endsAt: _endsAt,
+          extras: extras,
         );
       } else {
         await cubit.update(
           id: widget.banner!.id,
           imageFile: _pickedImage,
           title: _titleCtrl.text.trim(),
-          linkUrl: normalisedLink ?? '',
           sortOrder: position,
           active: _active,
           startsAt: _startsAt,
           clearStartsAt: _startsCleared,
           endsAt: _endsAt,
           clearEndsAt: _endsCleared,
+          extras: extras,
         );
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on BannerValidationException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message), backgroundColor: const Color(0xFFD32F2F)),
-      );
+      _error(e.message);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -260,9 +364,22 @@ class _BannerEditPageState extends State<BannerEditPage> {
     }
   }
 
+  Widget _section(String title, [String? hint]) => Padding(
+        padding: const EdgeInsets.only(top: 22, bottom: 6),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
+          if (hint != null) ...[
+            const SizedBox(height: 2),
+            Text(hint, style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+          ],
+        ]),
+      );
+
   @override
   Widget build(BuildContext context) {
     final isNew = widget.banner == null;
+    final kind = _action.kind;
+    final hasAction = kind != BannerActionKind.none;
     return Scaffold(
       appBar: AppBar(title: Text(isNew ? 'Новый баннер' : 'Редактирование')),
       body: ListView(
@@ -272,6 +389,8 @@ class _BannerEditPageState extends State<BannerEditPage> {
             picked: _pickedImage,
             existingUrl: widget.banner?.imageUrl,
             onPick: _pick,
+            kind: kind,
+            badge: _badgeRuCtrl.text,
           ),
           const SizedBox(height: 8),
           Container(
@@ -287,7 +406,9 @@ class _BannerEditPageState extends State<BannerEditPage> {
                 Expanded(
                   child: Text(
                     'Рекомендуемый размер: 1300 × 800. '
-                    'Соотношение сторон 1.5–1.7. Лишнее обрежется.',
+                    'Соотношение сторон 1.5–1.7. Лишнее обрежется.'
+                    '${hasAction ? ' Справа внизу будет кнопка «${bannerPillText(kind)}», '
+                        'не ставьте туда текст.' : ''}',
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade800),
                   ),
                 ),
@@ -304,16 +425,105 @@ class _BannerEditPageState extends State<BannerEditPage> {
               counterText: '',
             ),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _linkCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Ссылка (необязательно)',
-              hintText: 'https://...',
-              border: OutlineInputBorder(),
-            ),
-            keyboardType: TextInputType.url,
+          _section('Что откроется при нажатии',
+              'Без действия баннер просто картинка. Ссылки на сайты не поддерживаются.'),
+          BannerTargetEditor(
+            key: const ValueKey('banner-target'),
+            target: _action.target,
+            kinds: BannerActionKind.values,
+            repo: _repo,
+            stores: _allStores,
+            onChanged: _actionChanged,
           ),
+          if (kind == BannerActionKind.info) ...[
+            const SizedBox(height: 8),
+            BannerInfoEditor(
+              info: _action.info,
+              repo: _repo,
+              stores: _allStores,
+              onChanged: _actionChanged,
+              heroFile: _pickedImage,
+              heroUrl: widget.banner?.imageUrl,
+            ),
+          ],
+          if (hasAction) ...[
+            const SizedBox(height: 10),
+            Row(children: [
+              OutlinedButton.icon(
+                key: const ValueKey('banner-check'),
+                onPressed: _checking ? null : _runCheck,
+                icon: _checking
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.fact_check_outlined),
+                label: const Text('Проверить'),
+              ),
+            ]),
+            if (_checkError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(_checkError!, style: const TextStyle(color: Color(0xFFD32F2F))),
+              ),
+            if (_check != null) _CheckResult(result: _check!),
+            _section('Метка на баннере', 'Необязательно. Коротко: «−20%», «Новинка». Видна только на баннере с действием.'),
+            Row(children: [
+              Expanded(
+                child: TextField(
+                  controller: _badgeRuCtrl,
+                  maxLength: 24,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(labelText: 'Метка', border: OutlineInputBorder(), counterText: ''),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _badgeKkCtrl,
+                  maxLength: 24,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    labelText: 'Метка (KK)',
+                    border: const OutlineInputBorder(),
+                    counterText: '',
+                    helperText: kkMissing(_badgeRuCtrl.text, _badgeKkCtrl.text) == null ? null : 'Нет KK',
+                    helperStyle: const TextStyle(color: Color(0xFFB26A00)),
+                  ),
+                ),
+              ),
+            ]),
+            SwitchListTile(
+              key: const ValueKey('banner-only-new'),
+              contentPadding: EdgeInsets.zero,
+              value: _onlyNew,
+              onChanged: (v) => setState(() {
+                _onlyNew = v;
+                _onlyNewTouched = true;
+              }),
+              title: const Text('Только новые версии приложения'),
+              subtitle: Text(_onlyNew
+                  ? 'Покажется с версии 2.0.9 (сборка $kBannerActionsMinBuild). В старых версиях нажать на баннер нельзя, поэтому там его не будет.'
+                  : 'Старые версии покажут его просто картинкой, без нажатия.'),
+            ),
+          ],
+          _section('Магазины', 'Без выбора баннер виден во всех магазинах.'),
+          Wrap(spacing: 8, runSpacing: 6, children: [
+            ChoiceChip(
+              label: const Text('Все магазины'),
+              selected: _stores.isEmpty,
+              onSelected: (_) => setState(_stores.clear),
+            ),
+            for (final s in _allStores)
+              FilterChip(
+                label: Text(s.storeName),
+                selected: _stores.contains(s.storeId),
+                onSelected: (v) => setState(() => v ? _stores.add(s.storeId) : _stores.remove(s.storeId)),
+              ),
+            for (final id in _stores.where((id) => !_allStores.any((s) => s.storeId == id)))
+              FilterChip(
+                label: Text('Магазин $id'),
+                selected: true,
+                onSelected: (_) => setState(() => _stores.remove(id)),
+              ),
+          ]),
           const SizedBox(height: 8),
           SwitchListTile(
             value: _active,
@@ -330,18 +540,7 @@ class _BannerEditPageState extends State<BannerEditPage> {
               border: OutlineInputBorder(),
             ),
           ),
-          const SizedBox(height: 20),
-          Text(
-            'Показ по расписанию',
-            style: Theme.of(context).textTheme.titleSmall,
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Необязательно. Без дат баннер показывается пока включён '
-            'переключатель выше.',
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-          ),
-          const SizedBox(height: 8),
+          _section('Показ по расписанию', 'Необязательно. Без дат баннер показывается пока включён переключатель выше.'),
           _ScheduleRow(
             label: 'Начало показа',
             value: _startsAt == null ? null : _fmt(_startsAt!),
@@ -372,10 +571,38 @@ class _BannerEditPageState extends State<BannerEditPage> {
               style: const TextStyle(color: Color(0xFFD32F2F), fontSize: 12),
             ),
           ],
+          _section('Часы показа каждый день', 'Время Алматы. Например «с 19:00» для вечерней скидки. Без времени: весь день.'),
+          Row(children: [
+            Expanded(
+              child: _ScheduleRow(
+                label: 'С',
+                value: _hhmm(_dailyFrom),
+                onPick: () => _pickDaily(from: true),
+                onClear: _dailyFrom == null ? null : () => setState(() => _dailyFrom = null),
+                icon: Icons.schedule,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _ScheduleRow(
+                label: 'До',
+                value: _hhmm(_dailyTo),
+                onPick: () => _pickDaily(from: false),
+                onClear: _dailyTo == null ? null : () => setState(() => _dailyTo = null),
+                icon: Icons.schedule,
+              ),
+            ),
+          ]),
+          if (_dailyError() != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_dailyError()!, style: const TextStyle(color: Color(0xFFD32F2F), fontSize: 12)),
+            ),
           const SizedBox(height: 24),
           SizedBox(
             height: 50,
             child: ElevatedButton.icon(
+              key: const ValueKey('banner-save'),
               onPressed: _saving ? null : _save,
               icon: _saving
                   ? const SizedBox(
@@ -393,78 +620,100 @@ class _BannerEditPageState extends State<BannerEditPage> {
   }
 }
 
+/// «Проверить»: per shop, how many of the products a customer can order now.
+class _CheckResult extends StatelessWidget {
+  const _CheckResult({required this.result});
+  final BannerCheckResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    if (result.stores.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 8),
+        child: Text('Всё в порядке', style: TextStyle(color: Color(0xFF2E7D32))),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (result.checked == 'cta')
+          const Text('Кнопка страницы:', style: TextStyle(fontWeight: FontWeight.w600)),
+        for (final s in result.stores)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(children: [
+              Icon(s.orderable > 0 ? Icons.check_circle : Icons.remove_circle_outline,
+                  size: 18, color: s.orderable > 0 ? const Color(0xFF2E7D32) : const Color(0xFFC62828)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  s.orderable > 0
+                      ? '${s.storeName}: в продаже ${s.orderable} из ${s.total}'
+                      : '${s.storeName}: сейчас не продаётся, баннер там не покажется',
+                ),
+              ),
+            ]),
+          ),
+      ]),
+    );
+  }
+}
+
 class _ImagePickerCard extends StatelessWidget {
   final File? picked;
   final String? existingUrl;
   final VoidCallback onPick;
+  final BannerActionKind kind;
+  final String badge;
 
   const _ImagePickerCard({
     required this.picked,
     required this.existingUrl,
     required this.onPick,
+    this.kind = BannerActionKind.none,
+    this.badge = '',
   });
 
   @override
   Widget build(BuildContext context) {
-    return AspectRatio(
-      // Must match the customer carousel (_SliderCarousel in home_page.dart),
-      // which is 16/8 with BoxFit.cover. At 13/8 the preview showed ~19% more
-      // image height than the phone actually renders, so anything an operator
-      // centred vertically got cropped in the app.
-      aspectRatio: 16 / 8,
-      child: Material(
-        color: Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: onPick,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: _previewLayer(),
-          ),
+    final hasArt = picked != null || (existingUrl ?? '').isNotEmpty;
+    // Drawn as the customer app draws the slide (16/8, cover, the badge and
+    // the pill on a banner with an action), so what is centred here is
+    // centred on the phone.
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(22),
+        onTap: onPick,
+        child: Stack(
+          children: [
+            hasArt
+                ? BannerSlidePreview(file: picked, url: existingUrl, kind: kind, badge: badge)
+                : AspectRatio(
+                    aspectRatio: 16 / 8,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.add_photo_alternate_outlined, size: 48, color: Colors.grey.shade500),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Выбрать изображение',
+                              style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+            if (hasArt) const Positioned(right: 8, top: 8, child: _ChangeBadge()),
+          ],
         ),
-      ),
-    );
-  }
-
-  Widget _previewLayer() {
-    if (picked != null) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          Image.file(picked!, fit: BoxFit.cover),
-          const Positioned(
-            right: 8,
-            top: 8,
-            child: _ChangeBadge(),
-          ),
-        ],
-      );
-    }
-    if (existingUrl != null && existingUrl!.isNotEmpty) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          CachedNetworkImage(imageUrl: existingUrl!, fit: BoxFit.cover),
-          const Positioned(
-            right: 8,
-            top: 8,
-            child: _ChangeBadge(),
-          ),
-        ],
-      );
-    }
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.add_photo_alternate_outlined, size: 48, color: Colors.grey.shade500),
-          const SizedBox(height: 8),
-          Text(
-            'Выбрать изображение',
-            style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w600),
-          ),
-        ],
       ),
     );
   }
@@ -500,12 +749,14 @@ class _ScheduleRow extends StatelessWidget {
   final String? value;
   final VoidCallback onPick;
   final VoidCallback? onClear;
+  final IconData icon;
 
   const _ScheduleRow({
     required this.label,
     required this.value,
     required this.onPick,
     this.onClear,
+    this.icon = Icons.calendar_month_outlined,
   });
 
   @override
@@ -546,7 +797,7 @@ class _ScheduleRow extends StatelessWidget {
                 icon: const Icon(Icons.clear, size: 20),
                 onPressed: onClear,
               ),
-            const Icon(Icons.calendar_month_outlined, size: 20),
+            Icon(icon, size: 20),
           ],
         ),
       ),
