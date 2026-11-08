@@ -1,12 +1,15 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/api/api_errors.dart';
 import '../../../core/format/phone.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../../stores/data/stores_repository.dart';
 import '../../stores/models/store_models.dart';
 import '../data/users_repository.dart';
+import '../models/staff_password.dart';
 import '../models/user_models.dart';
 
 /// Sentinel used by _save to bubble validation messages through the
@@ -80,6 +83,12 @@ class _UserEditPageState extends State<UserEditPage> {
       _error = null;
     });
 
+    // Edit path only: whether PUT /admin/users/{id} already went through, so a
+    // later failure (the stores call) never reads as «nothing was saved»
+    // when the new password is in fact already live.
+    var userSaved = false;
+    var passwordSent = false;
+
     try {
       final repo = context.read<UsersRepository>();
       final phoneRaw = _phoneCtrl.text.trim();
@@ -111,9 +120,8 @@ class _UserEditPageState extends State<UserEditPage> {
         if (password.isEmpty) {
           throw _ValidationFailure('Укажите пароль');
         }
-        if (password.length < 6) {
-          throw _ValidationFailure('Пароль должен быть не короче 6 символов');
-        }
+        final problem = staffPasswordProblem(password);
+        if (problem != null) throw _ValidationFailure(problem);
         saved = await repo.create(
           phone: phone,
           email: email.isEmpty ? null : email,
@@ -125,6 +133,14 @@ class _UserEditPageState extends State<UserEditPage> {
         );
       } else {
         final id = widget.existing!.id;
+        // 08.11: a new password the server refuses (under 12 characters, no
+        // digit or no letter) used to come back as a bare 400 and read as
+        // «такой пользователь уже есть», so the old password silently stayed.
+        if (password.isNotEmpty) {
+          final problem = staffPasswordProblem(password);
+          if (problem != null) throw _ValidationFailure(problem);
+        }
+        passwordSent = password.isNotEmpty;
         await repo.update(
           id,
           email: email.isEmpty ? null : email,
@@ -133,23 +149,49 @@ class _UserEditPageState extends State<UserEditPage> {
           role: _role,
           password: password.isEmpty ? null : password,
         );
+        userSaved = true;
         saved = await repo.assignStores(id, stores);
       }
 
       if (!mounted) return;
+      final who = saved.fullName == '—' ? saved.phone : saved.fullName;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             _isCreate
                 ? 'Пользователь создан'
-                : 'Сохранено: ${saved.fullName == '—' ? saved.phone : saved.fullName}',
+                : passwordSent
+                    ? 'Сохранено. Новый пароль для $who действует'
+                    : 'Сохранено: $who',
           ),
         ),
       );
       Navigator.of(context).pop(true);
     } catch (e) {
-      setState(
-        () => _error = _humanError(e),
+      if (!mounted) return;
+      final reason = _humanError(e);
+      final String message;
+      if (e is _ValidationFailure) {
+        message = reason;
+      } else if (userSaved) {
+        // The user row (and the password, when one was typed) IS saved; only
+        // the shop list failed. Clear the field so a retry does not look like
+        // a second password change.
+        _passwordCtrl.clear();
+        message = passwordSent
+            ? 'Новый пароль сохранён, но магазины не сохранились. $reason'
+            : 'Данные сохранены, но магазины не сохранились. $reason';
+      } else {
+        message = passwordSent
+            ? 'Не сохранено, старый пароль действует. $reason'
+            : 'Не сохранено. $reason';
+      }
+      setState(() => _error = message);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red.shade700,
+        ),
       );
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -193,7 +235,7 @@ class _UserEditPageState extends State<UserEditPage> {
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = _humanError(e));
+      setState(() => _error = 'Не удалось удалить. ${_humanError(e)}');
     } finally {
       if (mounted) setState(() => _deleting = false);
     }
@@ -202,9 +244,18 @@ class _UserEditPageState extends State<UserEditPage> {
   String _humanError(Object e) {
     // Surface validation messages verbatim — they're already user-facing.
     if (e is _ValidationFailure) return e.message;
+    // The server's own Russian reason (password rule, duplicate phone, role)
+    // is the only thing that tells the admin what to change; show it as is.
+    final detail = backendDetail(e);
+    if (detail != null) return detail;
+    final status = backendStatus(e);
+    if (status == 400) return 'Проверьте данные. Возможно, такой пользователь уже есть.';
+    if (status == 422) return 'Проверьте данные: email или пароль в неверном формате.';
+    if (e is DioException || status != null) {
+      return describeApiError(e, subject: 'данные');
+    }
     final s = e.toString();
-    if (s.contains('400')) return 'Проверь данные. Возможно, такой пользователь уже есть.';
-    return 'Не удалось сохранить. ${s.characters.length > 120 ? s.characters.take(120).toString() : s}';
+    return s.characters.length > 120 ? s.characters.take(120).toString() : s;
   }
 
   @override
@@ -294,7 +345,8 @@ class _UserEditPageState extends State<UserEditPage> {
             decoration: InputDecoration(
               labelText: _isCreate
                   ? 'Пароль'
-                  : 'Новый пароль (оставь пустым, чтобы не менять)',
+                  : 'Новый пароль (оставьте пустым, чтобы не менять)',
+              helperText: kStaffPasswordHint,
               border: const OutlineInputBorder(),
             ),
           ),
