@@ -49,6 +49,7 @@ class _FakeAuthService implements HttpClientAdapter {
   final requests = <_Req>[];
   String? refusePasswordWith; // a server refusal the app cannot predict
   bool storesFail = false;
+  bool dropUserPut = false; // the request leaves, no answer comes back
 
   static const _user = {
     'id': 7,
@@ -74,6 +75,10 @@ class _FakeAuthService implements HttpClientAdapter {
     requests.add(_Req(o.method, o.path, o.data));
     if (o.path == '/gw/catalog/stores') return _json(200, <Object>[]);
     if (o.method == 'PUT' && o.path == '/gw/auth/admin/users/7') {
+      if (dropUserPut) {
+        throw DioException(
+            requestOptions: o, type: DioExceptionType.receiveTimeout);
+      }
       final body = o.data as Map;
       final pw = body['password'];
       if (pw is String) {
@@ -111,7 +116,11 @@ final _manager = AdminUser.fromJson(const {
   'created_at': '2026-11-01T10:00:00',
 });
 
+/// What the editor popped with (users_list_page reloads on `true`).
+Object? _popResult = 'not popped';
+
 Future<_FakeAuthService> _openEditor(WidgetTester tester) async {
+  _popResult = 'not popped';
   final server = _FakeAuthService();
   final tokens = _Tokens();
   final api = ApiClient(
@@ -138,11 +147,13 @@ Future<_FakeAuthService> _openEditor(WidgetTester tester) async {
             builder: (ctx) => Scaffold(
               body: Center(
                 child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).push(
-                    MaterialPageRoute<bool>(
-                      builder: (_) => UserEditPage(existing: _manager),
-                    ),
-                  ),
+                  onPressed: () async {
+                    _popResult = await Navigator.of(ctx).push(
+                      MaterialPageRoute<bool>(
+                        builder: (_) => UserEditPage(existing: _manager),
+                      ),
+                    );
+                  },
                   child: const Text('open'),
                 ),
               ),
@@ -230,6 +241,35 @@ void main() {
     final field = tester.widget<TextField>(_passwordField());
     expect(field.controller!.text, isEmpty,
         reason: 'a retry must not look like a second password change');
+  });
+
+  testWidgets(
+      'no answer from the server: does NOT claim the old password still works (critic M2)',
+      (tester) async {
+    final server = await _openEditor(tester);
+    server.dropUserPut = true;
+    await tester.enterText(_passwordField(), 'Shymkent2026x');
+    await _save(tester);
+
+    expect(find.textContaining('неизвестно, сохранился ли новый пароль'),
+        findsWidgets);
+    expect(find.textContaining('старый пароль действует'), findsNothing);
+  });
+
+  testWidgets(
+      'leaving after «saved, shops failed» still tells the list to reload (critic L5)',
+      (tester) async {
+    final server = await _openEditor(tester);
+    server.storesFail = true;
+    await tester.enterText(_passwordField(), 'Shymkent2026x');
+    await _save(tester);
+    await tester.pumpAndSettle();
+
+    final nav = tester.state<NavigatorState>(find.byType(Navigator));
+    await nav.maybePop();
+    await tester.pumpAndSettle();
+    expect(find.byType(UserEditPage), findsNothing);
+    expect(_popResult, isTrue);
   });
 
   testWidgets('an empty password field sends no `password` key',

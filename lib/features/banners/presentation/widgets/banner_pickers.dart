@@ -56,6 +56,7 @@ class _BannerProductPickerPageState extends State<BannerProductPickerPage> {
       setState(() {
         _hits = const [];
         _error = null;
+        _loading = false;
       });
       return;
     }

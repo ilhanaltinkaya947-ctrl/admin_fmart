@@ -42,6 +42,9 @@ class _UserEditPageState extends State<UserEditPage> {
 
   bool _saving = false;
   bool _deleting = false;
+  // The user row was saved but a later step failed and the page stayed open:
+  // leaving must still tell the list to reload (critic 1.2.9 L5).
+  bool _rowSaved = false;
   String? _error;
 
   bool get _isCreate => widget.existing == null;
@@ -150,6 +153,7 @@ class _UserEditPageState extends State<UserEditPage> {
           password: password.isEmpty ? null : password,
         );
         userSaved = true;
+        _rowSaved = true;
         saved = await repo.assignStores(id, stores);
       }
 
@@ -181,6 +185,12 @@ class _UserEditPageState extends State<UserEditPage> {
         message = passwordSent
             ? 'Новый пароль сохранён, но магазины не сохранились. $reason'
             : 'Данные сохранены, но магазины не сохранились. $reason';
+      } else if (e is DioException && backendStatus(e) == null) {
+        // No answer at all: the server may have saved it (critic 1.2.9 M2).
+        // Resending the same request is safe.
+        message = passwordSent
+            ? 'Нет связи: неизвестно, сохранился ли новый пароль. Повторите сохранение.'
+            : 'Нет связи: неизвестно, сохранилось ли. Повторите сохранение.';
       } else {
         message = passwordSent
             ? 'Не сохранено, старый пароль действует. $reason'
@@ -259,7 +269,15 @@ class _UserEditPageState extends State<UserEditPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => PopScope(
+        canPop: !_rowSaved,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) Navigator.of(context).pop(true);
+        },
+        child: _page(context),
+      );
+
+  Widget _page(BuildContext context) {
     final title = _isCreate ? 'Новый пользователь' : 'Редактировать пользователя';
 
     // Self-delete guard: an admin opening their own profile must not

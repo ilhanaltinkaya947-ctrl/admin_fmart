@@ -46,6 +46,9 @@ class _BannerEditPageState extends State<BannerEditPage> {
   bool _active = true;
   File? _pickedImage;
   bool _saving = false;
+  // Set on the first Save tap, before the action check and its dialog, so a
+  // second tap cannot start a second save (critic 1.2.9 HIGH-1).
+  bool _busy = false;
   DateTime? _startsAt;
   DateTime? _endsAt;
   // Tracked separately from the value so "clear an existing date" is
@@ -162,6 +165,11 @@ class _BannerEditPageState extends State<BannerEditPage> {
       ].join('|');
 
   Future<void> _maybeLeave() async {
+    // A save in flight still lands: «Изменения пропадут» would be untrue.
+    if (_busy) {
+      _error('Идёт сохранение, подождите');
+      return;
+    }
     if (_snapshot() == _initialSnapshot) {
       _leaving = true;
       Navigator.of(context).pop();
@@ -392,9 +400,20 @@ class _BannerEditPageState extends State<BannerEditPage> {
         SnackBar(content: Text(m), backgroundColor: const Color(0xFFD32F2F)),
       );
 
+  /// Busy from the FIRST tap (critic 1.2.9 HIGH-1): the action check and the
+  /// «нигде не покажется» dialog run before the request, and a second tap
+  /// during them used to slip past the guard and create a second banner.
   Future<void> _save() async {
-    if (_saving) return;
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await _saveSteps();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
+  Future<void> _saveSteps() async {
     // For new banners, an image is required. For edits the image is optional.
     final isNew = widget.banner == null;
     if (isNew && _pickedImage == null) {
@@ -440,11 +459,16 @@ class _BannerEditPageState extends State<BannerEditPage> {
       }
       final shown = r?.stores.where((s) => _targets(s.storeId)).toList() ?? const <BannerStoreCheck>[];
       if (r != null && r.stores.isNotEmpty && shown.every((s) => s.orderable == 0)) {
+        // An info page whose BUTTON has nothing to open still shows, just
+        // without the button (contract section 3).
+        final cta = r.checked == 'cta';
         final go = await showDialog<bool>(
           context: context,
           builder: (c) => AlertDialog(
-            title: const Text('Баннер сейчас нигде не покажется'),
-            content: const Text('Ни в одном выбранном магазине сейчас нечего открыть по этому баннеру. Сохранить всё равно?'),
+            title: Text(cta ? 'Кнопка страницы сейчас нигде не откроется' : 'Баннер сейчас нигде не покажется'),
+            content: Text(cta
+                ? 'Ни в одном выбранном магазине сейчас нечего открыть по кнопке. Страница покажется без кнопки. Сохранить всё равно?'
+                : 'Ни в одном выбранном магазине сейчас нечего открыть по этому баннеру. Сохранить всё равно?'),
             actions: [
               TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('Вернуться')),
               TextButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('Сохранить')),
@@ -538,7 +562,7 @@ class _BannerEditPageState extends State<BannerEditPage> {
           title: Text(isNew ? 'Новый баннер' : 'Редактирование'),
           actions: [
             TextButton(
-              onPressed: _saving ? null : _save,
+              onPressed: _busy ? null : _save,
               child: const Text('Сохранить'),
             ),
           ],
@@ -797,8 +821,9 @@ class _BannerEditPageState extends State<BannerEditPage> {
               height: 50,
               child: ElevatedButton.icon(
                 key: const ValueKey('banner-save'),
-                onPressed: _saving ? null : _save,
-                icon: _saving
+                onPressed: _busy ? null : _save,
+                // Also spins while Save runs the action check.
+                icon: (_saving || (_busy && _checking))
                     ? const SizedBox(
                         width: 18,
                         height: 18,

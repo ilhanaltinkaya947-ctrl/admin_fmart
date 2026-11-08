@@ -2,6 +2,7 @@
 // hours, badges, build floor, the action only when touched), the payload
 // shapes the server expects, the server's refusal shown as is, the preview
 // as the customer app draws it, and the list line.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -23,13 +24,16 @@ import 'package:flutter_test/flutter_test.dart';
 class _Wire {
   final List<RequestOptions> sent = [];
   Response<dynamic>? Function(RequestOptions o)? answer;
+  /// When set, check-action waits for it (a slow network during Save).
+  Future<void>? holdCheck;
 
   BannersRepository repo() {
     final api = ApiClient(baseUrl: 'http://localhost', tokenStorage: TokenStorage(), onUnauthorized: () {});
     api.dio.interceptors.insert(
       0,
-      InterceptorsWrapper(onRequest: (o, h) {
+      InterceptorsWrapper(onRequest: (o, h) async {
         sent.add(o);
+        if (holdCheck != null && o.path.endsWith('check-action')) await holdCheck;
         final a = answer?.call(o) ??
             Response<dynamic>(requestOptions: o, statusCode: 200, data: <String, dynamic>{
               'id': 1,
@@ -386,6 +390,57 @@ void main() {
       await t.pumpAndSettle();
       expect(w.sent.where((o) => o.method == 'PATCH'), isEmpty);
       expect(find.text('Фиркан Сити: полка здесь сейчас не идёт, баннер не покажется'), findsOneWidget);
+    });
+
+    testWidgets('a second Save tap during the action check is ignored (critic 1.2.9 HIGH-1)', (t) async {
+      tall(t);
+      final gate = Completer<void>();
+      final w = _Wire()
+        ..holdCheck = gate.future
+        ..answer = (o) => o.path.endsWith('check-action')
+            ? Response<dynamic>(requestOptions: o, statusCode: 200, data: {
+                'ok': true,
+                'checked': 'action',
+                'stores': [
+                  {'store_id': 3, 'store_name': 'Фиркан Сити', 'orderable': 5, 'total': 5},
+                ],
+              })
+            : null;
+      await t.pumpWidget(app(BannerEditPage(banner: existing()), w.repo()));
+      await t.tap(find.byKey(const ValueKey('banner-kind-deals')));
+      await t.pump();
+      final save = find.byKey(const ValueKey('banner-save'));
+      await t.ensureVisible(save);
+      await t.tap(save);
+      await t.pump();
+      await t.tap(find.widgetWithText(TextButton, 'Сохранить'), warnIfMissed: false);
+      await t.pump();
+      gate.complete();
+      await t.pumpAndSettle();
+      expect(w.sent.where((o) => o.path.endsWith('check-action')), hasLength(1));
+      expect(w.sent.where((o) => o.method == 'PATCH'), hasLength(1));
+    });
+
+    testWidgets('an info page whose button has nothing to open: says the page still shows (critic 1.2.9 M1)', (t) async {
+      tall(t);
+      final w = _Wire()
+        ..answer = (o) => o.path.endsWith('check-action')
+            ? Response<dynamic>(requestOptions: o, statusCode: 200, data: {
+                'ok': true,
+                'checked': 'cta',
+                'stores': [
+                  {'store_id': 3, 'store_name': 'Фиркан Сити', 'orderable': 0, 'total': 1},
+                ],
+              })
+            : null;
+      await t.pumpWidget(app(BannerEditPage(banner: existing()), w.repo()));
+      await t.tap(find.byKey(const ValueKey('banner-kind-deals')));
+      await t.pump();
+      await t.ensureVisible(find.byKey(const ValueKey('banner-save')));
+      await t.tap(find.byKey(const ValueKey('banner-save')));
+      await t.pumpAndSettle();
+      expect(find.text('Кнопка страницы сейчас нигде не откроется'), findsOneWidget);
+      expect(find.text('Баннер сейчас нигде не покажется'), findsNothing);
     });
 
     testWidgets('a reopened collection reads as names, not numbers', (t) async {
