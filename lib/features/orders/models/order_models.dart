@@ -1166,6 +1166,14 @@ String? pickupHandoverBlockedReason(Order o) {
 String? orderStepBlockedReason(Order o) {
   final pickup = pickupHandoverBlockedReason(o);
   if (pickup != null) return pickup;
+  // Critic round 2 HIGH: the big step sits ABOVE the items, so it gets tapped
+  // first. Moving on while weighed lines have no reading locks the weight
+  // fields and strands the buffer refund (the server refuses it anyway).
+  final unweighed = unweighedWeightLines(o);
+  if (unweighed > 0 && o.status.toLowerCase().trim() == 'processing') {
+    return 'Сначала взвесьте весовые товары (осталось $unweighed), '
+        '${o.fulfillmentType.toLowerCase().trim() == 'pickup' ? 'потом нажмите «Заказ собран»' : 'потом вызывайте курьера'}.';
+  }
   if (o.fulfillmentType.toLowerCase().trim() != 'pickup' &&
       o.status.toLowerCase().trim() == 'processing' &&
       o.substitutionBlocksHandover) {

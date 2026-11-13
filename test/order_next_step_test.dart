@@ -1,3 +1,4 @@
+import 'package:admin_fmart/core/services/order_watcher.dart' show OpenOrderScreens;
 import 'package:admin_fmart/features/orders/models/order_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -59,5 +60,34 @@ void main() {
     expect(orderStepBlockedReason(o), contains('Вызвать курьера можно будет после ответа'));
     expect(orderNextStep(o, ignoreOpenSubstitution: true)?.label, 'Заказ собран, вызвать курьера');
     expect(orderStepBlockedReason(_o('processing')), isNull);
+  });
+
+  test('critic round 2: no forward step while weighed lines are unweighed', () {
+    Order weighed(String st, String f, {int? actualG}) => Order.fromJson({
+          'id': 1, 'customer_id': 2, 'status': st, 'total_amount': '2369', 'delivery_sum': '0',
+          'store_id': 3, 'store_name': 'X', 'delivery_address': '', 'fulfillment_type': f,
+          'customer_comment': '', 'payment_method': 'epay', 'is_promo': false,
+          'created_at': '2026-11-13T06:00:00Z', 'updated_at': '2026-11-13T06:00:00Z',
+          'items': [
+            {'id': 1, 'product_id': 101, 'qty': 6, 'price': '359', 'total': '2369', 'uom': 'кг',
+             'unit_g': 50, 'price_per_kg': '7185', 'ordered_g': 300, 'charged_g_cap': 330,
+             'buffer_amount': '215', if (actualG != null) 'actual_g': actualG},
+          ],
+        });
+    expect(orderStepBlockedReason(weighed('processing', 'delivery')), contains('потом вызывайте курьера'));
+    expect(orderStepBlockedReason(weighed('processing', 'pickup')), contains('потом нажмите «Заказ собран»'));
+    expect(orderStepBlockedReason(weighed('processing', 'delivery', actualG: 287)), isNull);
+    expect(orderStepBlockedReason(weighed('paid', 'delivery')), isNull, reason: 'accepting is never blocked');
+  });
+
+  test('the same order open twice stays "open" until both close', () {
+    final s = OpenOrderScreens()..add(7)..add(7);
+    s.remove(7);
+    expect(s.contains(7), isTrue);
+    s.remove(7);
+    expect(s.contains(7), isFalse);
+    s.remove(7); // an extra close never goes negative
+    s.add(7);
+    expect(s.contains(7), isTrue);
   });
 }

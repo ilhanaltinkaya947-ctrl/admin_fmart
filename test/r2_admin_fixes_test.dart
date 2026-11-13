@@ -554,10 +554,10 @@ void main() {
   });
 
   // ---------------------------------------------------------------- 5. version
-  group('1.2.9 (71)', () {
+  group('1.3.0 (72)', () {
     test('pubspec and the push extension carry the same version', () {
       expect(File('pubspec.yaml').readAsStringSync(),
-          contains('\nversion: 1.2.9+71\n'));
+          contains('\nversion: 1.3.0+72\n'));
       final pbx =
           File('ios/Runner.xcodeproj/project.pbxproj').readAsStringSync();
       // Debug, Release, Profile of the extension target.
@@ -569,8 +569,8 @@ void main() {
       expect(blocks.length, 3);
       for (final b in blocks) {
         final head = b.split('name = ').first;
-        expect(head, contains('MARKETING_VERSION = 1.2.9;'));
-        expect(head, contains('CURRENT_PROJECT_VERSION = 71;'));
+        expect(head, contains('MARKETING_VERSION = 1.3.0;'));
+        expect(head, contains('CURRENT_PROJECT_VERSION = 72;'));
       }
     });
   });

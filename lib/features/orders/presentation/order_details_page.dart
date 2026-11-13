@@ -788,7 +788,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     for (final s in const [3, 10]) {
       Future<void>.delayed(Duration(seconds: s), () {
         if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return;
-        context.read<DeliveryCubit>().initByOrder(_order.id);
+        final cubit = context.read<DeliveryCubit>();
+        final st = cubit.state;
+        // Only while the section still says «no claim» (or shows nothing): never
+        // over a claim, a tariff choice or a form the manager is filling in
+        // (critic round 2 MED).
+        final noClaimHere = st is DeliveryNoClaim && st.orderId == _order.id;
+        if (!noClaimHere && st is! DeliveryIdle) return;
+        cubit.initByOrder(_order.id);
       });
     }
   }

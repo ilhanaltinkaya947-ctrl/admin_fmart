@@ -27,7 +27,24 @@ final ValueNotifier<bool> alarmShowing = ValueNotifier(false);
 /// Order ids whose order screen is open right now (OrderDetailsPage adds and
 /// removes itself). A bar tap for one opens nothing new (UX review L8), and a
 /// reminder never rings over the order the cashier is looking at (critic M4).
-final Set<int> openOrderScreens = <int>{};
+final OpenOrderScreens openOrderScreens = OpenOrderScreens();
+
+/// A counted set: the same order can be open twice (push «Открыть» over the
+/// list's copy); closing one must not forget the other (critic round 2 LOW).
+class OpenOrderScreens {
+  final Map<int, int> _n = {};
+  void add(int id) => _n[id] = (_n[id] ?? 0) + 1;
+  void remove(int id) {
+    final c = (_n[id] ?? 0) - 1;
+    if (c <= 0) {
+      _n.remove(id);
+    } else {
+      _n[id] = c;
+    }
+  }
+
+  bool contains(int id) => _n.containsKey(id);
+}
 
 /// How long «Напомнить через 3 мин» (or opening the order) quiets the alarm
 /// while an order is still not accepted.

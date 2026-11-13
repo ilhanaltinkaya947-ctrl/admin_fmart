@@ -31,4 +31,11 @@ void main() {
     expect(find.text('Принять заказ'), findsNothing);
     await disposePage(t);
   });
+
+  testWidgets('critic round 2: unweighed kg lines -> the reason, not the courier button', (t) async {
+    await pumpOrderPage(t, fakeRepo({...delivery('processing'), 'weight_settled': false}));
+    expect(find.text('Заказ собран, вызвать курьера'), findsNothing);
+    expect(find.textContaining('Сначала взвесьте весовые товары'), findsWidgets);
+    await disposePage(t);
+  });
 }
