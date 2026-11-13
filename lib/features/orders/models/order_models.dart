@@ -1103,6 +1103,44 @@ PickupHandoverStep? pickupHandoverStep(
   }
 }
 
+/// Store app 1.3.0 S1: the ONE next step for any order, shown as a big button
+/// under the status. Pickup keeps exactly [pickupHandoverStep]; this only adds
+/// the two steps a delivery order (and a pickup order not yet accepted) never
+/// had a button for. Every move goes through the server's own rules (weights,
+/// open substitutions, alcohol hours) and a refusal is shown, not hidden.
+PickupHandoverStep? orderNextStep(Order o, {bool ignoreOpenSubstitution = false}) {
+  final st = o.status.toLowerCase().trim();
+  if (st == 'paid') {
+    return PickupHandoverStep(
+      toStatus: 'processing',
+      label: 'Принять заказ',
+      hint: 'Покупатель увидит, что заказ собирают.',
+      // No confirmation: accepting is the expected first tap on every order.
+      confirmTitle: '',
+      confirmBody: '',
+      confirmAction: '',
+      successText: 'Заказ №${o.id} принят',
+    );
+  }
+  if (o.fulfillmentType.toLowerCase().trim() == 'pickup') {
+    return pickupHandoverStep(o, ignoreOpenSubstitution: ignoreOpenSubstitution);
+  }
+  if (st == 'processing') {
+    if (o.substitutionBlocksHandover && !ignoreOpenSubstitution) return null;
+    return PickupHandoverStep(
+      toStatus: 'ready-for-delivery',
+      label: 'Заказ собран, вызвать курьера',
+      hint: 'Курьер Яндекс приедет за заказом в магазин, покупатель получит уведомление.',
+      // Confirmed: this books (and pays for) a Yandex courier.
+      confirmTitle: 'Вызвать курьера?',
+      confirmBody: 'Заказ №${o.id} собран и упакован? Курьер Яндекс приедет за ним в магазин.',
+      confirmAction: 'Вызвать курьера',
+      successText: 'Курьер вызывается',
+    );
+  }
+  return null;
+}
+
 /// Why the handover button is absent, for a pickup order that has no step.
 ///
 /// Returning null from [pickupHandoverStep] used to make the whole block
@@ -1118,6 +1156,21 @@ String? pickupHandoverBlockedReason(Order o) {
   if (o.substitutionBlocksHandover) {
     return 'Ждём ответ покупателя по замене. '
         'Выдать заказ можно будет после ответа.';
+  }
+  return null;
+}
+
+/// 1.3.0 S1: why the next-step button is absent, for ANY order: pickup keeps
+/// [pickupHandoverBlockedReason]; a delivery order being picked says the
+/// courier waits for the customer's answer on a replacement.
+String? orderStepBlockedReason(Order o) {
+  final pickup = pickupHandoverBlockedReason(o);
+  if (pickup != null) return pickup;
+  if (o.fulfillmentType.toLowerCase().trim() != 'pickup' &&
+      o.status.toLowerCase().trim() == 'processing' &&
+      o.substitutionBlocksHandover) {
+    return 'Ждём ответ покупателя по замене. '
+        'Вызвать курьера можно будет после ответа.';
   }
   return null;
 }

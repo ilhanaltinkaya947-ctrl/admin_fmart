@@ -262,7 +262,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// The one-tap handover step available right now, or null.
   /// Pure decision lives in order_models.dart so it can be tested without
   /// building this 2,000-line widget.
-  PickupHandoverStep? get _pickupNextStep => pickupHandoverStep(_order);
+  // 1.3.0 S1: the next step for EVERY order (pickup keeps its own steps).
+  PickupHandoverStep? get _pickupNextStep => orderNextStep(_order);
 
   bool get _deliveryUnavailable {
     // САМОВЫВОЗ has no courier by definition — the customer is coming to
@@ -1062,9 +1063,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // after it can never render. `ignoreOpenSubstitution` asks the only
     // question that matters here — would this order have a handover at all
     // once the customer answers — so a canceled order stays silent.
-    final blocked = pickupHandoverBlockedReason(_order);
+    final blocked = orderStepBlockedReason(_order);
     if (blocked != null) {
-      if (pickupHandoverStep(_order, ignoreOpenSubstitution: true) == null) {
+      if (orderNextStep(_order, ignoreOpenSubstitution: true) == null) {
         return const [];
       }
       return [
@@ -3090,6 +3091,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             const SizedBox(height: 10),
             _DuplicateBanner(order: _order),
           ],
+          // 1.3.0 S1: the one next step, right under the status — not three
+          // screens below «Отменить заказ».
+          ..._pickupHandoverBlock(context),
           const SizedBox(height: 16),
           Text('Покупатель', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
@@ -3345,7 +3349,6 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           // though it would help there too: touching the live delivery path
           // to make it nicer is exactly the opportunistic change that turns a
           // safe feature into a regression.
-          ..._pickupHandoverBlock(context),
 
           // Hide the whole Действия block when neither action makes sense
           // for the current status (e.g. canceled / refunded / payment-failed).
