@@ -30,7 +30,8 @@ import '../models/refund_button.dart';
 import '../models/cancel_reasons.dart';
 import 'widgets/order_flag_chip.dart';
 import '../../../core/services/order_watcher.dart' show unacceptedOrders;
-import '../../../core/widgets/unaccepted_bar.dart' show openOrderScreens;
+import '../../../core/services/order_watcher.dart' show openOrderScreens;
+import '../../delivery/state/delivery_cubit.dart';
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -741,6 +742,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         _selectedStatus = null;
       });
       if (status != 'paid') _leftUnaccepted(_order.id);
+      if (status == 'ready-for-delivery' && !_isPickup) _refreshCourierSoon();
       _timelineKey.currentState?.refresh();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Статус обновлён')),
@@ -778,6 +780,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// Mirrors the «Выпустить заказ» pattern for scheduled orders, including the
   /// pessimistic update: local state changes only AFTER the server agrees, so a
   /// failure leaves the manager looking at real state rather than a phantom.
+  /// ready-for-delivery is what books the Yandex courier, ASYNCHRONOUSLY (a
+  /// queue message to delivery-service). Re-read the claim a little later so
+  /// the section below shows the booked courier instead of «Заявка не создана»
+  /// + «Создать заявку» — a second claim (critic HIGH-2).
+  void _refreshCourierSoon() {
+    for (final s in const [3, 10]) {
+      Future<void>.delayed(Duration(seconds: s), () {
+        if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return;
+        context.read<DeliveryCubit>().initByOrder(_order.id);
+      });
+    }
+  }
+
   /// The order just left `paid`: drop it from the red bar now, not on the next
   /// 10 s poll (UX review L9).
   void _leftUnaccepted(int orderId) {
@@ -881,6 +896,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         _selectedStatus = null;
       });
       if (toStatus != 'paid') _leftUnaccepted(_order.id);
+      if (toStatus == 'ready-for-delivery' && !_isPickup) _refreshCourierSoon();
       _timelineKey.currentState?.refresh();
       // Branded green confirmation, NOT the plain «Статус обновлён» snackbar.
       // «Выдать» is irreversible and fires a push to the customer; a grey
@@ -1060,7 +1076,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// The самовывоз handover control, or an empty list when it does not
   /// apply. Returned as a list so the caller can spread it into a Column.
   List<Widget> _pickupHandoverBlock(BuildContext context) {
-    if (!_isPickup) return const [];
+    // 1.3.0 S1: every order, not only pickup (critic HIGH-1: this early return
+    // kept the new delivery steps off the screen). orderNextStep and
+    // orderStepBlockedReason decide per fulfillment type.
 
     // When the button is withheld, SAY WHY. A button that silently vanishes
     // (or greys out with no text) reads as a broken app, and the manager's

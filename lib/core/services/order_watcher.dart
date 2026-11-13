@@ -24,6 +24,11 @@ final ValueNotifier<List<NewOrderItem>> unacceptedOrders = ValueNotifier(const [
 /// bar tap can never open an order behind a ringing siren (UX review H2).
 final ValueNotifier<bool> alarmShowing = ValueNotifier(false);
 
+/// Order ids whose order screen is open right now (OrderDetailsPage adds and
+/// removes itself). A bar tap for one opens nothing new (UX review L8), and a
+/// reminder never rings over the order the cashier is looking at (critic M4).
+final Set<int> openOrderScreens = <int>{};
+
 /// How long «Напомнить через 3 мин» (or opening the order) quiets the alarm
 /// while an order is still not accepted.
 const Duration kRemindEvery = Duration(minutes: 3);
@@ -80,6 +85,9 @@ class OrderWatcher {
   DateTime _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
   // 1.3.0 S2: the next moment a still-unaccepted order may ring again.
   DateTime _remindAfter = DateTime.fromMillisecondsSinceEpoch(0);
+  // Bumped by start()/stop(): a poll still in flight when the cashier logs out
+  // must not repaint the bar or ring on the login screen (critic M3).
+  int _generation = 0;
 
   OrderWatcher({
     required this.prefsStorage,
@@ -104,6 +112,7 @@ class OrderWatcher {
 
   void start({Duration interval = const Duration(seconds: 10)}) {
     _timer?.cancel();
+    _generation++;
     _consecutiveFailures = 0;
     _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
     _tick();
@@ -120,6 +129,7 @@ class OrderWatcher {
   Future<void> stop() async {
     _timer?.cancel();
     _timer = null;
+    _generation++;
     unacceptedOrders.value = const [];
     unawaited(WakelockPlus.disable().catchError((_) {}));
     await sound.stop();
@@ -131,8 +141,9 @@ class OrderWatcher {
     if (_inFlight) return;
     if (DateTime.now().isBefore(_nextRetryAt)) return;
 
+    final gen = _generation;
     final storeId = await prefsStorage.getSelectedStoreId();
-    if (storeId == null) return;
+    if (storeId == null || gen != _generation) return;
 
     try {
       // Only the request is exclusive. The dialog below can stay open for
@@ -162,6 +173,7 @@ class OrderWatcher {
       } finally {
         _inFlight = false;
       }
+      if (gen != _generation) return; // stopped (logout / store switch) meanwhile
 
       _consecutiveFailures = 0;
 
@@ -193,8 +205,10 @@ class OrderWatcher {
       var reminder = false;
       if (fresh.isNotEmpty) {
         first = fresh.first;
-      } else if (oldestFirst.isNotEmpty && !DateTime.now().isBefore(_remindAfter)) {
-        first = oldestFirst.first;
+      } else if (oldestFirst.any((o) => !openOrderScreens.contains(o.id)) &&
+          !DateTime.now().isBefore(_remindAfter)) {
+        // Never over the order the cashier already has open (critic M4).
+        first = oldestFirst.firstWhere((o) => !openOrderScreens.contains(o.id));
         reminder = true;
       } else {
         return;
@@ -220,6 +234,14 @@ class OrderWatcher {
         newOrderDialogGuard.markShown(first.id);
       }
 
+      if (gen != _generation) {
+        if (!reminder) {
+          _alreadyNotified.remove(first.id);
+          newOrderDialogGuard.unmarkShown(first.id);
+        }
+        newOrderDialogGuard.release();
+        return;
+      }
       await sound.ring();
       // The context can go away while the siren starts. Then there is no
       // dialog to stop it: stop now and leave the order for the next tick.

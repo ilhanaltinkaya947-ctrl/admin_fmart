@@ -97,6 +97,8 @@ class _Repo implements OrdersRepository {
   /// 1.3.0: the 24 h «still not accepted» fetch (minutes == 1440). Empty by
   /// default, so the older scenarios see exactly the behaviour they pinned.
   NewOrdersResponse waiting = _paid(const []);
+  /// Holds the 24 h fetch open (a slow network at logout).
+  Completer<void>? waitingGate;
   final List<Completer<OrdersPage>> pageCompleters = [];
   int pollCalls = 0;
   final List<({int page, List<int>? statusIds})> orderCalls = [];
@@ -111,7 +113,10 @@ class _Repo implements OrdersRepository {
     List<String>? statuses,
     String tz = 'Asia/Almaty',
   }) async {
-    if (minutes == 24 * 60) return waiting;
+    if (minutes == 24 * 60) {
+      if (waitingGate != null) await waitingGate!.future;
+      return waiting;
+    }
     final i = pollCalls < polls.length ? pollCalls : polls.length - 1;
     pollCalls++;
     return polls[i];
@@ -309,6 +314,20 @@ void main() {
       expect(sound.rings, 1);
       expect(unacceptedOrders.value, isEmpty);
       await w.stop();
+    });
+
+    testWidgets('a poll still loading at logout never brings the bar back', (tester) async {
+      final repo = _Repo(polls: [_paid(const [])])
+        ..waiting = _paid([2006])
+        ..waitingGate = Completer<void>();
+      final w = await startWatcher(tester, repo);
+      await w.stop(); // «Выйти» while the request is on the wire
+      repo.waitingGate!.complete();
+      await tester.pump();
+      await tester.pump();
+      expect(unacceptedOrders.value, isEmpty);
+      expect(find.text('Заказ ждёт принятия'), findsNothing);
+      expect(sound.rings, 0);
     });
 
     testWidgets('stopping the watcher (logout) clears the bar', (tester) async {

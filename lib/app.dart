@@ -273,10 +273,17 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   /// notification-tap handler so both routes behave identically. Silent on
   /// failure (missing store / lookup error) — the orders list stays the
   /// fallback surface.
-  Future<void> _openOrderById(int orderId) async {
-    final storeId = await _prefsStorage.getSelectedStoreId();
-    if (storeId == null) return;
+  // A bar tap is in flight: a second tap must not open the order twice (critic M5).
+  bool _openingFromBar = false;
+
+  Future<void> _openOrderById(int orderId, {bool fromBar = false}) async {
+    if (fromBar) {
+      if (_openingFromBar) return;
+      _openingFromBar = true;
+    }
     try {
+      final storeId = await _prefsStorage.getSelectedStoreId();
+      if (storeId == null) return;
       final order = await _ordersRepo.getOrderById(
         storeId: storeId,
         orderId: orderId,
@@ -287,8 +294,21 @@ class _AppState extends State<App> with WidgetsBindingObserver {
             builder: (_) => OrderDetailsPage(order: order),
           ),
         );
+      } else if (fromBar) {
+        _barMessage('Заказ №$orderId не найден. Обновите список.');
       }
-    } catch (_) {/* lookup failed — operator can still find it in the list */}
+    } catch (_) {
+      // lookup failed — operator can still find it in the list
+      if (fromBar) _barMessage('Не удалось открыть заказ №$orderId. Проверьте интернет.');
+    } finally {
+      if (fromBar) _openingFromBar = false;
+    }
+  }
+
+  void _barMessage(String text) {
+    final ctx = _navKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(content: Text(text)));
   }
 
   void _setupOneSignalClickHandler() {
@@ -552,8 +572,9 @@ class _AppState extends State<App> with WidgetsBindingObserver {
           // 1.3.0 S2: the red «Не приняты» bar above every screen.
           builder: (context, child) => UnacceptedBarFrame(
             onOpen: (id) {
+              _watcher?.snooze(); // they are acting on it: no ring for 3 min
               if (openOrderScreens.contains(id)) return; // already on screen
-              unawaited(_openOrderById(id));
+              unawaited(_openOrderById(id, fromBar: true));
             },
             child: child ?? const SizedBox.shrink(),
           ),

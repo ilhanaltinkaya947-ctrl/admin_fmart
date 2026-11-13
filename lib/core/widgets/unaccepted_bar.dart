@@ -3,11 +3,6 @@ import 'package:flutter/material.dart';
 import '../../features/orders/models/order_models.dart';
 import '../services/order_watcher.dart';
 
-/// Order ids whose order screen is open right now (pushed by
-/// OrderDetailsPage). A bar tap for one of them opens nothing new: the cashier
-/// is already looking at it (UX review L8).
-final Set<int> openOrderScreens = <int>{};
-
 /// «2 заказа», «5 заказов», «21 заказ».
 String ordersWord(int n) {
   final m100 = n % 100, m10 = n % 10;
@@ -41,10 +36,12 @@ class UnacceptedBarFrame extends StatelessWidget {
         final list = unacceptedOrders.value;
         // While an alarm dialog is up the bar steps aside: one «Открыть», and
         // no order can be opened behind a ringing siren (UX review H2).
-        if (list.isEmpty || alarmShowing.value) return child;
+        final show = list.isNotEmpty && !alarmShowing.value;
         final top = MediaQuery.of(context).padding.top;
+        // ONE structure whether the bar shows or not, so the app below is never
+        // re-parented (a cashier typing a weight keeps the keyboard; critic LOW).
         return Column(children: [
-          Material(
+          if (!show) const SizedBox.shrink() else Material(
             color: const Color(0xFFC62828),
             child: InkWell(
               onTap: () => onOpen(list.first.id),
@@ -66,7 +63,7 @@ class UnacceptedBarFrame extends StatelessWidget {
             ),
           ),
           // The screens below must not pad for the status bar a second time.
-          Expanded(child: MediaQuery.removePadding(context: context, removeTop: true, child: child)),
+          Expanded(child: MediaQuery.removePadding(context: context, removeTop: show, child: child)),
         ]);
       },
     );
