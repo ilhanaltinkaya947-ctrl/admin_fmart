@@ -94,6 +94,9 @@ class _Repo implements OrdersRepository {
 
   List<NewOrdersResponse> polls;
   List<OrdersPage> pages;
+  /// 1.3.0: the 24 h «still not accepted» fetch (minutes == 1440). Empty by
+  /// default, so the older scenarios see exactly the behaviour they pinned.
+  NewOrdersResponse waiting = _paid(const []);
   final List<Completer<OrdersPage>> pageCompleters = [];
   int pollCalls = 0;
   final List<({int page, List<int>? statusIds})> orderCalls = [];
@@ -108,6 +111,7 @@ class _Repo implements OrdersRepository {
     List<String>? statuses,
     String tz = 'Asia/Almaty',
   }) async {
+    if (minutes == 24 * 60) return waiting;
     final i = pollCalls < polls.length ? pollCalls : polls.length - 1;
     pollCalls++;
     return polls[i];
@@ -151,7 +155,8 @@ void main() {
     late _Sound sound;
     late List<int> refreshedFor;
 
-    Future<OrderWatcher> startWatcher(WidgetTester tester, _Repo repo) async {
+    Future<OrderWatcher> startWatcher(WidgetTester tester, _Repo repo,
+        {Duration remindEvery = kRemindEvery}) async {
       nav = GlobalKey<NavigatorState>();
       sound = _Sound();
       refreshedFor = [];
@@ -162,6 +167,7 @@ void main() {
         sound: sound,
         navigatorKey: nav,
         onNewOrders: refreshedFor.add,
+        remindEvery: remindEvery,
       );
       w.start(interval: const Duration(seconds: 10));
       await tester.pump();
@@ -179,7 +185,7 @@ void main() {
       final repo = _Repo(polls: [_paid([1095])]);
       final w = await startWatcher(tester, repo);
 
-      expect(find.text('Заказ #1095 • paid'), findsNothing);
+      expect(find.text('Заказ №1095'), findsNothing);
       expect(sound.rings, 0);
       expect(refreshedFor, [3], reason: 'the list refreshes even while the slot is busy');
 
@@ -187,11 +193,11 @@ void main() {
       await tester.pump(const Duration(seconds: 10));
       await tester.pump();
 
-      expect(find.text('Заказ #1095 • paid'), findsOneWidget);
+      expect(find.text('Заказ №1095'), findsOneWidget);
       expect(sound.rings, 1);
       expect(refreshedFor, [3], reason: 'one list refresh per order, not per tick');
 
-      await tester.tap(find.text('Позже'));
+      await tester.tap(find.text('Напомнить через 3 мин'));
       await tester.pumpAndSettle();
       await w.stop();
     });
@@ -239,7 +245,7 @@ void main() {
         _paid([1096, 1095]),
       ]);
       final w = await startWatcher(tester, repo);
-      expect(find.text('Заказ #1095 • paid'), findsOneWidget);
+      expect(find.text('Заказ №1095'), findsOneWidget);
 
       await tester.pump(const Duration(seconds: 10)); // dialog still open
       await tester.pump();
@@ -248,15 +254,69 @@ void main() {
       expect(refreshedFor, [3, 3]);
       expect(sound.rings, 1, reason: 'no second dialog on top of the first');
 
-      await tester.tap(find.text('Позже'));
+      await tester.tap(find.text('Напомнить через 3 мин'));
       await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 10));
       await tester.pump();
-      expect(find.text('Заказ #1096 • paid'), findsOneWidget,
+      expect(find.text('Заказ №1096'), findsOneWidget,
           reason: '1096 is alarmed after the first dialog closes');
-      await tester.tap(find.text('Позже'));
+      await tester.tap(find.text('Напомнить через 3 мин'));
       await tester.pumpAndSettle();
       await w.stop();
+    });
+
+    // ── 1.3.0 S2: an order cannot be silenced, only snoozed ─────────────────
+    testWidgets('a dismissed order that is still not accepted rings again', (tester) async {
+      final repo = _Repo(polls: [_paid([2001]), _paid(const [])])..waiting = _paid([2001]);
+      final w = await startWatcher(tester, repo, remindEvery: Duration.zero);
+      expect(find.text('Заказ №2001'), findsOneWidget);
+      expect(sound.rings, 1);
+      await tester.tap(find.text('Напомнить через 3 мин'));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pump();
+      expect(find.text('Заказ ждёт принятия'), findsOneWidget, reason: 'the reminder, not a «new order»');
+      expect(sound.rings, 2);
+      await tester.tap(find.text('Напомнить через 3 мин'));
+      await tester.pumpAndSettle();
+      await w.stop();
+    });
+
+    testWidgets('…but not before the snooze is over', (tester) async {
+      final repo = _Repo(polls: [_paid([2002]), _paid(const [])])..waiting = _paid([2002]);
+      final w = await startWatcher(tester, repo, remindEvery: const Duration(hours: 1));
+      await tester.tap(find.text('Напомнить через 3 мин'));
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 3; i++) {
+        await tester.pump(const Duration(seconds: 10));
+        await tester.pump();
+      }
+      expect(find.text('Заказ ждёт принятия'), findsNothing);
+      expect(sound.rings, 1);
+      await w.stop();
+    });
+
+    testWidgets('an accepted order stops ringing and the bar list empties', (tester) async {
+      final repo = _Repo(polls: [_paid([2003]), _paid(const [])])..waiting = _paid([2003]);
+      final w = await startWatcher(tester, repo, remindEvery: Duration.zero);
+      expect(unacceptedOrders.value.map((o) => o.id), [2003]);
+      await tester.tap(find.text('Напомнить через 3 мин'));
+      await tester.pumpAndSettle();
+      repo.waiting = _paid(const []); // the store accepted it
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pump();
+      expect(find.text('Заказ ждёт принятия'), findsNothing);
+      expect(sound.rings, 1);
+      expect(unacceptedOrders.value, isEmpty);
+      await w.stop();
+    });
+
+    testWidgets('stopping the watcher (logout) clears the bar', (tester) async {
+      final repo = _Repo(polls: [_paid(const [])])..waiting = _paid([2004, 2005]);
+      final w = await startWatcher(tester, repo);
+      expect(unacceptedOrders.value.length, 2);
+      await w.stop();
+      expect(unacceptedOrders.value, isEmpty);
     });
   });
 

@@ -5,6 +5,7 @@ import 'package:admin_fmart/core/services/sound_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../features/orders/data/orders_repository.dart';
 import '../../features/orders/models/order_models.dart';
@@ -12,6 +13,23 @@ import '../../features/orders/presentation/order_details_page.dart';
 import '../../features/orders/state/orders_cubit.dart';
 import '../storage/prefs_storage.dart';
 import 'new_order_dialog_guard.dart';
+
+/// 1.3.0 S2: every PAID order of the store = paid and not yet accepted by the
+/// store, oldest first. Updated by the watcher each tick; drives the red bar on
+/// every screen and the 3-minute reminder. Empty when nobody is watching.
+final ValueNotifier<List<NewOrderItem>> unacceptedOrders = ValueNotifier(const []);
+
+/// How long «Напомнить через 3 мин» (or opening the order) quiets the alarm
+/// while an order is still not accepted.
+const Duration kRemindEvery = Duration(minutes: 3);
+
+/// Minutes an order has waited, from its creation (≈ payment) time.
+int waitedMinutes(NewOrderItem o, DateTime nowUtc) {
+  final c = DateTime.tryParse(o.createdGmt ?? '');
+  if (c == null) return 0;
+  final m = nowUtc.difference(c.toUtc()).inMinutes;
+  return m < 0 ? 0 : m;
+}
 
 class OrderWatcher {
   final PrefsStorage prefsStorage;
@@ -24,6 +42,9 @@ class OrderWatcher {
   /// without this the iPad rang but the order only showed after someone
   /// pulled the list down (order 1095, 2026-10-09).
   final void Function(int storeId)? onNewOrders;
+
+  /// 1.3.0 S2: how long a dismissed, still-unaccepted order stays quiet.
+  final Duration remindEvery;
 
   Timer? _timer;
   bool _dialogOpen = false;
@@ -41,6 +62,8 @@ class OrderWatcher {
 
   int _consecutiveFailures = 0;
   DateTime _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+  // 1.3.0 S2: the next moment a still-unaccepted order may ring again.
+  DateTime _remindAfter = DateTime.fromMillisecondsSinceEpoch(0);
 
   OrderWatcher({
     required this.prefsStorage,
@@ -48,6 +71,7 @@ class OrderWatcher {
     required this.sound,
     required this.navigatorKey,
     this.onNewOrders,
+    this.remindEvery = kRemindEvery,
   });
 
   static void _remember(List<int> list, Iterable<int> ids) {
@@ -68,11 +92,16 @@ class OrderWatcher {
     _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
     _tick();
     _timer = Timer.periodic(interval, (_) => _tick());
+    // 1.3.0 S2: the iPad at the counter must not dim and lock while the store
+    // is on duty, or a ringing order is a dark screen. Best effort.
+    unawaited(WakelockPlus.enable().catchError((_) {}));
   }
 
   Future<void> stop() async {
     _timer?.cancel();
     _timer = null;
+    unacceptedOrders.value = const [];
+    unawaited(WakelockPlus.disable().catchError((_) {}));
     await sound.stop();
   }
 
@@ -89,6 +118,7 @@ class OrderWatcher {
       // Only the request is exclusive. The dialog below can stay open for
       // minutes and polling must carry on underneath it.
       final NewOrdersResponse resp;
+      final NewOrdersResponse waiting;
       _inFlight = true;
       try {
         resp = await ordersRepository.getNewOrders(
@@ -96,6 +126,16 @@ class OrderWatcher {
           since: _sinceUtc,
           minutes: 10,
           limit: 20,
+          statuses: const ['paid'],
+          tz: 'Asia/Almaty',
+        );
+        // 1.3.0 S2: EVERY order still not accepted (paid within 24 h), however
+        // old. The poll above only sees the last 10 minutes, which is how an
+        // order dismissed with «Позже» used to drop out and never ring again.
+        waiting = await ordersRepository.getNewOrders(
+          storeId: storeId,
+          minutes: 24 * 60,
+          limit: 50,
           statuses: const ['paid'],
           tz: 'Asia/Almaty',
         );
@@ -107,7 +147,9 @@ class OrderWatcher {
 
       _sinceUtc = DateTime.tryParse(resp.sinceUsed);
 
-      if (!resp.hasNew || resp.orders.isEmpty) return;
+      final oldestFirst = [...waiting.orders]
+        ..sort((a, b) => (a.createdGmt ?? '').compareTo(b.createdGmt ?? ''));
+      unacceptedOrders.value = List.unmodifiable(oldestFirst);
 
       // 1. The list. The «Новый заказ» push is sent when the order is
       //    CREATED, a few seconds before it is paid, and the refresh that
@@ -122,14 +164,21 @@ class OrderWatcher {
         onNewOrders?.call(storeId);
       }
 
-      // 2. The alarm.
+      // 2. The alarm: a NEW order rings at once; otherwise the oldest order
+      //    still not accepted rings again every kRemindEvery (1.3.0 S2).
       if (_dialogOpen) return;
 
-      final first = resp.orders.firstWhere(
-        (o) => !_wasAlerted(o.id),
-        orElse: () => resp.orders.first,
-      );
-      if (_wasAlerted(first.id)) return;
+      final fresh = [for (final o in resp.orders) if (!_wasAlerted(o.id)) o];
+      NewOrderItem first;
+      var reminder = false;
+      if (fresh.isNotEmpty) {
+        first = fresh.first;
+      } else if (oldestFirst.isNotEmpty && !DateTime.now().isBefore(_remindAfter)) {
+        first = oldestFirst.first;
+        reminder = true;
+      } else {
+        return;
+      }
 
       // Coordinate with the OneSignal foreground handler so push + poll
       // don't stack two dialogs on top of each other. If the slot is taken,
@@ -146,16 +195,20 @@ class OrderWatcher {
         return;
       }
 
-      _remember(_alreadyNotified, [first.id]);
-      newOrderDialogGuard.markShown(first.id);
+      if (!reminder) {
+        _remember(_alreadyNotified, [first.id]);
+        newOrderDialogGuard.markShown(first.id);
+      }
 
       await sound.ring();
       // The context can go away while the siren starts. Then there is no
       // dialog to stop it: stop now and leave the order for the next tick.
       if (!ctx.mounted) {
         await sound.stop();
-        _alreadyNotified.remove(first.id);
-        newOrderDialogGuard.unmarkShown(first.id);
+        if (!reminder) {
+          _alreadyNotified.remove(first.id);
+          newOrderDialogGuard.unmarkShown(first.id);
+        }
         newOrderDialogGuard.release();
         return;
       }
@@ -172,15 +225,20 @@ class OrderWatcher {
           context: ctx,
           barrierDismissible: false,
           builder: (c) => AlertDialog(
-            title: const Text('Новый заказ'),
-            content: Text('Заказ #${first.id} • ${first.status}'),
+            title: Text(reminder ? 'Заказ ждёт принятия' : 'Новый заказ'),
+            content: Text(reminder
+                ? 'Заказ №${first.id} ждёт ${waitedMinutes(first, DateTime.now().toUtc())} мин. '
+                    'Примите его, иначе напомним снова через 3 минуты.'
+                : 'Заказ №${first.id}'),
             actions: [
               TextButton(
                 onPressed: () async {
                   await sound.stop();
                   if (c.mounted) Navigator.of(c).pop();
                 },
-                child: const Text('Позже'),
+                // 1.3.0 S2: never «Позже» — an order cannot be silenced, only
+                // snoozed while it waits.
+                child: const Text('Напомнить через 3 мин'),
               ),
               ElevatedButton(
                 onPressed: () async {
@@ -219,6 +277,9 @@ class OrderWatcher {
         );
       } finally {
         _dialogOpen = false;
+        // Whatever closed the dialog (snooze, «Открыть», OS), the next ring for
+        // a still-unaccepted order is kRemindEvery from now.
+        _remindAfter = DateTime.now().add(remindEvery);
         await sound.stop(); // catches OS-level dismissal too
         newOrderDialogGuard.release();
       }

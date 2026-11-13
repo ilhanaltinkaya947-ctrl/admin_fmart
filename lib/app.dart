@@ -48,6 +48,7 @@ import 'features/orders/state/orders_cubit.dart';
 
 import 'features/users/data/users_repository.dart';
 import 'features/users/state/users_cubit.dart';
+import 'core/widgets/unaccepted_bar.dart';
 
 class App extends StatefulWidget {
   final OneSignalService oneSignalService;
@@ -542,6 +543,11 @@ class _AppState extends State<App> with WidgetsBindingObserver {
         child: MaterialApp(
           navigatorKey: _navKey,
           debugShowCheckedModeBanner: false,
+          // 1.3.0 S2: the red «Не приняты» bar above every screen.
+          builder: (context, child) => UnacceptedBarFrame(
+            onOpen: (id) => unawaited(_openOrderById(id)),
+            child: child ?? const SizedBox.shrink(),
+          ),
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFEE6F00)),
             useMaterial3: true,

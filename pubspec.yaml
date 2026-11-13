@@ -40,6 +40,7 @@ dependencies:
   # Charts for the admin Reports tab (sales-by-day line chart). Pure-Dart,
   # no native deps — keeps build time + iOS pod count down.
   fl_chart: ^0.69.0
+  wakelock_plus: ^1.3.3
 
 
 dev_dependencies:
