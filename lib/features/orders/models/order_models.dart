@@ -157,6 +157,25 @@ class Order {
   final bool hasPendingSubstitution;
   final DateTime? pendingSubstitutionExpiresAt;
 
+  // 1.3.0 (order-service 019851d / db189f1, 12.11). Server facts, display only:
+  // nothing here decides a status move or a refund — the server re-checks.
+  /// "none" | "weak" | "strong" as cart stamped it; null = unknown (older order).
+  final String? alcoholClass;
+  /// When a `scheduled` order releases itself.
+  final DateTime? releaseAt;
+  /// Why «Выпустить» is refused RIGHT NOW (the server's own rule), null = allowed.
+  final String? releaseBlockReason;
+  /// A ready pickup order with alcohol outside its legal hours: when it may go.
+  final String? handoverBlockReason;
+  /// Another active order of the same customer placed within 3 h.
+  final int? possibleDuplicateOf;
+  final String? customerFirstName;
+  final String? customerPhoneLast4;
+  /// "slot" | "off_hours" | "alcohol"; null = never scheduled / unknown.
+  final String? scheduledReason;
+
+  bool get hasAlcohol => alcoholClass == 'weak' || alcoholClass == 'strong';
+
   Order({
     required this.id,
     required this.customerId,
@@ -191,6 +210,14 @@ class Order {
     this.substitutions = const [],
     this.hasPendingSubstitution = false,
     this.pendingSubstitutionExpiresAt,
+    this.alcoholClass,
+    this.releaseAt,
+    this.releaseBlockReason,
+    this.handoverBlockReason,
+    this.possibleDuplicateOf,
+    this.customerFirstName,
+    this.customerPhoneLast4,
+    this.scheduledReason,
   });
 
   /// True once a самовывоз order has sat past its hold deadline.
@@ -264,6 +291,13 @@ class Order {
   /// freezing the button forever with no way back.
   bool get substitutionBlocksHandover =>
       substitutions.isEmpty ? hasPendingSubstitution : hasOpenSubstitution;
+
+  /// A non-empty trimmed string, else null (1.3.0 keys).
+  static String? _str(dynamic v) {
+    if (v is! String) return null;
+    final t = v.trim();
+    return t.isEmpty ? null : t;
+  }
 
   static double _toDouble(dynamic v) {
     if (v == null) return 0.0;
@@ -340,6 +374,16 @@ class Order {
     pendingSubstitutionExpiresAt: j['pending_substitution_expires_at'] == null
         ? null
         : DateTime.tryParse(j['pending_substitution_expires_at'].toString()),
+    // 1.3.0 keys: `is` checks, never casts — a malformed value reads as unknown
+    // and must never be the reason an order screen fails to open.
+    alcoholClass: _str(j['alcohol_class']),
+    releaseAt: j['release_at'] == null ? null : DateTime.tryParse(j['release_at'].toString()),
+    releaseBlockReason: _str(j['release_block_reason']),
+    handoverBlockReason: _str(j['handover_block_reason']),
+    possibleDuplicateOf: j['possible_duplicate_of'] is int ? j['possible_duplicate_of'] as int : null,
+    customerFirstName: _str(j['customer_first_name']),
+    customerPhoneLast4: _str(j['customer_phone_last4']),
+    scheduledReason: _str(j['scheduled_reason']),
   );
 
   Order copyWith({
@@ -409,6 +453,16 @@ class Order {
         hasPendingSubstitution:
             hasPendingSubstitution ?? this.hasPendingSubstitution,
         pendingSubstitutionExpiresAt: pendingSubstitutionExpiresAt,
+        // Server facts, carried (an optimistic status edit must not erase them;
+        // the next poll replaces them with the server's current answer).
+        alcoholClass: alcoholClass,
+        releaseAt: releaseAt,
+        releaseBlockReason: releaseBlockReason,
+        handoverBlockReason: handoverBlockReason,
+        possibleDuplicateOf: possibleDuplicateOf,
+        customerFirstName: customerFirstName,
+        customerPhoneLast4: customerPhoneLast4,
+        scheduledReason: scheduledReason,
       );
 }
 

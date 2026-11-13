@@ -28,6 +28,7 @@ import 'widgets/order_timeline_section.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../models/refund_button.dart';
 import '../models/cancel_reasons.dart';
+import 'widgets/order_flag_chip.dart';
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -1112,7 +1113,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       SizedBox(
         height: 52,
         child: ElevatedButton.icon(
-          onPressed: (_saving || _handingOver || _actionLoading)
+          // 1.3.0 S7: alcohol outside its legal hours may not be handed over
+          // (server rule, sent as handover_block_reason). Disabled with the
+          // reason below instead of a refusal after the tap.
+          onPressed: (_saving || _handingOver || _actionLoading || _handoverBlocked(step))
               ? null
               : () => _pickupAdvance(
                     toStatus: step.toStatus,
@@ -1140,15 +1144,24 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         ),
       ),
       const SizedBox(height: 8),
-      Text(
-        step.hint,
-        style: TextStyle(
-          fontSize: 12,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
+      if (_handoverBlocked(step))
+        Text(
+          _order.handoverBlockReason!,
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFFC62828)),
+        )
+      else
+        Text(
+          step.hint,
+          style: TextStyle(
+            fontSize: 12,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
-      ),
     ];
   }
+
+  bool _handoverBlocked(PickupHandoverStep step) =>
+      step.toStatus == 'completed' && _order.handoverBlockReason != null;
 
   Future<void> _cancelOrder() async {
     // Belt to the button's braces. The disabled state above stops the tap;
@@ -1482,8 +1495,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('Выпустить заказ?'),
-        content: Text(
-            'Заказ #${_order.id} выйдет из режима ожидания и попадёт в сборку сейчас, не дожидаясь 09:00.'),
+        content: Text('Заказ №${_order.id} сразу уйдёт в сборку.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(c).pop(false),
@@ -3066,6 +3078,18 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             status: _order.status,
             fulfillmentType: _order.fulfillmentType,
           ),
+          if (_order.hasAlcohol || _order.possibleDuplicateOf != null) ...[
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 6, children: [
+              if (_order.hasAlcohol) const OrderFlagChip.alcohol(),
+              if (_order.possibleDuplicateOf != null)
+                OrderFlagChip.duplicate(_order.possibleDuplicateOf!),
+            ]),
+          ],
+          if (_order.possibleDuplicateOf != null) ...[
+            const SizedBox(height: 10),
+            _DuplicateBanner(order: _order),
+          ],
           const SizedBox(height: 16),
           Text('Покупатель', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
@@ -3214,7 +3238,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: _releasing ? null : _releaseOrder,
+                // 1.3.0 S5: refused by the server right now (alcohol hours at a
+                // 24/7 store) -> disabled, the reason shown under it.
+                onPressed: (_releasing || _order.releaseBlockReason != null) ? null : _releaseOrder,
                 icon: _releasing
                     ? const SizedBox(
                         width: 18,
@@ -3228,6 +3254,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _order.releaseBlockReason ??
+                  (_order.releaseAt != null
+                      ? 'Выпустится сам в ${_hhmm(_order.releaseAt!)}.'
+                      : ''),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: _order.releaseBlockReason != null ? FontWeight.w600 : FontWeight.normal,
+                color: _order.releaseBlockReason != null
+                    ? const Color(0xFFC62828)
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
           ],
@@ -4531,6 +4571,46 @@ class _WeightSettleBar extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+
+/// «HH:MM» in Almaty (UTC+5, no DST) — the store's wall clock, not the iPad's.
+String _hhmm(DateTime utc) {
+  final t = utc.toUtc().add(const Duration(hours: 5));
+  return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}
+
+/// 1.3.0 S6: the same customer has another active order placed within 3 h.
+class _DuplicateBanner extends StatelessWidget {
+  const _DuplicateBanner({required this.order});
+  final Order order;
+
+  @override
+  Widget build(BuildContext context) {
+    final who = [
+      if (order.customerFirstName != null) order.customerFirstName!,
+      if (order.customerPhoneLast4 != null) '…${order.customerPhoneLast4}',
+    ].join(' ');
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3E0),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFFB74D)),
+      ),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.content_copy_rounded, size: 20, color: Color(0xFFE65100)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'У этого покупателя уже есть заказ №${order.possibleDuplicateOf}. '
+            'Позвоните покупателю перед сборкой${who.isEmpty ? '' : ' ($who)'}.',
+            style: const TextStyle(fontSize: 14, height: 1.3),
+          ),
+        ),
+      ]),
     );
   }
 }

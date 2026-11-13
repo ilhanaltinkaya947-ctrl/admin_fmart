@@ -13,6 +13,7 @@ import '../state/orders_cubit.dart';
 import '../models/order_models.dart';
 import 'order_details_page.dart';
 import 'widgets/order_filter_bar.dart';
+import 'widgets/order_flag_chip.dart';
 
 /// How long to let the AppBar popup menu finish leaving the screen before we
 /// tear this page down. Flutter's `_PopupMenuRoute.transitionDuration` is
@@ -290,6 +291,29 @@ class _OrdersListPageState extends State<OrdersListPage> {
                               df.format(o.createdAt.toLocal()),
                               style: const TextStyle(fontSize: 12),
                             ),
+                            // 1.3.0 S6: who to call, at a glance (first name +
+                            // last 4 phone digits; the full number stays on
+                            // the order screen).
+                            if (o.customerFirstName != null || o.customerPhoneLast4 != null) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                [
+                                  if (o.customerFirstName != null) o.customerFirstName!,
+                                  if (o.customerPhoneLast4 != null) '…${o.customerPhoneLast4}',
+                                ].join(' '),
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                              ),
+                            ],
+                            // 1.3.0 S6/S7: the two signs a night cashier must
+                            // not miss, before opening the order.
+                            if (o.hasAlcohol || o.possibleDuplicateOf != null) ...[
+                              const SizedBox(height: 4),
+                              Wrap(spacing: 6, runSpacing: 4, children: [
+                                if (o.hasAlcohol) const OrderFlagChip.alcohol(),
+                                if (o.possibleDuplicateOf != null)
+                                  OrderFlagChip.duplicate(o.possibleDuplicateOf!),
+                              ]),
+                            ],
                             // Customer-picked delivery slot OR off-hours
                             // auto-scheduled time. Two variants:
                             //   - status=scheduled → off-hours order
