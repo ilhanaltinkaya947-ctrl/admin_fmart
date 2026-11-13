@@ -457,7 +457,8 @@ void main() {
     testWidgets('a refund tapped during a payment-service outage (key sent, '
         'value null) still waits, never «оформлен» (critic r2 MED-1)',
         (t) async {
-      final detail = {...weighedOrderJson(status: 'processing'),
+      // Weighing finished: 1.3.0 disables «Возврат» while lines are unweighed.
+      final detail = {...weighedOrderJson(status: 'processing'), 'weight_settled': true,
           'refund_state': null, 'refund_state_updated_at': null};
       final repo = fakeRepo(detail);
       await pumpOrderPage(t, repo, role: 'admin');
@@ -469,7 +470,7 @@ void main() {
     });
 
         testWidgets('older server (no refund_state): today\'s toast', (t) async {
-      final repo = fakeRepo(order('processing', null, null));
+      final repo = fakeRepo({...order('processing', null, null), 'weight_settled': true});
       await pumpOrderPage(t, repo, role: 'admin');
       await tapRefund(t);
       expect(repo.refundCalls, 1);

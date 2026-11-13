@@ -397,6 +397,10 @@ Future<void> scrollTo(WidgetTester t, Finder finder) async {
         )
         .first,
   );
+  // 1.3.0: the items moved up under the next-step button, so "visible" can now
+  // mean "at the very top edge", under the AppBar, where a tap lands on the
+  // bar. Centre the target the way a person would scroll to it.
+  await Scrollable.ensureVisible(t.element(finder.first), alignment: 0.5);
   await t.pump();
 }
 

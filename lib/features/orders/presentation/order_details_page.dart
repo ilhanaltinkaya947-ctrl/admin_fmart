@@ -29,6 +29,8 @@ import '../../auth/state/auth_cubit.dart';
 import '../models/refund_button.dart';
 import '../models/cancel_reasons.dart';
 import 'widgets/order_flag_chip.dart';
+import '../../../core/services/order_watcher.dart' show unacceptedOrders;
+import '../../../core/widgets/unaccepted_bar.dart' show openOrderScreens;
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -404,6 +406,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   @override
   void initState() {
     super.initState();
+    openOrderScreens.add(widget.order.id); // UX review L8
     _order = widget.order;
     // Start with nothing selected — the order's CURRENT status is never a
     // valid transition target (the backend rejects self-loops), so the
@@ -599,6 +602,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
   @override
   void dispose() {
+    openOrderScreens.remove(widget.order.id);
     WidgetsBinding.instance.removeObserver(this);
     AdminFeatureFlags.instance.flags.removeListener(_onFlagsChanged);
     _pollTimer?.cancel();
@@ -736,6 +740,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         // no longer a valid transition target — clear the selection.
         _selectedStatus = null;
       });
+      if (status != 'paid') _leftUnaccepted(_order.id);
       _timelineKey.currentState?.refresh();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Статус обновлён')),
@@ -773,6 +778,15 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   /// Mirrors the «Выпустить заказ» pattern for scheduled orders, including the
   /// pessimistic update: local state changes only AFTER the server agrees, so a
   /// failure leaves the manager looking at real state rather than a phantom.
+  /// The order just left `paid`: drop it from the red bar now, not on the next
+  /// 10 s poll (UX review L9).
+  void _leftUnaccepted(int orderId) {
+    final now = unacceptedOrders.value;
+    if (now.any((o) => o.id == orderId)) {
+      unacceptedOrders.value = List.unmodifiable(now.where((o) => o.id != orderId));
+    }
+  }
+
   Future<void> _pickupAdvance({
     required String toStatus,
     required String confirmTitle,
@@ -866,6 +880,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         // target. Same clear the dropdown path does.
         _selectedStatus = null;
       });
+      if (toStatus != 'paid') _leftUnaccepted(_order.id);
       _timelineKey.currentState?.refresh();
       // Branded green confirmation, NOT the plain «Статус обновлён» snackbar.
       // «Выдать» is irreversible and fires a push to the customer; a grey
@@ -1484,6 +1499,26 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   // cancel/refund buttons.
   bool _releasing = false;
 
+  /// 1.3.0 S6 (UX review M5): open the other order of the same customer.
+  Future<void> _openOtherOrder(int orderId) async {
+    final repo = context.read<OrdersRepository>();
+    final nav = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final other = await repo.getOrderById(storeId: _order.storeId, orderId: orderId);
+      if (!mounted) return;
+      if (other == null) {
+        messenger.showSnackBar(SnackBar(content: Text('Заказ №$orderId не найден')));
+        return;
+      }
+      nav.push(MaterialPageRoute(builder: (_) => OrderDetailsPage(order: other)));
+    } catch (_) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('Не удалось открыть заказ №$orderId')));
+      }
+    }
+  }
+
   Future<void> _releaseOrder() async {
     if (_releasing) return;
     final repo = context.read<OrdersRepository>();
@@ -1738,7 +1773,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 children: [
                   Expanded(
                     child: Text(
-                      'Возврат по заказу #${_order.id}',
+                      'Возврат по заказу №${_order.id}',
                       style: Theme.of(c).textTheme.titleMedium,
                     ),
                   ),
@@ -3053,7 +3088,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Заказ #${_order.id}'),
+        title: Text('Заказ №${_order.id}'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(_order),
@@ -3084,11 +3119,127 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           ],
           if (_order.possibleDuplicateOf != null) ...[
             const SizedBox(height: 10),
-            _DuplicateBanner(order: _order),
+            _DuplicateBanner(order: _order, onOpen: _openOtherOrder),
           ],
           // 1.3.0 S1: the one next step, right under the status — not three
           // screens below «Отменить заказ».
           ..._pickupHandoverBlock(context),
+          // UX review H3 (S1): the items sit right under the next-step button,
+          // with Покупатель / Сумма / Действия below — the picker no longer
+          // scrolls past «Отменить заказ» to reach what they are picking.
+          const SizedBox(height: 16),
+          const Divider(),
+          const SizedBox(height: 12),
+
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Товары',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              Text(
+                '${items.length} ${_pluralItems(items.length)}',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+          if (!_itemsEditable) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Редактирование доступно только в статусах "Оплачен" и "В обработке"',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          if (_itemsEditable) ...[
+            const SizedBox(height: 8),
+            _PickProgressBar(
+              picked: items.where((it) => it.isPicked).length,
+              total: items.length,
+            ),
+          ],
+          const SizedBox(height: 8),
+          ...items.map((it) => Column(
+                // Keyed by the line: removing a line above must not hand its
+                // typed «Факт, г» (widget state) to the line that moves up.
+                key: ValueKey(it.id),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  OrderItemCard(
+                    item: it,
+                    editable: _itemsEditable,
+                    busy: _itemBusy.contains(it.id),
+                    onQtyChange: (newQty) => _changeItemQty(it, newQty),
+                    onRemove: () => _removeItem(it),
+                    onPickedToggle: _itemsEditable
+                        ? (v) => _setItemPicked(it, v)
+                        : null,
+                    pickedBusy: _pickBusy.contains(it.id),
+                    // A weight line replaces the ± stepper with «Факт, г». The
+                    // callback is null on a read-only order, which hides the
+                    // field and shows the stored reading instead.
+                    onWeightSet: (_itemsEditable && !_weightsSettled)
+                        ? (g) => _setItemWeight(it, g)
+                        : null,
+                    weightBusy: _weightBusy.contains(it.id),
+                    refundPreview: _weightPreview[it.id],
+                    weightError: _weightError[it.id],
+                    settled: _weightsSettled,
+                    customerPhone: _customer?.phone,
+                    // «Проверьте наличие ▾» only while the order is being
+                    // picked (the same statuses as the «Собрано» tick);
+                    // read-only after that.
+                    onStockAnswer: _itemsEditable
+                        ? (a) => _answerStock(it, a)
+                        : null,
+                    canMarkMissing:
+                        _order.openSubstitutionForItem(it.id) == null,
+                    stockBusy: _stockBusy.contains(it.id),
+                  ),
+                  SubstitutionItemRow(
+                    order: _order,
+                    item: it,
+                    editable: _itemsEditable,
+                    busy: _subBusy.contains(it.id),
+                    onPropose: () => _openSubstitutePicker(it),
+                    onCancel: (subId) => _cancelSubstitution(subId, it.id),
+                  ),
+                ],
+              )),
+
+          // «Сборка завершена» — the ONE place weight money moves.
+          //
+          // Shown wherever the server would accept a settle (review H2), not
+          // only while picking: an order moved on to delivery before settling
+          // still owes the buffer back. Weight FIELDS stay editable only in
+          // paid/processing; past that the readings are shown read-only.
+          // On an ever-completed order only an admin gets the button.
+          // Disabled until every line has a reading, because the server refuses
+          // otherwise (409 weight_missing) and a control that submits a
+          // known-rejected request teaches the operator to distrust it.
+          if (_hasWeightLines && (_weightsSettled || _inWeightSettleStatus)) ...[
+            const SizedBox(height: 12),
+            _WeightSettleBar(
+              busy: _settleBusy,
+              settled: _weightsSettled,
+              serverSettled: _order.weightSettled == true,
+              weightRefundAmount: _order.weightRefundAmount,
+              unweighedCount: _unweighedLines.length,
+              weightLineCount:
+                  _order.items.where((it) => it.isWeightLine).length,
+              result: _settleResult,
+              onSettle: _settleWeights,
+              showCutHints: _itemsEditable,
+              adminOnly: !_mayPressSettle,
+            ),
+          ],
           const SizedBox(height: 16),
           Text('Покупатель', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
@@ -3392,7 +3543,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                       onPressed: (_actionLoading ||
                               _refundSheetOpen ||
                               _handingOver ||
-                              _saving)
+                              _saving ||
+                              // UX review M4 (S3): explained AND disabled, not
+                              // a sheet that ends in a 409.
+                              unweighedWeightLines(_order) > 0)
                           ? null
                           : _openRefundSheet,
                       icon: const Icon(Icons.replay, size: 18),
@@ -3451,119 +3605,6 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             ),
           ],
 
-          const SizedBox(height: 16),
-          const Divider(),
-          const SizedBox(height: 12),
-
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Товары',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-              Text(
-                '${items.length} ${_pluralItems(items.length)}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
-          if (!_itemsEditable) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Редактирование доступно только в статусах "Оплачен" и "В обработке"',
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-          if (_itemsEditable) ...[
-            const SizedBox(height: 8),
-            _PickProgressBar(
-              picked: items.where((it) => it.isPicked).length,
-              total: items.length,
-            ),
-          ],
-          const SizedBox(height: 8),
-          ...items.map((it) => Column(
-                // Keyed by the line: removing a line above must not hand its
-                // typed «Факт, г» (widget state) to the line that moves up.
-                key: ValueKey(it.id),
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  OrderItemCard(
-                    item: it,
-                    editable: _itemsEditable,
-                    busy: _itemBusy.contains(it.id),
-                    onQtyChange: (newQty) => _changeItemQty(it, newQty),
-                    onRemove: () => _removeItem(it),
-                    onPickedToggle: _itemsEditable
-                        ? (v) => _setItemPicked(it, v)
-                        : null,
-                    pickedBusy: _pickBusy.contains(it.id),
-                    // A weight line replaces the ± stepper with «Факт, г». The
-                    // callback is null on a read-only order, which hides the
-                    // field and shows the stored reading instead.
-                    onWeightSet: (_itemsEditable && !_weightsSettled)
-                        ? (g) => _setItemWeight(it, g)
-                        : null,
-                    weightBusy: _weightBusy.contains(it.id),
-                    refundPreview: _weightPreview[it.id],
-                    weightError: _weightError[it.id],
-                    settled: _weightsSettled,
-                    customerPhone: _customer?.phone,
-                    // «Проверьте наличие ▾» only while the order is being
-                    // picked (the same statuses as the «Собрано» tick);
-                    // read-only after that.
-                    onStockAnswer: _itemsEditable
-                        ? (a) => _answerStock(it, a)
-                        : null,
-                    canMarkMissing:
-                        _order.openSubstitutionForItem(it.id) == null,
-                    stockBusy: _stockBusy.contains(it.id),
-                  ),
-                  SubstitutionItemRow(
-                    order: _order,
-                    item: it,
-                    editable: _itemsEditable,
-                    busy: _subBusy.contains(it.id),
-                    onPropose: () => _openSubstitutePicker(it),
-                    onCancel: (subId) => _cancelSubstitution(subId, it.id),
-                  ),
-                ],
-              )),
-
-          // «Сборка завершена» — the ONE place weight money moves.
-          //
-          // Shown wherever the server would accept a settle (review H2), not
-          // only while picking: an order moved on to delivery before settling
-          // still owes the buffer back. Weight FIELDS stay editable only in
-          // paid/processing; past that the readings are shown read-only.
-          // On an ever-completed order only an admin gets the button.
-          // Disabled until every line has a reading, because the server refuses
-          // otherwise (409 weight_missing) and a control that submits a
-          // known-rejected request teaches the operator to distrust it.
-          if (_hasWeightLines && (_weightsSettled || _inWeightSettleStatus)) ...[
-            const SizedBox(height: 12),
-            _WeightSettleBar(
-              busy: _settleBusy,
-              settled: _weightsSettled,
-              serverSettled: _order.weightSettled == true,
-              weightRefundAmount: _order.weightRefundAmount,
-              unweighedCount: _unweighedLines.length,
-              weightLineCount:
-                  _order.items.where((it) => it.isWeightLine).length,
-              result: _settleResult,
-              onSettle: _settleWeights,
-              showCutHints: _itemsEditable,
-              adminOnly: !_mayPressSettle,
-            ),
-          ],
 
           const SizedBox(height: 16),
           const Divider(),
@@ -4589,16 +4630,20 @@ String _hhmm(DateTime utc) {
 
 /// 1.3.0 S6: the same customer has another active order placed within 3 h.
 class _DuplicateBanner extends StatelessWidget {
-  const _DuplicateBanner({required this.order});
+  const _DuplicateBanner({required this.order, required this.onOpen});
   final Order order;
+  final void Function(int orderId) onOpen;
 
   @override
   Widget build(BuildContext context) {
     final who = [
       if (order.customerFirstName != null) order.customerFirstName!,
       if (order.customerPhoneLast4 != null) '…${order.customerPhoneLast4}',
-    ].join(' ');
-    return Container(
+    ].join(', ');
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => onOpen(order.possibleDuplicateOf!),
+      child: Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: const Color(0xFFFFF3E0),
@@ -4609,13 +4654,19 @@ class _DuplicateBanner extends StatelessWidget {
         const Icon(Icons.content_copy_rounded, size: 20, color: Color(0xFFE65100)),
         const SizedBox(width: 10),
         Expanded(
-          child: Text(
-            'У этого покупателя уже есть заказ №${order.possibleDuplicateOf}. '
-            'Позвоните покупателю перед сборкой${who.isEmpty ? '' : ' ($who)'}.',
-            style: const TextStyle(fontSize: 14, height: 1.3),
-          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              'У этого покупателя уже есть заказ №${order.possibleDuplicateOf}. '
+              'Позвоните покупателю${who.isEmpty ? '' : ' ($who)'} перед сборкой.',
+              style: const TextStyle(fontSize: 14, height: 1.3),
+            ),
+            const SizedBox(height: 6),
+            Text('Открыть заказ №${order.possibleDuplicateOf} ›',
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFFE65100))),
+          ]),
         ),
       ]),
+      ),
     );
   }
 }

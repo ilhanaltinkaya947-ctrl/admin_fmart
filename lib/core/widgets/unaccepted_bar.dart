@@ -3,6 +3,11 @@ import 'package:flutter/material.dart';
 import '../../features/orders/models/order_models.dart';
 import '../services/order_watcher.dart';
 
+/// Order ids whose order screen is open right now (pushed by
+/// OrderDetailsPage). A bar tap for one of them opens nothing new: the cashier
+/// is already looking at it (UX review L8).
+final Set<int> openOrderScreens = <int>{};
+
 /// «2 заказа», «5 заказов», «21 заказ».
 String ordersWord(int n) {
   final m100 = n % 100, m10 = n % 10;
@@ -30,10 +35,13 @@ class UnacceptedBarFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<List<NewOrderItem>>(
-      valueListenable: unacceptedOrders,
-      builder: (context, list, _) {
-        if (list.isEmpty) return child;
+    return AnimatedBuilder(
+      animation: Listenable.merge([unacceptedOrders, alarmShowing]),
+      builder: (context, _) {
+        final list = unacceptedOrders.value;
+        // While an alarm dialog is up the bar steps aside: one «Открыть», and
+        // no order can be opened behind a ringing siren (UX review H2).
+        if (list.isEmpty || alarmShowing.value) return child;
         final top = MediaQuery.of(context).padding.top;
         return Column(children: [
           Material(

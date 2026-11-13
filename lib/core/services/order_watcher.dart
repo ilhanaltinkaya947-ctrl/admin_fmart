@@ -19,6 +19,11 @@ import 'new_order_dialog_guard.dart';
 /// every screen and the 3-minute reminder. Empty when nobody is watching.
 final ValueNotifier<List<NewOrderItem>> unacceptedOrders = ValueNotifier(const []);
 
+/// True while a new-order alarm dialog (the watcher's or the push's) is on
+/// screen: the red bar steps aside, so there is one «Открыть», not two, and a
+/// bar tap can never open an order behind a ringing siren (UX review H2).
+final ValueNotifier<bool> alarmShowing = ValueNotifier(false);
+
 /// How long «Напомнить через 3 мин» (or opening the order) quiets the alarm
 /// while an order is still not accepted.
 const Duration kRemindEvery = Duration(minutes: 3);
@@ -29,6 +34,17 @@ int waitedMinutes(NewOrderItem o, DateTime nowUtc) {
   if (c == null) return 0;
   final m = nowUtc.difference(c.toUtc()).inMinutes;
   return m < 0 ? 0 : m;
+}
+
+/// The reminder's body (UX review M6): how many wait, and the oldest one.
+String reminderText(List<NewOrderItem> waiting, DateTime nowUtc) {
+  final o = waiting.first;
+  final m = waitedMinutes(o, nowUtc);
+  if (waiting.length == 1) {
+    return 'Заказ №${o.id} ждёт $m мин. Примите заказ, мы напомним снова через 3 минуты.';
+  }
+  return 'Не приняты заказы: ${waiting.length}. Самый ранний №${o.id} ждёт $m мин. '
+      'Примите заказы, мы напомним снова через 3 минуты.';
 }
 
 class OrderWatcher {
@@ -96,6 +112,10 @@ class OrderWatcher {
     // is on duty, or a ringing order is a dark screen. Best effort.
     unawaited(WakelockPlus.enable().catchError((_) {}));
   }
+
+  /// The push dialog closed (UX review H1): start the same snooze as our own
+  /// dialog, or the next poll rings «ждёт 0 мин» ten seconds later.
+  void snooze() => _remindAfter = DateTime.now().add(remindEvery);
 
   Future<void> stop() async {
     _timer?.cancel();
@@ -219,6 +239,7 @@ class OrderWatcher {
       HapticFeedback.heavyImpact();
 
       _dialogOpen = true;
+      alarmShowing.value = true;
 
       try {
         await showDialog(
@@ -227,8 +248,7 @@ class OrderWatcher {
           builder: (c) => AlertDialog(
             title: Text(reminder ? 'Заказ ждёт принятия' : 'Новый заказ'),
             content: Text(reminder
-                ? 'Заказ №${first.id} ждёт ${waitedMinutes(first, DateTime.now().toUtc())} мин. '
-                    'Примите его, иначе напомним снова через 3 минуты.'
+                ? reminderText(oldestFirst, DateTime.now().toUtc())
                 : 'Заказ №${first.id}'),
             actions: [
               TextButton(
@@ -277,6 +297,7 @@ class OrderWatcher {
         );
       } finally {
         _dialogOpen = false;
+        alarmShowing.value = false;
         // Whatever closed the dialog (snooze, «Открыть», OS), the next ring for
         // a still-unaccepted order is kRemindEvery from now.
         _remindAfter = DateTime.now().add(remindEvery);

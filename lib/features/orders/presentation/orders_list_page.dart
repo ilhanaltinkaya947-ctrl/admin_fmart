@@ -222,7 +222,7 @@ class _OrdersListPageState extends State<OrdersListPage> {
                       final display = orderRowDisplay(o);
                       return ListTile(
                         title: Text(
-                          'Заказ #${o.id} — '
+                          'Заказ №${o.id} · '
                           '${orderStatusRu(o.status, fulfillmentType: o.fulfillmentType)}',
                         ),
                         subtitle: Column(

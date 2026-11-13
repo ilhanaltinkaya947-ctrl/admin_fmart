@@ -209,20 +209,22 @@ class _AppState extends State<App> with WidgetsBindingObserver {
         return;
       }
 
+      alarmShowing.value = true;
       try {
         await showDialog(
           context: ctx,
           barrierDismissible: false,
           builder: (c) => AlertDialog(
             title: const Text('Новый заказ'),
-            content: Text(orderId != null ? 'Заказ #$orderId' : 'Поступил новый заказ'),
+            content: Text(orderId != null ? 'Заказ №$orderId' : 'Поступил новый заказ'),
             actions: [
               TextButton(
                 onPressed: () async {
                   await _sound.stop();
                   if (c.mounted) Navigator.of(c).pop();
                 },
-                child: const Text('Позже'),
+                // 1.3.0 S2: snooze, never silence (same as the watcher's dialog).
+                child: const Text('Напомнить через 3 мин'),
               ),
               ElevatedButton(
                 onPressed: () async {
@@ -256,6 +258,10 @@ class _AppState extends State<App> with WidgetsBindingObserver {
           ctx.read<OrdersCubit>().refresh(storeId: storeId);
         }
       } finally {
+        alarmShowing.value = false;
+        // The watcher's 3-minute snooze starts now too, so the same order does
+        // not ring again on the next 10 s poll (UX review H1).
+        _watcher?.snooze();
         await _sound.stop(); // safety: catches OS-level dismissal
         newOrderDialogGuard.release();
       }
@@ -545,7 +551,10 @@ class _AppState extends State<App> with WidgetsBindingObserver {
           debugShowCheckedModeBanner: false,
           // 1.3.0 S2: the red «Не приняты» bar above every screen.
           builder: (context, child) => UnacceptedBarFrame(
-            onOpen: (id) => unawaited(_openOrderById(id)),
+            onOpen: (id) {
+              if (openOrderScreens.contains(id)) return; // already on screen
+              unawaited(_openOrderById(id));
+            },
             child: child ?? const SizedBox.shrink(),
           ),
           theme: ThemeData(
