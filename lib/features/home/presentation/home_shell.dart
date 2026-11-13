@@ -61,6 +61,15 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
+/// 1.3.0 S4: a store manager runs orders, not the money. These three are for
+/// admins only (the server can also refuse them: ORDER_REPORTS_ADMIN_ONLY).
+const _moneySections = {_Section.dashboard, _Section.customers, _Section.reports};
+
+bool _hidesMoney(BuildContext context) {
+  final auth = context.read<AuthCubit>().state;
+  return auth is Authenticated && auth.user.isManager;
+}
+
 class _HomeShellState extends State<HomeShell> {
   _Section _section = _Section.dashboard;
 
@@ -71,6 +80,10 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
+    // 1.3.0 S4: a manager starts on «Новые заказы», never on the revenue
+    // dashboard. Set before the first frame, so a morning-check push that
+    // switches the shell right after still wins.
+    if (_hidesMoney(context)) _section = _Section.newOrders;
     // A morning check push may have been tapped before this shell existed
     // (cold start): the launcher kept it, take it after the first frame.
     _morningLauncher = context.read<MorningCheckLauncher?>();
@@ -122,6 +135,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _select(_Section s) {
+    if (_moneySections.contains(s) && _hidesMoney(context)) return;
     if (s == _section) return;
     setState(() => _section = s);
     final cubit = context.read<OrdersCubit>();
@@ -287,10 +301,14 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    context.watch<AuthCubit>(); // rebuild when the signed-in role changes
+    final hideMoney = _hidesMoney(context);
+    // (A role that turns into manager mid-session still never SEES a money
+    // screen: the body below falls back to «Новые заказы».)
     return LayoutBuilder(
       builder: (ctx, constraints) {
         final wide = constraints.maxWidth >= _kRailBreakpoint;
-        final body = _bodyFor(_section);
+        final body = _bodyFor(hideMoney && _moneySections.contains(_section) ? _Section.newOrders : _section);
 
         if (wide) {
           return Scaffold(
@@ -300,6 +318,7 @@ class _HomeShellState extends State<HomeShell> {
                   selected: _section,
                   onSelected: _select,
                   storeName: widget.storeName,
+                  hideMoney: hideMoney,
                 ),
                 const VerticalDivider(width: 1),
                 Expanded(child: body),
@@ -345,7 +364,7 @@ class _HomeShellState extends State<HomeShell> {
           // who knows the shelf was restocked. Matches the server's gate.
           _Section.heldProducts,
           _Section.settings,
-        ];
+        ]..removeWhere((s) => hideMoney && _moneySections.contains(s));
 
         final selectedIndex = visibleSections.indexOf(_section);
         // If somehow the current section isn't visible (e.g. role flipped
@@ -371,11 +390,13 @@ class _SideRail extends StatelessWidget {
   final _Section selected;
   final ValueChanged<_Section> onSelected;
   final String storeName;
+  final bool hideMoney;
 
   const _SideRail({
     required this.selected,
     required this.onSelected,
     required this.storeName,
+    this.hideMoney = false,
   });
 
   @override
@@ -420,7 +441,8 @@ class _SideRail extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      _RailItem(
+                      if (!hideMoney)
+                        _RailItem(
                         icon: Icons.dashboard_outlined,
                         selectedIcon: Icons.dashboard,
                         label: 'Сегодня',
@@ -456,14 +478,16 @@ class _SideRail extends StatelessWidget {
                         isSelected: selected == _Section.morningCheck,
                         onTap: () => onSelected(_Section.morningCheck),
                       ),
-                      _RailItem(
+                      if (!hideMoney)
+                        _RailItem(
                         icon: Icons.people_outline,
                         selectedIcon: Icons.people,
                         label: 'Клиенты',
                         isSelected: selected == _Section.customers,
                         onTap: () => onSelected(_Section.customers),
                       ),
-                      _RailItem(
+                      if (!hideMoney)
+                        _RailItem(
                         icon: Icons.bar_chart_outlined,
                         selectedIcon: Icons.bar_chart,
                         label: 'Отчёты',

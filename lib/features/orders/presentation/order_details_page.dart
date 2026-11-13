@@ -555,10 +555,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           // selection is no longer a valid transition from the NEW status,
           // clear it — otherwise DropdownButtonFormField(value: …) holds a
           // value absent from its items and asserts/renders blank.
-          final allowed = adminAllowedTransitions(
-            fresh.status,
-            fulfillmentType: fresh.fulfillmentType,
-          );
+          final allowed = adminAllowedTransitionsFor(fresh);
           if (_selectedStatus != null && !allowed.contains(_selectedStatus)) {
             _selectedStatus = null;
           }
@@ -674,10 +671,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         // transitions from the current order status, and the admin
         // picks one explicitly. If the previously-picked target is no
         // longer valid (status changed under us), clear it.
-        final allowed = adminAllowedTransitions(
-          _order.status,
-          fulfillmentType: _order.fulfillmentType,
-        );
+        final allowed = adminAllowedTransitionsFor(_order);
         if (_selectedStatus != null &&
             !allowed.contains(_selectedStatus)) {
           _selectedStatus = null;
@@ -709,7 +703,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // can change under it (poll, push). Check again against the CURRENT
     // status, so an unpaid order can never be sent to «Оплачен» from here.
     if (!isAdminTransitionAllowed(_order.status, status,
-        fulfillmentType: _order.fulfillmentType)) {
+            fulfillmentType: _order.fulfillmentType) ||
+        !adminAllowedTransitionsFor(_order).contains(status)) {
       setState(() {
         _selectedStatus = null;
         _error = 'Этот статус сейчас выбрать нельзя. Обновите экран.';
@@ -3429,6 +3424,16 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             ),
           ],
 
+          // 1.3.0 S3: say BEFORE the tap why a partial refund will be refused.
+          if (_canRefund && unweighedWeightLines(_order) > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              unweighedRefundHint(unweighedWeightLines(_order)),
+              key: const ValueKey('refund-unweighed-hint'),
+              style: const TextStyle(fontSize: 13, color: Color(0xFFE65100)),
+            ),
+          ],
+
           // Append-only refund history — only shows up when the order has
           // been refunded at least once. Each row shows the amount,
           // reason, who did it, and when. Useful for audit when multiple
@@ -3581,10 +3586,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             // from the current status. Previously the dropdown listed
             // EVERY status, so an admin could pick completed ->
             // pending-payment and get a silent rejection.
-            final allowed = adminAllowedTransitions(
-              _order.status,
-              fulfillmentType: _order.fulfillmentType,
-            );
+            final allowed = adminAllowedTransitionsFor(_order);
             final validStatuses = _statuses
                 .where((s) => allowed.contains(s.statusName))
                 .toList();

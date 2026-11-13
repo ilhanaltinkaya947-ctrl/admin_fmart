@@ -1274,6 +1274,29 @@ const Map<String, Map<String, Set<String>>> kFulfillmentTransitionAllow = {
 /// For 'delivery' both masks are empty, so this reduces to
 /// `kAdminAllowedTransitions[status]` by set algebra. That is the safety
 /// argument, and a test pins it across the whole status cross-product.
+/// 1.3.0 S3 (incident #100023): weighed lines still without a scale reading,
+/// while weighing is still possible (paid / processing, not yet settled).
+int unweighedWeightLines(Order o) {
+  final st = o.status.toLowerCase().trim();
+  if (st != 'paid' && st != 'processing') return 0;
+  if (o.weightSettled == true) return 0;
+  return o.items.where((i) => i.isWeightLine && !i.isWeighed).length;
+}
+
+/// The store's text, the same words the server's 409 uses.
+String unweighedRefundHint(int n) =>
+    'Сначала взвесьте весовые товары (осталось $n). Если товара нет, нажмите '
+    '«Нет в наличии» на самом товаре: деньги вернутся сами.';
+
+/// [adminAllowedTransitions] for THIS order: while weighed lines are unweighed,
+/// a move to partially-refunded / refunded would close weighing for good (the
+/// lines could never be weighed again), so the dropdown does not offer it.
+Set<String> adminAllowedTransitionsFor(Order o) {
+  final base = adminAllowedTransitions(o.status, fulfillmentType: o.fulfillmentType);
+  if (unweighedWeightLines(o) == 0) return base;
+  return {...base}..removeAll(const {'partially-refunded', 'refunded'});
+}
+
 Set<String> adminAllowedTransitions(
   String status, {
   String fulfillmentType = 'delivery',

@@ -19,7 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '_harness.dart' show StubAuthRepository, StubTokenStorage;
 import 'weight_page_harness.dart';
 
-Future<void> _pump(WidgetTester t, Size size, {MorningCheckLauncher? launcher}) async {
+Future<void> _pump(WidgetTester t, Size size, {MorningCheckLauncher? launcher, String role = 'manager'}) async {
   t.view.physicalSize = size;
   t.view.devicePixelRatio = 1.0;
   addTearDown(t.view.reset);
@@ -38,7 +38,7 @@ Future<void> _pump(WidgetTester t, Size size, {MorningCheckLauncher? launcher}) 
           create: (_) => TestAuthCubit(
             tokenStorage: tokens,
             authRepository: StubAuthRepository(api: api, tokenStorage: tokens),
-            role: 'manager',
+            role: role,
           ),
         ),
         BlocProvider<StoreCubit>(
@@ -85,6 +85,24 @@ void main() {
     await t.pump();
     expect(find.widgetWithText(AppBar, 'Утренняя проверка'), findsOneWidget);
     expect(launcher.pending, isFalse);
+    await t.pumpWidget(const SizedBox());
+  });
+
+  // 1.3.0 S4: a store manager runs orders, not the money.
+  testWidgets('a manager has no Сегодня / Клиенты / Отчёты in the side menu', (t) async {
+    await _pump(t, const Size(1024, 1366));
+    for (final hidden in ['Клиенты', 'Отчёты']) {
+      expect(find.text(hidden), findsNothing, reason: hidden);
+    }
+    expect(find.text('Новые заказы'), findsWidgets);
+    await t.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('an admin keeps every screen', (t) async {
+    await _pump(t, const Size(1024, 1366), role: 'admin');
+    for (final shown in ['Сегодня', 'Клиенты', 'Отчёты', 'Новые заказы']) {
+      expect(find.text(shown), findsWidgets, reason: shown);
+    }
     await t.pumpWidget(const SizedBox());
   });
 }

@@ -104,4 +104,28 @@ void main() {
     expect(find.text('Алкоголь'), findsOneWidget);
     expect(find.text('Похоже на повтор №100033'), findsOneWidget);
   });
+
+  // ── 1.3.0 S3 (incident #100023) ─────────────────────────────────────────
+  Map<String, dynamic> weighed({int? actualG}) => {
+        'id': 1, 'product_id': 101, 'qty': 6, 'price': '359', 'total': '2369',
+        'uom': 'кг', 'unit_g': 50, 'price_per_kg': '7185', 'ordered_g': 300,
+        'charged_g_cap': 330, 'buffer_amount': '215', if (actualG != null) 'actual_g': actualG,
+      };
+  final piece = {'id': 2, 'product_id': 103, 'qty': 2, 'price': '250', 'total': '500'};
+
+  test('unweighed weighed lines are counted only while weighing is possible', () {
+    expect(unweighedWeightLines(Order.fromJson(_j({'status': 'processing', 'items': [weighed(), piece]}))), 1);
+    expect(unweighedWeightLines(Order.fromJson(_j({'status': 'processing', 'items': [weighed(actualG: 287), piece]}))), 0);
+    expect(unweighedWeightLines(Order.fromJson(_j({'status': 'ready-for-delivery', 'items': [weighed()]}))), 0);
+    expect(unweighedWeightLines(Order.fromJson(_j({'status': 'processing', 'weight_settled': true, 'items': [weighed()]}))), 0);
+  });
+
+  test('the dropdown never offers a refund status that would freeze weighing', () {
+    final frozen = adminAllowedTransitionsFor(Order.fromJson(_j({'status': 'processing', 'items': [weighed()]})));
+    expect(frozen.contains('partially-refunded') || frozen.contains('refunded'), isFalse);
+    final base = adminAllowedTransitions('processing');
+    final weighedOk = adminAllowedTransitionsFor(Order.fromJson(_j({'status': 'processing', 'items': [weighed(actualG: 287)]})));
+    expect(weighedOk, base, reason: 'everything weighed: the dropdown is exactly as before');
+    expect(unweighedRefundHint(2), startsWith('Сначала взвесьте весовые товары (осталось 2)'));
+  });
 }
