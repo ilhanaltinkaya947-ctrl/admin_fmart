@@ -4,6 +4,7 @@ import '../../../core/api/api_client.dart';
 import '../../../core/api/api_errors.dart';
 import '../../../core/api/safe_response.dart';
 import '../models/order_models.dart';
+import '../models/refund_summary.dart';
 
 /// Typed exception surfaced to the UI layer when an admin-facing call
 /// fails. Holds the most specific human-readable message we can extract
@@ -17,6 +18,15 @@ class OrdersApiException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// 409 `refund_over_owed` (1.3.1): the refund would push what was returned
+/// above what the customer is owed. Not a failure: the store confirms and the
+/// same refund goes again with `confirm_over_owed: true`.
+class RefundOverOwedException extends OrdersApiException {
+  final RefundOverOwed numbers;
+  RefundOverOwedException(this.numbers)
+      : super('Возврат больше, чем положено клиенту', statusCode: 409);
 }
 
 /// Walks the response payload of a failed admin call and returns the
@@ -236,6 +246,9 @@ class OrdersRepository {
     /// Products the operator marked as not on the shelf. Catalog hides these
     /// from every customer until they are genuinely restocked.
     List<int> oosProductIds = const [],
+    /// The store saw «Это больше, чем клиенту положено вернуть» and confirmed.
+    /// Omitted when false, so every other refund stays byte-identical.
+    bool confirmOverOwed = false,
   }) async {
     try {
       final resp = await api.dio.post(
@@ -248,11 +261,16 @@ class OrdersRepository {
           // keeps the request byte-identical to today for every refund that
           // is not about missing stock.
           if (oosProductIds.isNotEmpty) 'oos_product_ids': oosProductIds,
+          if (confirmOverOwed) 'confirm_over_owed': true,
         },
         options: Options(headers: {'Idempotency-Key': idempotencyKey}),
       );
       return SimpleActionResponse.fromJson(asJsonMap(resp.data));
     } on DioException catch (e) {
+      if (e.response?.statusCode == 409) {
+        final over = RefundOverOwed.tryParse(e.response?.data);
+        if (over != null) throw RefundOverOwedException(over);
+      }
       throw OrdersApiException(
         _extractApiErrorMessage(e) ?? 'Не удалось оформить возврат',
         statusCode: e.response?.statusCode,

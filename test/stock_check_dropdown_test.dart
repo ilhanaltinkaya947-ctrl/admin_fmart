@@ -76,10 +76,11 @@ class _StockRepo extends FakeOrdersRepository {
     required String reason,
     required String idempotencyKey,
     List<int> oosProductIds = const [],
+    bool confirmOverOwed = false,
   }) {
     refunds.add((amount, reason, oosProductIds));
     return super.refundOrder(
-        orderId: orderId, amount: amount, reason: reason, idempotencyKey: idempotencyKey, oosProductIds: oosProductIds);
+        orderId: orderId, amount: amount, reason: reason, idempotencyKey: idempotencyKey, oosProductIds: oosProductIds, confirmOverOwed: confirmOverOwed);
   }
 
   @override

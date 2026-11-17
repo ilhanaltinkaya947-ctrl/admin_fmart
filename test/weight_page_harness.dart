@@ -112,6 +112,12 @@ class FakeOrdersRepository extends OrdersRepository {
   final List<int> weightPuts = [];
   final List<int> removeCalls = [];
   int refundCalls = 0;
+  /// 1.3.1: what each refund call sent.
+  final List<bool> refundConfirmFlags = [];
+  final List<double> refundAmounts = [];
+  final List<String> refundKeys = [];
+  /// When true, [refundError] is thrown once and then cleared.
+  bool refundErrorOnce = false;
 
   /// When set, the next call of that kind throws it.
   OrdersApiException? settleError;
@@ -227,10 +233,18 @@ class FakeOrdersRepository extends OrdersRepository {
     required String reason,
     required String idempotencyKey,
     List<int> oosProductIds = const [],
+    bool confirmOverOwed = false,
   }) async {
     refundCalls++;
+    refundConfirmFlags.add(confirmOverOwed);
+    refundAmounts.add(amount);
+    refundKeys.add(idempotencyKey);
     final e = refundError;
-    if (e != null) throw e;
+    if (e != null) {
+      // A one-shot error (the 409 path): the confirmed retry goes through.
+      if (refundErrorOnce) refundError = null;
+      throw e;
+    }
     return SimpleActionResponse(success: true, message: 'Возврат оформлен');
   }
 }

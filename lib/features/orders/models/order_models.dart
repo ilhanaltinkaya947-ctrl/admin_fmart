@@ -1,4 +1,5 @@
 import 'refund_state.dart';
+import 'refund_summary.dart';
 
 
 class OrdersPage {
@@ -173,6 +174,9 @@ class Order {
   final String? customerPhoneLast4;
   /// "slot" | "off_hours" | "alcohol"; null = never scheduled / unknown.
   final String? scheduledReason;
+  /// 1.3.1: owed / refunded / pending from order-service; null on an older
+  /// server, and then nothing built from it shows.
+  final RefundSummary? refundSummary;
 
   bool get hasAlcohol => alcoholClass == 'weak' || alcoholClass == 'strong';
 
@@ -218,6 +222,7 @@ class Order {
     this.customerFirstName,
     this.customerPhoneLast4,
     this.scheduledReason,
+    this.refundSummary,
   });
 
   /// True once a самовывоз order has sat past its hold deadline.
@@ -384,6 +389,7 @@ class Order {
     customerFirstName: _str(j['customer_first_name']),
     customerPhoneLast4: _str(j['customer_phone_last4']),
     scheduledReason: _str(j['scheduled_reason']),
+    refundSummary: RefundSummary.tryParse(j['refund_summary']),
   );
 
   Order copyWith({
@@ -463,6 +469,7 @@ class Order {
         customerFirstName: customerFirstName,
         customerPhoneLast4: customerPhoneLast4,
         scheduledReason: scheduledReason,
+        refundSummary: refundSummary,
       );
 }
 

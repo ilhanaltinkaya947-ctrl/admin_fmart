@@ -27,6 +27,8 @@ import 'widgets/order_item_card.dart';
 import 'widgets/order_timeline_section.dart';
 import '../../auth/state/auth_cubit.dart';
 import '../models/refund_button.dart';
+import '../models/refund_summary.dart';
+import 'widgets/refund_summary_block.dart';
 import '../models/cancel_reasons.dart';
 import 'widgets/order_flag_chip.dart';
 import '../../../core/services/order_watcher.dart' show unacceptedOrders;
@@ -1698,8 +1700,27 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // reads 3015 / 2785 / 230 and the arithmetic is visible.
     final total = ceiling.basis;
 
-    final amountCtrl =
-        TextEditingController(text: remaining.toStringAsFixed(2));
+    // 1.3.1: what the customer is OWED back (server `refund_summary`), as
+    // opposed to the captured ceiling above, which only says what the bank
+    // can still give. Null on an older server: the sheet is then exactly 1.3.0.
+    final summary = _order.refundSummary;
+
+    // Prefill. Without a summary: the whole remaining balance, as before.
+    // With one: what is still owed (never above the captured ceiling), and an
+    // empty field when nothing is owed, so a refund beyond what the customer
+    // is owed is always a number someone typed, never one we offered.
+    final String prefill;
+    if (summary == null) {
+      prefill = remaining.toStringAsFixed(2);
+    } else if (summary.remainingOwed > 0) {
+      final owedNow = summary.remainingOwed < remaining
+          ? summary.remainingOwed
+          : remaining;
+      prefill = owedNow.toStringAsFixed(2);
+    } else {
+      prefill = '';
+    }
+    final amountCtrl = TextEditingController(text: prefill);
     final reasonCtrl = TextEditingController();
 
     // Structured refund-reason picker. Free-text alone produced un-analyzable
@@ -1820,7 +1841,44 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               // Only surface the refund-so-far / remaining lines when
               // something has already been returned — a fresh full-refund
               // order doesn't need the extra rows.
-              if (alreadyRefunded > 0) ...[
+              // 1.3.1: against what the customer is OWED, from the server.
+              if (summary != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  alreadyRefundedOfOwedText(
+                    refunded: summary.refunded,
+                    owed: summary.owed,
+                  ),
+                  key: const ValueKey('refund-sheet-already'),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF111827),
+                  ),
+                ),
+                if (summary.pending > 0) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    refundPendingBankText(summary.pending),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFF8D6E00),
+                    ),
+                  ),
+                ],
+                if (summary.remainingOwed > 0) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    refundRemainingOwedText(summary.remainingOwed),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFFEE6F00),
+                    ),
+                  ),
+                ],
+              ],
+              if (summary == null && alreadyRefunded > 0) ...[
                 const SizedBox(height: 2),
                 Text(
                   'Уже возвращено: ${alreadyRefunded.toStringAsFixed(2)} ₸',
@@ -1854,6 +1912,20 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                   border: OutlineInputBorder(),
                 ),
               ),
+              // 1.3.1 live check, the server's own rule (1 ₸ tolerance).
+              if (summary != null)
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: amountCtrl,
+                  builder: (_, v, __) {
+                    final excess =
+                        summary.overOwedBy(_parseRefundAmount(v.text));
+                    if (excess == null) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: _OverOwedWarning(excess: excess),
+                    );
+                  },
+                ),
               const SizedBox(height: 8),
               ValueListenableBuilder<String?>(
                 valueListenable: reasonCode,
@@ -1987,16 +2059,32 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: ElevatedButton(
+                    child: ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: amountCtrl,
+                    builder: (_, typed, __) {
+                    // 1.3.1: over what is owed → the button IS the confirm
+                    // step («Всё равно вернуть N ₸») and the request carries
+                    // confirm_over_owed. Within it: the plain «Оформить».
+                    final typedAmount = _parseRefundAmount(typed.text);
+                    final overOwed =
+                        summary?.overOwedBy(typedAmount) != null;
+                    return ElevatedButton(
+                      key: const ValueKey('refund-sheet-submit'),
+                      style: overOwed
+                          ? ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFC62828),
+                              foregroundColor: Colors.white,
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 14),
+                            )
+                          : null,
                       onPressed: () async {
                         // Round to 2 decimals before send so the backend
                         // doesn't receive a float like 100.12345600001
                         // from operator-pasted text.
-                        final rawAmount = double.tryParse(
-                                amountCtrl.text.trim().replaceAll(',', '.')) ??
-                            0.0;
-                        final amount =
-                            double.parse(rawAmount.toStringAsFixed(2));
+                        final amount = _parseRefundAmount(amountCtrl.text);
+                        final confirmOver =
+                            summary?.overOwedBy(amount) != null;
                         final code = reasonCode.value;
                         final note = reasonCtrl.text.trim();
                         // Canonical label is the structured reason; the free
@@ -2054,6 +2142,17 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                                 ),
                                 const SizedBox(height: 8),
                                 Text('Причина: $reason'),
+                                if (confirmOver) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    overOwedWarningText(
+                                        summary!.overOwedBy(amount)!),
+                                    style: const TextStyle(
+                                      color: Color(0xFFC62828),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
                                 // The refund is irreversible; the hold is not,
                                 // and saying so is the difference between an
                                 // operator who hesitates and one who picks the
@@ -2093,6 +2192,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                           amount: amount,
                           reason: reason,
                           idempotencyKey: sessionIdempotencyKey,
+                          confirmOverOwed: confirmOver,
                           // Map the picked ORDER-LINE ids to PRODUCT ids — the
                           // catalog knows nothing about order lines. Only when
                           // the reason is still «Нет в наличии»; changing the
@@ -2107,7 +2207,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                               : const [],
                         ));
                       },
-                      child: const Text('Оформить'),
+                      child: Text(
+                        overOwed
+                            ? overOwedConfirmButtonText(typedAmount)
+                            : 'Оформить',
+                        textAlign: TextAlign.center,
+                      ),
+                    );
+                    },
                     ),
                   ),
                 ],
@@ -2135,6 +2242,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       reason: result.reason,
       idempotencyKey: result.idempotencyKey,
       oosProductIds: result.oosProductIds,
+      confirmOverOwed: result.confirmOverOwed,
     );
   }
 
@@ -2179,9 +2287,11 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               const SizedBox(height: 4),
               Text('Было $oldQty шт, станет $newQty шт'),
               const SizedBox(height: 12),
-              Text(
-                'Покупателю вернём $refundText на карту. '
-                'Обычно от 1 до 3 рабочих дней. Отменить это нельзя.',
+              _ItemRefundLine(amount: unit * delta),
+              const SizedBox(height: 6),
+              const Text(
+                'На карту, обычно от 1 до 3 рабочих дней. '
+                'Отменить это нельзя.',
               ),
             ],
           ),
@@ -2458,9 +2568,10 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             const SizedBox(height: 4),
             Text('${item.qty} шт'),
             const SizedBox(height: 12),
-            Text(
-              'Покупателю вернём $refundText на карту. '
-              'Обычно от 1 до 3 рабочих дней. '
+            _ItemRefundLine(amount: item.total),
+            const SizedBox(height: 6),
+            const Text(
+              'На карту, обычно от 1 до 3 рабочих дней. '
               'Вернуть товар обратно в заказ будет нельзя.',
             ),
             if (outOfStock) ...[
@@ -2999,11 +3110,61 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
 
   static bool _hasCyrillic(String text) => _cyrillicRange.hasMatch(text);
 
+  /// The confirm step after a 409 `refund_over_owed`, in the sheet's words.
+  Future<bool?> _confirmOverOwedFromServer(RefundOverOwed n) {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        key: const ValueKey('refund-over-owed-dialog'),
+        title: const Text('Подтвердите возврат'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                alreadyRefundedOfOwedText(refunded: n.refunded, owed: n.owed),
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _OverOwedWarning(excess: n.excess),
+              const SizedBox(height: 12),
+              const Text(
+                'Возврат денег отменить нельзя.',
+                style: TextStyle(color: Colors.red),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Назад'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFC62828),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(c).pop(true),
+            child: Text(overOwedConfirmButtonText(n.requested)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _refundOrder({
     required double amount,
     required String reason,
     required String idempotencyKey,
     List<int> oosProductIds = const [],
+    bool confirmOverOwed = false,
   }) async {
     HapticFeedback.mediumImpact();
     _noteRefundBaseline(idempotencyKey);
@@ -3025,6 +3186,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         reason: reason,
         idempotencyKey: idempotencyKey,
         oosProductIds: oosProductIds,
+        confirmOverOwed: confirmOverOwed,
       );
 
       if (!mounted) return;
@@ -3068,6 +3230,22 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(res.message.isNotEmpty ? res.message : (res.success ? 'Возврат оформлен' : 'Не удалось оформить возврат'))),
       );
+    } on RefundOverOwedException catch (e) {
+      // 1.3.1: the server says this refund goes above what the customer is
+      // owed (the data moved since the sheet opened, or an older summary).
+      // Not an error: the same confirm step as the sheet, with the SERVER's
+      // numbers. Confirming sends the same refund (same idempotency key, it
+      // was refused, nothing was applied) with confirm_over_owed.
+      if (!mounted) return;
+      final go = await _confirmOverOwedFromServer(e.numbers);
+      if (go != true || !mounted) return;
+      await _refundOrder(
+        amount: amount,
+        reason: reason,
+        idempotencyKey: idempotencyKey,
+        oosProductIds: oosProductIds,
+        confirmOverOwed: true,
+      );
     } on OrdersApiException catch (e) {
       if (!mounted) return;
       _showMoneyPathError(
@@ -3078,6 +3256,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           idempotencyKey: idempotencyKey,
           // A retry is the same refund: it must hide the same products.
           oosProductIds: oosProductIds,
+          confirmOverOwed: confirmOverOwed,
         ),
         'Не удалось оформить возврат',
       );
@@ -3091,6 +3270,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
           idempotencyKey: idempotencyKey,
           // A retry is the same refund: it must hide the same products.
           oosProductIds: oosProductIds,
+          confirmOverOwed: confirmOverOwed,
         ),
       );
     } finally {
@@ -3613,6 +3793,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             ),
           ],
 
+          // 1.3.1: refunded against owed, from the server. Hidden on an older
+          // server (no refund_summary) and on an order with nothing owed or
+          // returned.
+          if (_order.refundSummary?.hasAnything ?? false) ...[
+            const SizedBox(height: 16),
+            RefundSummaryBlock(summary: _order.refundSummary!),
+          ],
+
           // Append-only refund history — only shows up when the order has
           // been refunded at least once. Each row shows the amount,
           // reason, who did it, and when. Useful for audit when multiple
@@ -3823,11 +4011,14 @@ class _RefundPayload {
   /// key and only the first POST applies. Without this we generated a
   /// fresh UUID per call and got duplicate refunds.
   final String idempotencyKey;
+  /// 1.3.1: the store confirmed a refund above what the customer is owed.
+  final bool confirmOverOwed;
   _RefundPayload({
     required this.amount,
     required this.reason,
     required this.idempotencyKey,
     this.oosProductIds = const [],
+    this.confirmOverOwed = false,
   });
 }
 
@@ -4691,6 +4882,73 @@ class _DuplicateBanner extends StatelessWidget {
           ]),
         ),
       ]),
+      ),
+    );
+  }
+}
+
+
+/// The typed refund amount, rounded to kopecks so the backend never receives
+/// a float like 100.12345600001 from pasted text. Unparseable reads as 0.
+double _parseRefundAmount(String text) {
+  final raw = double.tryParse(text.trim().replaceAll(',', '.')) ?? 0.0;
+  if (!raw.isFinite) return 0.0;
+  return double.parse(raw.toStringAsFixed(2));
+}
+
+/// 1.3.1: «Это больше, чем клиенту положено вернуть, на N ₸», in the sheet and
+/// in the confirm step after a 409.
+class _OverOwedWarning extends StatelessWidget {
+  final double excess;
+  const _OverOwedWarning({required this.excess});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey('refund-over-owed-warning'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFEBEE),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: Color(0xFFC62828), size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              overOwedWarningText(excess),
+              style: const TextStyle(
+                color: Color(0xFFC62828),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 1.3.1: «Клиенту вернётся N ₸» before a quantity cut or a removed line.
+/// The line value the app already shows; the server may clamp it (a promo can
+/// put the order total below it), which is why the toast after the edit still
+/// names the action, not the money.
+class _ItemRefundLine extends StatelessWidget {
+  final Object amount;
+  const _ItemRefundLine({required this.amount});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      itemEditRefundText(amount),
+      key: const ValueKey('item-edit-refund-line'),
+      style: const TextStyle(
+        fontSize: 17,
+        fontWeight: FontWeight.w700,
+        color: Color(0xFFE65100),
       ),
     );
   }

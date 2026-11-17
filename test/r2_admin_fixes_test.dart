@@ -53,13 +53,15 @@ class _LedgerRepo extends FakeOrdersRepository {
     required String reason,
     required String idempotencyKey,
     List<int> oosProductIds = const [],
+    bool confirmOverOwed = false,
   }) async {
     final r = await super.refundOrder(
         orderId: orderId,
         amount: amount,
         reason: reason,
         idempotencyKey: idempotencyKey,
-        oosProductIds: oosProductIds);
+        oosProductIds: oosProductIds,
+        confirmOverOwed: confirmOverOwed);
     ledger = ledgerAfterRefund;
     return r;
   }
