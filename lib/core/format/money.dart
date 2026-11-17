@@ -15,7 +15,9 @@ String formatTenge(Object? value) {
   if (value is num) {
     n = value;
   } else if (value is String) {
-    n = num.tryParse(value);
+    // Money strings can arrive as "145,00" (see parseMoney); read the comma
+    // as the decimal point instead of printing the raw text without ₸.
+    n = num.tryParse(value.trim().replaceAll(',', '.'));
     if (n == null) return value; // can't parse — render the raw text
   } else {
     return value.toString();

@@ -246,9 +246,12 @@ class OrdersRepository {
     /// Products the operator marked as not on the shelf. Catalog hides these
     /// from every customer until they are genuinely restocked.
     List<int> oosProductIds = const [],
-    /// The store saw «Это больше, чем клиенту положено вернуть» and confirmed.
-    /// Omitted when false, so every other refund stays byte-identical.
-    bool confirmOverOwed = false,
+    /// null: the server sent no refund_summary (an older order-service), so
+    /// the key is omitted and the request is exactly 1.3.0's.
+    /// true / false: ALWAYS sent. The server reads an absent key as an old app
+    /// (allow and log), so a 1.3.1 that left out `false` would never get the
+    /// 409 guard (two iPads refunding the same 7 650 twice).
+    bool? confirmOverOwed,
   }) async {
     try {
       final resp = await api.dio.post(
@@ -261,7 +264,7 @@ class OrdersRepository {
           // keeps the request byte-identical to today for every refund that
           // is not about missing stock.
           if (oosProductIds.isNotEmpty) 'oos_product_ids': oosProductIds,
-          if (confirmOverOwed) 'confirm_over_owed': true,
+          if (confirmOverOwed != null) 'confirm_over_owed': confirmOverOwed,
         },
         options: Options(headers: {'Idempotency-Key': idempotencyKey}),
       );

@@ -210,11 +210,21 @@ void main() {
 
   // ------------------------------------------------------------ wire format
   group('repository', () {
-    test('confirm_over_owed is sent only when confirmed', () async {
+    test('confirm_over_owed: absent for an old server, else always explicit',
+        () async {
       final svc = FakeOrderSvc();
       final repo = wireRepo(svc);
+      // Old server (no refund_summary): the exact 1.3.0 request.
       await repo.refundOrder(
           orderId: 1, amount: 100, reason: 'Другое · x', idempotencyKey: 'k');
+      // Server knows the field: false must be SENT (absent = old app = the
+      // server allows and only logs, so the guard would never run).
+      await repo.refundOrder(
+          orderId: 1,
+          amount: 100,
+          reason: 'Другое · x',
+          idempotencyKey: 'k',
+          confirmOverOwed: false);
       await repo.refundOrder(
           orderId: 1,
           amount: 100,
@@ -222,7 +232,9 @@ void main() {
           idempotencyKey: 'k',
           confirmOverOwed: true);
       expect(svc.bodies[0].containsKey('confirm_over_owed'), isFalse);
-      expect(svc.bodies[1]['confirm_over_owed'], true);
+      expect(svc.bodies[1].containsKey('confirm_over_owed'), isTrue);
+      expect(svc.bodies[1]['confirm_over_owed'], false);
+      expect(svc.bodies[2]['confirm_over_owed'], true);
     });
 
     test('409 refund_over_owed → RefundOverOwedException with the numbers',
@@ -270,6 +282,10 @@ void main() {
       expect(find.byKey(const ValueKey('refund-over-owed-warning')),
           findsNothing);
       expect(find.text('Оформить'), findsOneWidget);
+      await pickReason(t);
+      await submitAndConfirm(t);
+      expect(repo.refundConfirmFlags, [null],
+          reason: 'old server: no confirm_over_owed key at all');
       await disposePage(t);
     });
 
@@ -453,6 +469,156 @@ void main() {
       await settle(t);
       expect(find.text(itemEditRefundText('1350.00')), findsOneWidget);
       expect(find.text('Убрать и вернуть ${formatTenge(1350)}'), findsOneWidget);
+      await t.tap(find.text('Назад'));
+      await settle(t);
+      await disposePage(t);
+    });
+  });
+
+  // ---- review fixes of 2b452b2 ----------------------------------------
+
+  group('review HIGH: fresh summary, explicit flag', () {
+    testWidgets('sheet re-reads the order: another iPad refunded meanwhile',
+        (t) async {
+      final repo = fakeRepo(orderJson(
+          summary: summaryJson(
+              refunded: '0.00', remaining: '7650.00', over: '0.00')));
+      await pumpOrderPage(t, repo);
+      // iPad A refunds 7 650; this screen still holds the old summary.
+      repo.detail = orderJson(
+          summary: summaryJson(refunded: '7650.00', over: '0.00'));
+      final before = repo.getCalls;
+      await openSheet(t);
+      expect(repo.getCalls, greaterThan(before));
+      expect(
+          find.text(alreadyRefundedOfOwedText(refunded: 7650, owed: 7650)),
+          findsOneWidget);
+      // Nothing owed any more: no prefill, and 7 650 again is over owed.
+      expect(find.text('7650.00'), findsNothing);
+      await typeAmount(t, '7650');
+      expect(find.text(overOwedWarningText(7650)), findsOneWidget);
+      await disposePage(t);
+    });
+
+    testWidgets('fetch fails: cached summary, flag still sent as false',
+        (t) async {
+      final repo = fakeRepo(orderJson(
+          summary: summaryJson(
+              refunded: '6700.00', remaining: '950.00', over: '0.00')));
+      await pumpOrderPage(t, repo);
+      repo.getError = Exception('offline');
+      await openSheet(t);
+      expect(
+          find.text(alreadyRefundedOfOwedText(refunded: 6700, owed: 7650)),
+          findsOneWidget);
+      await pickReason(t);
+      await submitAndConfirm(t);
+      expect(repo.refundConfirmFlags, [false]);
+      await disposePage(t);
+    });
+
+    testWidgets('after a refund the summary updates at once', (t) async {
+      final repo = fakeRepo(orderJson(
+          summary: summaryJson(
+              refunded: '6700.00', remaining: '950.00', over: '0.00')));
+      repo.onRefund = () => repo.detail = orderJson(
+          summary: summaryJson(refunded: '7650.00', over: '0.00'));
+      await pumpOrderPage(t, repo);
+      await openSheet(t);
+      await pickReason(t);
+      await submitAndConfirm(t);
+      final line = find.text(refundedOfOwedText(const RefundSummary(
+          captured: 0, currentTotal: 0, owed: 7650, refunded: 7650)));
+      await scrollTo(t, line);
+      expect(line, findsOneWidget);
+      await disposePage(t);
+    });
+
+    test('pending is inside refunded (server field meaning): not added twice',
+        () {
+      // refund_summary.py: refunded = every counted row (sent, in flight,
+      // held); pending = the part of refunded not yet sent.
+      const s = RefundSummary(
+          captured: 17050,
+          currentTotal: 9400,
+          owed: 7650,
+          refunded: 7650,
+          pending: 1000);
+      expect(s.overOwedBy(1), isNull);
+      expect(s.overOwedBy(2), 2);
+    });
+  });
+
+  group('review MED: a full refund is never over owed', () {
+    test('rule', () {
+      const s = RefundSummary(
+          captured: 17050, currentTotal: 9400, owed: 7650, refunded: 0);
+      expect(overOwedForRefund(s, 17050, remainingOnCard: 17050), isNull);
+      expect(overOwedForRefund(s, 9000, remainingOnCard: 17050), 1350);
+      expect(overOwedForRefund(null, 9000, remainingOnCard: 17050), isNull);
+    });
+
+    testWidgets('amount empties the card: plain «Оформить», flag false',
+        (t) async {
+      final repo = fakeRepo(orderJson(
+          summary: summaryJson(
+              refunded: '0.00', remaining: '7650.00', over: '0.00')));
+      await pumpOrderPage(t, repo, role: 'admin');
+      await openSheet(t);
+      await pickReason(t);
+      await typeAmount(t, '17050');
+      expect(find.byKey(const ValueKey('refund-over-owed-warning')),
+          findsNothing);
+      expect(find.text('Оформить'), findsOneWidget);
+      await submitAndConfirm(t);
+      expect(repo.refundConfirmFlags, [false]);
+      await disposePage(t);
+    });
+  });
+
+  group('review LOW: unedited order (goodwill)', () {
+    testWidgets('no «Уже возвращено 0 из 0», softer warning', (t) async {
+      final repo = fakeRepo(orderJson(
+          status: 'processing',
+          summary: summaryJson(
+              owed: '0.00',
+              refunded: '0.00',
+              remaining: '0.00',
+              over: '0.00')));
+      await pumpOrderPage(t, repo);
+      await openSheet(t);
+      expect(find.byKey(const ValueKey('refund-sheet-already')), findsNothing);
+      await typeAmount(t, '100');
+      expect(
+          find.text('Заказ не менялся. Возврат будет сверх суммы изменений: 100 ₸'),
+          findsOneWidget);
+      expect(find.textContaining('больше, чем клиенту положено'), findsNothing);
+      await disposePage(t);
+    });
+  });
+
+  group('review LOW: comma money', () {
+    test('formatTenge reads "145,00"', () {
+      expect(formatTenge('145,00'), '145 ₸');
+      expect(formatTenge('1350,50'), '1 350,5 ₸');
+    });
+
+    testWidgets('remove line with a comma total names the money', (t) async {
+      final line = milkLine()..['total'] = '1350,00';
+      final repo = fakeRepo({
+        ...orderJson(status: 'processing'),
+        'items': [line, breadLine()],
+      });
+      await pumpOrderPage(t, repo);
+      final del = find.descendant(
+        of: find.ancestor(
+            of: find.text('Молоко 3,2% 1 л'), matching: find.byType(Card)),
+        matching: find.byTooltip('Удалить'),
+      );
+      await scrollTo(t, del);
+      await t.tap(del);
+      await settle(t);
+      expect(find.text('Клиенту вернётся 1 350 ₸'), findsOneWidget);
       await t.tap(find.text('Назад'));
       await settle(t);
       await disposePage(t);

@@ -53,7 +53,7 @@ class _LedgerRepo extends FakeOrdersRepository {
     required String reason,
     required String idempotencyKey,
     List<int> oosProductIds = const [],
-    bool confirmOverOwed = false,
+    bool? confirmOverOwed,
   }) async {
     final r = await super.refundOrder(
         orderId: orderId,

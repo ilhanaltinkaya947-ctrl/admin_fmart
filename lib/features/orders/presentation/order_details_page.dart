@@ -52,6 +52,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
   bool _saving = false;
   bool _actionLoading = false;
   bool _refundSheetOpen = false;
+  // 1.3.1: the order is being re-read before the refund sheet opens.
+  bool _refundSheetLoading = false;
   String? _error;
 
   List<OrderStatusDto> _statuses = [];
@@ -578,6 +580,48 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     } catch (_) {
       // Polling is best-effort. Operator can still pull-to-refresh
       // (badge) or back-out / re-enter to force a reload.
+    }
+  }
+
+  /// One fresh GET of the order, applied like a poll tick (1.3.1: before the
+  /// refund sheet opens and right after a refund, so refund_summary is
+  /// current). Best effort: a failure keeps the order on screen as it was.
+  Future<void> _refetchOrder({Duration? timeout}) async {
+    final storeState = context.read<StoreCubit>().state;
+    if (storeState is! StoreSelected) return;
+    try {
+      final repo = context.read<OrdersRepository>();
+      var call = repo.getOrderById(
+        storeId: storeState.storeId,
+        orderId: _order.id,
+      );
+      if (timeout != null) call = call.timeout(timeout);
+      final fresh = await call;
+      if (fresh == null || !mounted) return;
+      // Never under an edit in flight: same rule as the poll.
+      if (_handingOver ||
+          _saving ||
+          _itemBusy.isNotEmpty ||
+          _pickBusy.isNotEmpty ||
+          _stockBusy.isNotEmpty ||
+          _weightBusy.isNotEmpty ||
+          _settleBusy ||
+          _substituteSheetOpen ||
+          _confirmOpen) {
+        return;
+      }
+      setState(() {
+        _dropStalePreviews(fresh);
+        _order = fresh;
+        _refundStateSeen |= fresh.refundStateSupported;
+        _reconcileRefundWait();
+        final allowed = adminAllowedTransitionsFor(fresh);
+        if (_selectedStatus != null && !allowed.contains(_selectedStatus)) {
+          _selectedStatus = null;
+        }
+      });
+    } catch (_) {
+      // Keep what is on screen.
     }
   }
 
@@ -1659,7 +1703,19 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     // sessionIdempotencyKey, so confirming both would apply two DISTINCT
     // refunds. Reset once the sheet closes (below).
     if (_refundSheetOpen || _actionLoading) return;
-    setState(() => _refundSheetOpen = true);
+    setState(() {
+      _refundSheetOpen = true;
+      _refundSheetLoading = true;
+    });
+
+    // 1.3.1 review HIGH: «Уже возвращено» and the over-owed check must judge
+    // the server's CURRENT ledger, not the one this screen loaded. Another
+    // iPad may have refunded since (two refunds of the same 7 650). A short
+    // re-read; if it fails the cached summary is used, and the request still
+    // carries an explicit confirm_over_owed so the server guard runs anyway.
+    await _refetchOrder(timeout: const Duration(seconds: 6));
+    if (!mounted) return;
+    setState(() => _refundSheetLoading = false);
 
     // The ceiling is what we CHARGED, not what the order is worth now.
     //
@@ -1842,7 +1898,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
               // something has already been returned — a fresh full-refund
               // order doesn't need the extra rows.
               // 1.3.1: against what the customer is OWED, from the server.
-              if (summary != null) ...[
+              if (summary != null &&
+                  !isUneditedOrder(
+                      owed: summary.owed, refunded: summary.refunded)) ...[
                 const SizedBox(height: 8),
                 Text(
                   alreadyRefundedOfOwedText(
@@ -1913,16 +1971,27 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                 ),
               ),
               // 1.3.1 live check, the server's own rule (1 ₸ tolerance).
+              // A refund that empties the card is never over owed (the
+              // server skips the guard for it).
               if (summary != null)
                 ValueListenableBuilder<TextEditingValue>(
                   valueListenable: amountCtrl,
                   builder: (_, v, __) {
-                    final excess =
-                        summary.overOwedBy(_parseRefundAmount(v.text));
+                    final excess = overOwedForRefund(
+                      summary,
+                      _parseRefundAmount(v.text),
+                      remainingOnCard: remaining,
+                    );
                     if (excess == null) return const SizedBox.shrink();
                     return Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: _OverOwedWarning(excess: excess),
+                      child: _OverOwedWarning(
+                        text: overOwedWarningFor(
+                          owed: summary.owed,
+                          refunded: summary.refunded,
+                          excess: excess,
+                        ),
+                      ),
                     );
                   },
                 ),
@@ -2066,8 +2135,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                     // step («Всё равно вернуть N ₸») and the request carries
                     // confirm_over_owed. Within it: the plain «Оформить».
                     final typedAmount = _parseRefundAmount(typed.text);
-                    final overOwed =
-                        summary?.overOwedBy(typedAmount) != null;
+                    final overOwed = overOwedForRefund(summary, typedAmount,
+                            remainingOnCard: remaining) !=
+                        null;
                     return ElevatedButton(
                       key: const ValueKey('refund-sheet-submit'),
                       style: overOwed
@@ -2083,8 +2153,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                         // doesn't receive a float like 100.12345600001
                         // from operator-pasted text.
                         final amount = _parseRefundAmount(amountCtrl.text);
-                        final confirmOver =
-                            summary?.overOwedBy(amount) != null;
+                        final overExcess = overOwedForRefund(summary, amount,
+                            remainingOnCard: remaining);
+                        final confirmOver = overExcess != null;
                         final code = reasonCode.value;
                         final note = reasonCtrl.text.trim();
                         // Canonical label is the structured reason; the free
@@ -2142,11 +2213,14 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                                 ),
                                 const SizedBox(height: 8),
                                 Text('Причина: $reason'),
-                                if (confirmOver) ...[
+                                if (overExcess != null) ...[
                                   const SizedBox(height: 8),
                                   Text(
-                                    overOwedWarningText(
-                                        summary!.overOwedBy(amount)!),
+                                    overOwedWarningFor(
+                                      owed: summary!.owed,
+                                      refunded: summary.refunded,
+                                      excess: overExcess,
+                                    ),
                                     style: const TextStyle(
                                       color: Color(0xFFC62828),
                                       fontWeight: FontWeight.w600,
@@ -2192,7 +2266,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                           amount: amount,
                           reason: reason,
                           idempotencyKey: sessionIdempotencyKey,
-                          confirmOverOwed: confirmOver,
+                          // Explicit true/false whenever the server sent a
+                          // summary (it knows the field); absent otherwise.
+                          confirmOverOwed: summary == null ? null : confirmOver,
                           // Map the picked ORDER-LINE ids to PRODUCT ids — the
                           // catalog knows nothing about order lines. Only when
                           // the reason is still «Нет в наличии»; changing the
@@ -3124,15 +3200,23 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                alreadyRefundedOfOwedText(refunded: n.refunded, owed: n.owed),
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
+              if (!isUneditedOrder(owed: n.owed, refunded: n.refunded)) ...[
+                Text(
+                  alreadyRefundedOfOwedText(refunded: n.refunded, owed: n.owed),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+              _OverOwedWarning(
+                text: overOwedWarningFor(
+                  owed: n.owed,
+                  refunded: n.refunded,
+                  excess: n.excess,
                 ),
               ),
-              const SizedBox(height: 12),
-              _OverOwedWarning(excess: n.excess),
               const SizedBox(height: 12),
               const Text(
                 'Возврат денег отменить нельзя.',
@@ -3164,7 +3248,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
     required String reason,
     required String idempotencyKey,
     List<int> oosProductIds = const [],
-    bool confirmOverOwed = false,
+    bool? confirmOverOwed,
   }) async {
     HapticFeedback.mediumImpact();
     _noteRefundBaseline(idempotencyKey);
@@ -3218,6 +3302,9 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
         // Refetch the history so the just-applied refund row appears
         // in the RefundHistorySection.
         _loadRefunds();
+        // 1.3.1 review: and the order, so «Возвращено X из Y» moves now,
+        // not at the next 8 s poll.
+        unawaited(_refetchOrder());
         // Contract C: the server queued the refund, the bank has not answered
         // yet. Never «Возврат оформлен» here when the server can tell us more.
         if (_refundAwaiting) {
@@ -3755,7 +3842,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage>
                           ? null
                           : _openRefundSheet,
                       icon: const Icon(Icons.replay, size: 18),
-                      label: _actionLoading
+                      label: (_actionLoading || _refundSheetLoading)
                           ? const SizedBox(
                               width: 18,
                               height: 18,
@@ -4011,14 +4098,14 @@ class _RefundPayload {
   /// key and only the first POST applies. Without this we generated a
   /// fresh UUID per call and got duplicate refunds.
   final String idempotencyKey;
-  /// 1.3.1: the store confirmed a refund above what the customer is owed.
-  final bool confirmOverOwed;
+  /// 1.3.1: null = old server (key omitted); otherwise sent as is.
+  final bool? confirmOverOwed;
   _RefundPayload({
     required this.amount,
     required this.reason,
     required this.idempotencyKey,
     this.oosProductIds = const [],
-    this.confirmOverOwed = false,
+    this.confirmOverOwed,
   });
 }
 
@@ -4899,8 +4986,8 @@ double _parseRefundAmount(String text) {
 /// 1.3.1: «Это больше, чем клиенту положено вернуть, на N ₸», in the sheet and
 /// in the confirm step after a 409.
 class _OverOwedWarning extends StatelessWidget {
-  final double excess;
-  const _OverOwedWarning({required this.excess});
+  final String text;
+  const _OverOwedWarning({required this.text});
 
   @override
   Widget build(BuildContext context) {
@@ -4919,7 +5006,7 @@ class _OverOwedWarning extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              overOwedWarningText(excess),
+              text,
               style: const TextStyle(
                 color: Color(0xFFC62828),
                 fontWeight: FontWeight.w600,

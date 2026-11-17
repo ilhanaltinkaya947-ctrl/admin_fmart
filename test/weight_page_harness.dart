@@ -113,7 +113,12 @@ class FakeOrdersRepository extends OrdersRepository {
   final List<int> removeCalls = [];
   int refundCalls = 0;
   /// 1.3.1: what each refund call sent.
-  final List<bool> refundConfirmFlags = [];
+  /// null = the request carried no confirm_over_owed at all (old server).
+  final List<bool?> refundConfirmFlags = [];
+  /// Runs when a refund is accepted (the server's state after it).
+  void Function()? onRefund;
+  /// When set, GET /admin/orders/{id} throws it.
+  Object? getError;
   final List<double> refundAmounts = [];
   final List<String> refundKeys = [];
   /// When true, [refundError] is thrown once and then cleared.
@@ -138,6 +143,8 @@ class FakeOrdersRepository extends OrdersRepository {
   @override
   Future<Order?> getOrderById({required int storeId, required int orderId}) async {
     getCalls++;
+    final ge = getError;
+    if (ge != null) throw ge;
     // Snapshot BEFORE waiting: a slow GET returns what the server held when
     // the request was served, not what it holds when the answer lands.
     final snapshot = Order.fromJson(detail);
@@ -233,7 +240,7 @@ class FakeOrdersRepository extends OrdersRepository {
     required String reason,
     required String idempotencyKey,
     List<int> oosProductIds = const [],
-    bool confirmOverOwed = false,
+    bool? confirmOverOwed,
   }) async {
     refundCalls++;
     refundConfirmFlags.add(confirmOverOwed);
@@ -245,6 +252,7 @@ class FakeOrdersRepository extends OrdersRepository {
       if (refundErrorOnce) refundError = null;
       throw e;
     }
+    onRefund?.call();
     return SimpleActionResponse(success: true, message: 'Возврат оформлен');
   }
 }

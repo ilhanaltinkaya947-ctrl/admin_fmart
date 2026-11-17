@@ -157,3 +157,34 @@ class RefundOverOwed {
     return RefundOverOwed(owed: owed, refunded: refunded, requested: requested);
   }
 }
+
+/// The over-owed check as the server runs it for a manual refund: none
+/// without a summary, and none for a refund that gives the rest of the card
+/// back (the order becomes «refunded»; the server skips the guard then, same
+/// rule as the sheet's «полный возврат»). [remainingOnCard] is the captured
+/// ceiling left (refundCeiling().remaining).
+double? overOwedForRefund(
+  RefundSummary? s,
+  double amount, {
+  required double remainingOnCard,
+}) {
+  if (s == null) return null;
+  if (amount + 0.0001 >= remainingOnCard) return null;
+  return s.overOwedBy(amount);
+}
+
+/// Nothing was edited and nothing returned yet (owed = refunded = 0): a
+/// refund now is goodwill, not a mistake, so the wording is softer.
+bool isUneditedOrder({required double owed, required double refunded}) =>
+    owed <= 0 && refunded <= 0;
+
+/// The warning for [excess], softer on an unedited order.
+String overOwedWarningFor({
+  required double owed,
+  required double refunded,
+  required double excess,
+}) =>
+    isUneditedOrder(owed: owed, refunded: refunded)
+        ? 'Заказ не менялся. Возврат будет сверх суммы изменений: '
+            '${formatTenge(excess)}'
+        : overOwedWarningText(excess);
