@@ -65,6 +65,8 @@ class HomeShell extends StatefulWidget {
 /// admins only (the server can also refuse them: ORDER_REPORTS_ADMIN_ONLY).
 const _moneySections = {_Section.dashboard, _Section.customers, _Section.reports};
 
+const _ordersSections = {_Section.newOrders, _Section.scheduled, _Section.orderHistory};
+
 bool _hidesMoney(BuildContext context) {
   final auth = context.read<AuthCubit>().state;
   return auth is Authenticated && auth.user.isManager;
@@ -136,7 +138,15 @@ class _HomeShellState extends State<HomeShell> {
 
   void _select(_Section s) {
     if (_moneySections.contains(s) && _hidesMoney(context)) return;
-    if (s == _section) return;
+    if (s == _section) {
+      // 1.3.2: a second tap on the highlighted orders section puts its
+      // statuses back. A dashboard drill-down (one status) or the «Статус»
+      // chip used to leave the section stuck: the tap did nothing (19.11).
+      if (_ordersSections.contains(s)) {
+        context.read<OrdersCubit>().resetStatusToSection();
+      }
+      return;
+    }
     setState(() => _section = s);
     final cubit = context.read<OrdersCubit>();
     switch (s) {

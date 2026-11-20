@@ -54,6 +54,49 @@ const _scheduledStatusCodes = {
 
 enum OrdersTabPreset { active, closed, scheduled, all }
 
+/// 1.3.2 (case 19.11, Тулпар): the search text when it is a FULL order number
+/// (6 to 9 digits, spaces around it ignored), else null. Order numbers start
+/// at 100000, so a shorter number is a partial one and keeps the old search.
+int? exactOrderNumber(String search) {
+  final t = search.trim();
+  if (!RegExp(r'^[0-9]{6,9}$').hasMatch(t)) return null;
+  return int.parse(t);
+}
+
+/// The section (home tab) an order with [statusCode] is listed under, or null
+/// when no section shows it (unpaid orders).
+OrdersTabPreset? sectionForStatus(String statusCode) {
+  final c = statusCode.toLowerCase().trim();
+  if (_activeStatusCodes.contains(c)) return OrdersTabPreset.active;
+  if (_scheduledStatusCodes.contains(c)) return OrdersTabPreset.scheduled;
+  if (_closedStatusCodes.contains(c)) return OrdersTabPreset.closed;
+  return null;
+}
+
+/// The section's name exactly as the side menu says it.
+String sectionTitle(OrdersTabPreset p) {
+  switch (p) {
+    case OrdersTabPreset.active:
+      return 'Новые заказы';
+    case OrdersTabPreset.scheduled:
+      return 'Запланированные';
+    case OrdersTabPreset.closed:
+      return 'История заказов';
+    case OrdersTabPreset.all:
+      return 'Все заказы';
+  }
+}
+
+/// The line above an order found by its number outside what the list shows.
+String foundElsewhereLabel(Order o, OrdersTabPreset? current) {
+  final sec = sectionForStatus(o.status);
+  if (sec == null) {
+    return 'Заказ со статусом «${orderStatusRu(o.status, fulfillmentType: o.fulfillmentType)}»';
+  }
+  if (sec != current) return 'Заказ в разделе «${sectionTitle(sec)}»';
+  return 'Заказ не подходит под выбранные фильтры';
+}
+
 class OrdersCubit extends Cubit<OrdersState> {
   final OrdersRepository ordersRepository;
 
@@ -93,7 +136,40 @@ class OrdersCubit extends Cubit<OrdersState> {
   Map<String, int>? _statusIdByCode;
   Future<void>? _statusFetch;
 
+  // 1.3.2: the section the operator is in and the statuses it shows. A status
+  // filter that differs from these was picked on top (the «Статус» chip or a
+  // dashboard drill-down) and is shown with its own reset. Before 1.3.2 such
+  // a filter survived «Сбросить фильтры», and tapping the highlighted section
+  // again did nothing: an iPad stayed on status_ids=8 (19.11).
+  OrdersTabPreset? _preset;
+  List<int> _sectionStatusIds = const [];
+
   OrderFilters get filters => _filters;
+
+  OrdersTabPreset? get currentSection => _preset;
+
+  /// True when the list shows fewer statuses than the section it is in.
+  bool get statusFilterNarrowed =>
+      !_sameIds(_filters.statusIds, _sectionStatusIds);
+
+  /// Russian names of the statuses of a narrowed filter, for the reset strip.
+  List<String> get narrowedStatusNames {
+    if (!statusFilterNarrowed) return const [];
+    final byId = {
+      for (final e in (_statusIdByCode ?? const <String, int>{}).entries)
+        e.value: e.key,
+    };
+    return [
+      for (final id in _filters.statusIds)
+        byId[id] != null ? orderStatusRu(byId[id]!) : 'статус $id',
+    ];
+  }
+
+  static bool _sameIds(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    final sa = a.toSet();
+    return b.every(sa.contains) && sa.length == b.toSet().length;
+  }
 
   /// Wipe in-memory state — used by AuthCubit logout listener so the
   /// next admin signing in on this device doesn't briefly see the
@@ -101,6 +177,7 @@ class OrdersCubit extends Cubit<OrdersState> {
   void reset() {
     _gen++;
     _quietAgain = false;
+    _refreshAgain = false;
     _autoTimer?.cancel();
     _autoTimer = null;
     _searchDebounce?.cancel();
@@ -109,6 +186,8 @@ class OrdersCubit extends Cubit<OrdersState> {
     _loading = false;
     _statusIdByCode = null;
     _statusFetch = null;
+    _preset = null;
+    _sectionStatusIds = const [];
     emit(OrdersInitial());
   }
 
@@ -118,7 +197,12 @@ class OrdersCubit extends Cubit<OrdersState> {
   }
 
   Future<void> refresh({required int storeId}) async {
-    if (_loading) return;
+    if (_loading) {
+      // A new search or section while a load runs: load again when it ends,
+      // instead of showing the old answer under the new filters.
+      _refreshAgain = true;
+      return;
+    }
     _loading = true;
     _gen++;
 
@@ -126,18 +210,76 @@ class OrdersCubit extends Cubit<OrdersState> {
     try {
       _storeId = storeId;
       _armAutoRefresh();
+      final asked = _filters;
       final data = await _fetchPage(storeId: storeId, page: 1);
+      final found = await _resolveExactNumber(data.items, storeId, asked);
       emit(OrdersLoaded(
-        items: data.items,
+        items: found.items,
         pagination: data.pagination,
-        filters: _filters,
+        filters: asked,
+        foundElsewhere: found.order,
+        foundElsewhereLabel: found.label,
       ));
     } catch (e) {
       emit(OrdersFailure(message: describeApiError(e, subject: 'заказы')));
     } finally {
       _loading = false;
-      _runQuietAgain();
+      if (_refreshAgain) {
+        _refreshAgain = false;
+        final id = _storeId;
+        if (id != null) unawaited(refresh(storeId: id));
+      } else {
+        _runQuietAgain();
+      }
     }
+  }
+
+  bool _refreshAgain = false;
+
+  /// 1.3.2: a full order number finds the order whatever section or status
+  /// filter is selected (case 19.11: «Запланированные» + 100320 → «Заказов
+  /// нет»). order-service 20.11+ already puts it in the list; older servers do
+  /// not, so the order is read by its number (GET /admin/orders/{id}, scoped
+  /// to the manager's stores by the server). Shown only when it belongs to
+  /// THIS store. An order that is in the list but outside this section is
+  /// moved out of the rows into the found block, so it carries its label.
+  Future<({List<Order> items, Order? order, String? label})> _resolveExactNumber(
+    List<Order> items,
+    int storeId,
+    OrderFilters asked,
+  ) async {
+    final n = exactOrderNumber(asked.search);
+    if (n == null) return (items: items, order: null, label: null);
+    Order? hit;
+    for (final o in items) {
+      if (o.id == n) hit = o;
+    }
+    if (hit != null) {
+      if (_inShownSection(hit, asked)) {
+        return (items: items, order: null, label: null);
+      }
+      return (
+        items: [for (final o in items) if (o.id != n) o],
+        order: hit,
+        label: foundElsewhereLabel(hit, _preset),
+      );
+    }
+    Order? o;
+    try {
+      o = await ordersRepository.getOrderById(storeId: storeId, orderId: n);
+    } catch (_) {
+      o = null; // 403 another store, network: the list answer stands
+    }
+    if (o == null || o.storeId != storeId) {
+      return (items: items, order: null, label: null);
+    }
+    return (items: items, order: o, label: foundElsewhereLabel(o, _preset));
+  }
+
+  bool _inShownSection(Order o, OrderFilters asked) {
+    if (asked.statusIds.isEmpty) return true;
+    final id = _statusIdByCode?[o.status.toLowerCase().trim()];
+    return id != null && asked.statusIds.contains(id);
   }
 
   void _runQuietAgain() {
@@ -179,7 +321,9 @@ class OrdersCubit extends Cubit<OrdersState> {
     final gen = _gen;
     _quietInFlight = true;
     try {
+      final asked = _filters;
       final data = await _fetchPage(storeId: storeId, page: 1);
+      final found = await _resolveExactNumber(data.items, storeId, asked);
       final cur = state;
       if (_storeId != storeId) return;
       if (gen != _gen || _loading) {
@@ -191,24 +335,33 @@ class OrdersCubit extends Cubit<OrdersState> {
       }
       if (cur is! OrdersLoaded) return;
 
+      if (asked != _filters) {
+        _quietAgain = true;
+        return;
+      }
       if (cur.pagination.page <= 1) {
         emit(OrdersLoaded(
-          items: data.items,
+          items: found.items,
           pagination: data.pagination,
           filters: _filters,
+          foundElsewhere: found.order,
+          foundElsewhereLabel: found.label,
         ));
         return;
       }
       // The operator scrolled further. Put the fresh first page on top and
       // keep what they already loaded below it, so nothing jumps away.
-      final fresh = {for (final o in data.items) o.id};
+      final fresh = {for (final o in found.items) o.id};
+      final hidden = found.order?.id;
       emit(OrdersLoaded(
         items: [
-          ...data.items,
-          ...cur.items.where((o) => !fresh.contains(o.id)),
+          ...found.items,
+          ...cur.items.where((o) => !fresh.contains(o.id) && o.id != hidden),
         ],
         pagination: cur.pagination,
         filters: _filters,
+        foundElsewhere: found.order,
+        foundElsewhereLabel: found.label,
       ));
     } catch (_) {
       // Quiet by design: the next tick or a manual refresh tries again.
@@ -242,9 +395,18 @@ class OrdersCubit extends Cubit<OrdersState> {
       return;
     }
     final ids = _idsForPreset(preset);
+    _preset = preset;
+    _sectionStatusIds = ids;
     final next = _filters.copyWith(statusIds: ids);
     if (next == _filters) return;
     await applyFilters(next);
+  }
+
+  /// Back to every status of the current section (the reset strip and a
+  /// second tap on the highlighted section). Search and dates stay.
+  Future<void> resetStatusToSection() async {
+    if (!statusFilterNarrowed) return;
+    await applyFilters(_filters.copyWith(statusIds: _sectionStatusIds));
   }
 
   /// Drill-down helper for the Dashboard status-row taps. Resolves the
@@ -262,6 +424,11 @@ class OrdersCubit extends Cubit<OrdersState> {
       return;
     }
     final id = _statusIdByCode![statusName];
+    // The drill-down opens «Новые заказы» (home_shell) with one status on
+    // top: the section is «Новые заказы», the one status is a narrowed
+    // filter with its own reset.
+    _preset = OrdersTabPreset.active;
+    _sectionStatusIds = _idsForPreset(OrdersTabPreset.active);
     final next = _filters.copyWith(
       statusIds: id != null ? <int>[id] : const <int>[],
     );
@@ -329,10 +496,15 @@ class OrdersCubit extends Cubit<OrdersState> {
     // used to wipe everything and dump the manager into an unfiltered
     // ALL-orders view (which looked like the tab was leaking). Preserve
     // the preset's status_ids and only wipe search + date range.
+    //
+    // 1.3.2: «preserve the preset» now means the SECTION's statuses, not
+    // whatever status filter is on. A status picked on top (the chip, a
+    // dashboard drill-down) is cleared too, or it stays stuck (19.11).
     final preserved = _filters.copyWith(
       search: '',
       clearDateFrom: true,
       clearDateTo: true,
+      statusIds: _sectionStatusIds,
     );
     if (preserved == _filters) return;
     await applyFilters(preserved);
@@ -351,10 +523,13 @@ class OrdersCubit extends Cubit<OrdersState> {
       final nextPage = st.pagination.page + 1;
       final data = await _fetchPage(storeId: _storeId!, page: nextPage);
 
+      final hidden = st.foundElsewhere?.id;
       emit(OrdersLoaded(
-        items: [...st.items, ...data.items],
+        items: [...st.items, ...data.items.where((o) => o.id != hidden)],
         pagination: data.pagination,
         filters: _filters,
+        foundElsewhere: st.foundElsewhere,
+        foundElsewhereLabel: st.foundElsewhereLabel,
       ));
     } catch (_) {
       // молча, чтобы не ломать UX
@@ -380,6 +555,18 @@ class OrdersCubit extends Cubit<OrdersState> {
     final st = state;
     if (st is! OrdersLoaded) return;
 
+    if (st.foundElsewhere?.id == updated.id) {
+      _gen++;
+      emit(OrdersLoaded(
+        items: st.items,
+        pagination: st.pagination,
+        filters: st.filters,
+        foundElsewhere: updated,
+        foundElsewhereLabel: foundElsewhereLabel(updated, _preset),
+      ));
+      return;
+    }
+
     final idx = st.items.indexWhere((o) => o.id == updated.id);
     if (idx == -1) return;
 
@@ -390,6 +577,8 @@ class OrdersCubit extends Cubit<OrdersState> {
       items: newList,
       pagination: st.pagination,
       filters: st.filters,
+      foundElsewhere: st.foundElsewhere,
+      foundElsewhereLabel: st.foundElsewhereLabel,
     ));
   }
 

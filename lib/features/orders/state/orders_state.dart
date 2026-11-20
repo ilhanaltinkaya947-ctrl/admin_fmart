@@ -22,12 +22,22 @@ final class OrdersLoaded extends OrdersState {
   final Pagination pagination;
   final OrderFilters filters;
 
+  /// 1.3.2: the order whose FULL number was searched, when the list (this
+  /// section, these filters) does not show it. Same store only.
+  final Order? foundElsewhere;
+
+  /// Where it is: «Заказ в разделе «Новые заказы»».
+  final String? foundElsewhereLabel;
+
   OrdersLoaded({
     required this.items,
     required this.pagination,
     this.filters = OrderFilters.empty,
+    this.foundElsewhere,
+    this.foundElsewhereLabel,
   });
 
   @override
-  List<Object?> get props => [items, pagination, filters];
+  List<Object?> get props =>
+      [items, pagination, filters, foundElsewhere, foundElsewhereLabel];
 }
