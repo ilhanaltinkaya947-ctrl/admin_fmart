@@ -470,7 +470,7 @@ class _OrdersListPageState extends State<OrdersListPage> {
             builder: (_) => OrderDetailsPage(order: o),
           ),
         );
-        if (updated != null && context.mounted) {
+        if (updated != null && mounted) {
           context
               .read<OrdersCubit>()
               .updateOrderInList(updated);
